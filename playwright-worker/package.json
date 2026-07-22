@@ -1,0 +1,14 @@
+{
+  "name": "comment-filter-playwright-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "login": "node worker.mjs --login",
+    "login:douyin": "node worker.mjs --login --platform=douyin",
+    "login:xhs": "node worker.mjs --login --platform=xhs",
+    "start": "node worker.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}

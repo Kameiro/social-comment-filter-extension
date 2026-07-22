@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>评论筛选助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>评论筛选</h1>
+
+    <label>
+      关键词
+      <input id="keyword" type="text" placeholder="例如：眼线, 没招；留空则不限关键词">
+    </label>
+
+    <label>
+      排除关键词
+      <input id="excludeKeyword" type="text" placeholder="例如：广告, 私我；命中这些词会排除">
+    </label>
+
+    <label>
+      IP 属地
+      <input id="region" type="text" placeholder="例如：北京, 河北；留空则不限地区">
+    </label>
+
+    <label>
+      条件关系
+      <select id="matchMode">
+        <option value="all">同时满足关键词和地区</option>
+        <option value="any">满足关键词或地区任一项</option>
+      </select>
+    </label>
+
+    <label>
+      只看最近多少天内
+      <input id="relativeDays" type="number" min="1" max="365" step="1" placeholder="例如：30">
+    </label>
+
+    <label>
+      滚动上限
+      <input id="scrollLimit" type="number" min="0" max="10000" step="1" placeholder="留空或 0 表示自动滚到底">
+    </label>
+
+    <label>
+      目标女性用户数
+      <input id="targetFemaleCount" type="number" min="0" max="10000" step="1" placeholder="设置后达到人数停止；留空或 0 验证全部">
+    </label>
+
+    <label>
+      扫描方式
+      <select id="scanMode">
+        <option value="append">追加到上次结果</option>
+        <option value="replace">清空后重新搜索</option>
+      </select>
+    </label>
+
+    <label>
+      批量帖子链接
+      <textarea id="postUrls" class="compact-textarea" placeholder="一行一个抖音或小红书帖子链接；小红书请保留完整链接参数"></textarea>
+    </label>
+
+    <label>
+      飞书 App ID
+      <input id="feishuAppId" type="text" placeholder="开放平台应用 App ID">
+    </label>
+
+    <label>
+      飞书 App Secret
+      <input id="feishuAppSecret" type="password" placeholder="开放平台应用 App Secret">
+    </label>
+
+    <label>
+      飞书电子表格链接或 Token
+      <input id="feishuSpreadsheet" type="text" placeholder="粘贴普通电子表格链接，wiki 链接也可以">
+    </label>
+
+    <label>
+      工作表 ID
+      <input id="feishuSheetId" type="text" placeholder="可留空，默认写入第一个 Sheet">
+    </label>
+
+    <label class="inline">
+      <input id="feishuIncludeHeader" type="checkbox" checked>
+      写入时包含表头
+    </label>
+
+    <label class="inline">
+      <input id="removeConfirmedMen" type="checkbox" checked>
+      补充后删除已确认男性
+    </label>
+
+    <div class="actions">
+      <div class="action-row primary-actions">
+        <button id="scan">开始扫描</button>
+        <button id="stop" class="danger" disabled>停止翻页</button>
+      </div>
+      <div class="action-row">
+        <button id="enrichProfiles" class="secondary">补充主页资料</button>
+        <button id="writeFeishuSheet" class="secondary">写入飞书</button>
+        <button id="copy" class="secondary">复制结果</button>
+      </div>
+      <div class="action-row single-action"><button id="clear" class="ghost">清空结果</button></div>
+      <div class="action-row single-action"><button id="removeMen" class="ghost">删除已确认男性</button></div>
+      <div class="action-row single-action">
+        <button id="diagnose" class="secondary">诊断评论容器</button>
+      </div>
+    </div>
+
+    <p id="status">打开抖音或小红书帖子后点击开始扫描。</p>
+    <textarea id="output" readonly placeholder="扫描结果会显示在这里"></textarea>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "name": "com.commentfilter.helper",
+  "description": "评论筛选助手本地后台启动器",
+  "path": "__NATIVE_HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://cfkabciafmcgfankniaihjpekiniblkk/"]
+}

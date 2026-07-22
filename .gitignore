@@ -1,0 +1,4 @@
+.DS_Store
+playwright-worker/node_modules/
+playwright-worker/browser-data/
+playwright-worker/*.log
