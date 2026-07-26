@@ -575,6 +575,13 @@ $("#stop").addEventListener("click", async () => {
   setStatus("正在停止，已扫到的结果会保留...");
 
   try {
+    // Write the shared stop flag first so the page can stop even if Android delays the service worker message.
+    await chrome.storage.local.set({ stopRequested: true });
+    const tab = await getActiveTab();
+    const platform = platformFromUrl(tab?.url || "");
+    if (tab?.id && platform) {
+      await chrome.tabs.sendMessage(tab.id, { type: messageType(platform, "stop") }).catch(() => {});
+    }
     const result = await chrome.runtime.sendMessage({ type: "STOP_SCAN_TASK" });
     if (!result?.ok) throw new Error(result?.error || "停止失败。");
   } catch (error) {

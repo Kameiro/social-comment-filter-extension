@@ -120,6 +120,10 @@
 
   stop.addEventListener("click", async () => {
     stop.disabled = true;
+    try {
+      // A page-local storage write is the fastest stop path on Android extension browsers.
+      await chrome.storage.local.set({ stopRequested: true });
+    } catch (error) {}
     await chrome.runtime.sendMessage({ type: "STOP_SCAN_TASK" }).catch(() => {});
   });
   copy.addEventListener("click", async () => {
@@ -233,6 +237,9 @@
   });
 
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.stopRequested?.newValue) {
+      window.dispatchEvent(new CustomEvent("comment-filter-stop"));
+    }
     if (area !== "local" || (!changes.scanTask && !changes.profileTask && !changes.scanProgress)) return;
     chrome.storage.local.get({ scanTask: null, profileTask: null, scanProgress: null }).then(values => {
       render(latestTask(values.scanTask, values.profileTask), values.scanProgress);

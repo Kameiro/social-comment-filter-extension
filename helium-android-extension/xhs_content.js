@@ -532,6 +532,27 @@
     return Boolean(stored.stopRequested);
   }
 
+  async function waitOrStop(ms) {
+    let elapsed = 0;
+    while (elapsed < ms) {
+      if (await shouldStop()) return true;
+      const step = Math.min(100, ms - elapsed);
+      await sleep(step);
+      elapsed += step;
+    }
+    return shouldStop();
+  }
+
+  window.addEventListener("comment-filter-stop", () => {
+    window.__xhsCommentFilterStopRequested = true;
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.stopRequested?.newValue) {
+      window.__xhsCommentFilterStopRequested = true;
+    }
+  });
+
   async function scanComments(filters) {
     if (!filters.backgroundTask) window.__xhsCommentFilterStopRequested = false;
     const configuredLimit = Number(filters.scrollLimit || 0);
@@ -546,6 +567,10 @@
     let lastLoadedCount = 0;
 
     for (let index = 0; index <= total; index += 1) {
+      if (await shouldStop()) {
+        stopped = true;
+        break;
+      }
       const postUrl = filters.postUrl || location.href;
       const loaded = loadedComments(postUrl);
       for (const row of loaded) {
@@ -575,12 +600,18 @@
 
       const target = findScrollTarget();
       const moved = scrollTarget(target);
-      await sleep(900);
+      if (await waitOrStop(900)) {
+        stopped = true;
+        break;
+      }
       if (isAtScrollBottom(target)) {
         const heightBeforeConfirm = target === document.scrollingElement || target === document.body || target === document.documentElement
           ? document.documentElement.scrollHeight
           : target.scrollHeight;
-        await sleep(1200);
+        if (await waitOrStop(1200)) {
+          stopped = true;
+          break;
+        }
         const heightAfterConfirm = target === document.scrollingElement || target === document.body || target === document.documentElement
           ? document.documentElement.scrollHeight
           : target.scrollHeight;
@@ -595,10 +626,16 @@
       if (noChange) {
         if (isProbablyLoading()) {
           setProgress(`等待加载：${index + 1}/${limitLabel}，已命中 ${rows.size} 条`, index + 1, total, rows.size);
-          await sleep(1800);
+          if (await waitOrStop(1800)) {
+            stopped = true;
+            break;
+          }
           noChangeCount = 0;
         } else {
-          await sleep(1200);
+          if (await waitOrStop(1200)) {
+            stopped = true;
+            break;
+          }
           const retryState = scrollState(target);
           const retryLoadedCount = loadedComments(postUrl).length;
           if (retryState === currentState && retryLoadedCount === loadedCount) noChangeCount += 1;
@@ -645,6 +682,7 @@
 
     if (message?.type === "XHS_STOP_SCAN_V2") {
       window.__xhsCommentFilterStopRequested = true;
+      chrome.storage.local.set({ stopRequested: true });
       sendResponse({ ok: true });
       return false;
     }

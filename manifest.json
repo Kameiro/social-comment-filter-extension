@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "评论筛选助手",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArsAIm7xEXBNHvXxx7y7N8r7ppYVgF8HQ2h6UVtJMeu6j19pEDxOVZDr2uTBE8KOGlTjbYT7qEIdqbjwmSPMuL6Ac+ON+jrrdDsBqpT3hTRp/0r7Tl2rBWjjMQbChDUt/bnxUunM9UdjTRFBzM3FJa3Aa4h9lJgqc/X5+2AeaBPTASBwVJsJdCgn2IJd20HbSmr7v4W6nM3j33Cyx3jCohxNldr5ey6pmuBjwM6GVIhmtPhZHxWOjz5nGNS21bNrsPDN7x5Rj1wKEIGltgUyddMeIgvLw1W1GfdvL4/Ek2CPEaA/RMZkyIMdIqdwHecUu5VG2NRB7yLgluBQ4f26fEwIDAQAB",
   "description": "按关键词、IP属地和日期筛选当前页面已加载的抖音/小红书评论。",
   "permissions": ["activeTab", "scripting", "storage", "clipboardWrite", "tabs", "nativeMessaging"],

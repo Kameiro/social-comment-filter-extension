@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "评论筛选助手（安卓）",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "description": "按关键词、IP属地和日期筛选当前页面已加载的抖音/小红书评论。安卓版本不含主页资料核验。",
   "permissions": [
     "activeTab",

@@ -377,6 +377,16 @@
     }
   }
 
+  window.addEventListener("comment-filter-stop", () => {
+    window.__dyCommentFilterStopRequested = true;
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.stopRequested?.newValue) {
+      window.__dyCommentFilterStopRequested = true;
+    }
+  });
+
   async function waitOrStop(ms) {
     const step = 100;
     let elapsed = 0;
