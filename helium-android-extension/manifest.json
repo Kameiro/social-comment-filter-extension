@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "评论筛选助手（安卓）",
+  "version": "1.2.9",
+  "description": "按关键词、IP属地和日期筛选当前页面已加载的抖音/小红书评论。安卓版本不含主页资料核验。",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "clipboardWrite",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.douyin.com/*",
+    "https://www.xiaohongshu.com/*",
+    "https://open.feishu.cn/*",
+    "https://open.larksuite.com/*"
+  ],
+  "action": {
+    "default_title": "评论筛选助手",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.xiaohongshu.com/*"
+      ],
+      "js": [
+        "xhs_content.js",
+        "task_float.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.douyin.com/*"
+      ],
+      "js": [
+        "douyin_content.js",
+        "task_float.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

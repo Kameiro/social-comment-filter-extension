@@ -11,6 +11,21 @@
 5. 打开抖音或小红书帖子页面。
 6. 点击 Chrome 工具栏里的“评论筛选助手”图标。
 
+## 安卓平板（Helium / Titanium Browser）
+
+可以使用。Helium Android 已更名为 Titanium Browser；其官方说明支持 Chrome 扩展，并可在 `chrome://extensions` 开启开发者模式后加载已解压扩展。
+
+1. 在电脑的扩展目录中运行 `node build-helium-android.mjs`，会生成 `helium-android-extension` 文件夹。
+2. 将整个 `helium-android-extension` 文件夹复制到安卓平板并解压，不要只复制里面的单个文件。
+3. 在 Helium/Titanium 地址栏打开 `chrome://extensions`，开启 `Developer mode`，点击 `Load unpacked`，从系统文件选择器中选择该文件夹。
+4. 在扩展管理页将“评论筛选助手（安卓）”固定到工具栏；打开抖音或小红书帖子后，从工具栏打开插件。
+
+安卓端可使用：评论抓取、关键词/IP 属地/日期筛选、自动滚动、复制结果，以及写入飞书普通电子表格。
+
+安卓端不提供：主页性别、年龄、所在地核验；删除已确认男性；按目标女性人数停止。这些功能依赖电脑上的本地 Node/Playwright 服务，Android 浏览器无法运行该服务。批量任务会逐个打开帖子，移动端浏览器可能会因后台页面节流而比电脑端慢，建议一次处理少量链接。
+
+详细的平板安装、首次测试和排错步骤见 [安卓使用说明](ANDROID.md)。
+
 ## 使用
 
 - `批量帖子链接` 留空：扫描当前打开的帖子。
