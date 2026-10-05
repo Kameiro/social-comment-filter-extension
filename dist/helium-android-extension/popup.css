@@ -1,0 +1,176 @@
+* {
+  box-sizing: border-box;
+}
+
+html {
+  width: 420px !important;
+  min-width: 420px !important;
+  max-width: none !important;
+  height: 600px !important;
+  min-height: 600px !important;
+  max-height: 600px !important;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  background: #ffffff;
+}
+
+body {
+  width: 420px !important;
+  min-width: 420px !important;
+  max-width: none !important;
+  height: 600px !important;
+  min-height: 600px !important;
+  max-height: 600px !important;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  color: #111827;
+  background: #ffffff;
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body.android-runtime .desktop-profile-option {
+  display: none;
+}
+
+body.android-runtime .action-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body.android-runtime .primary-actions {
+  grid-template-columns: 1fr;
+}
+
+main {
+  width: 420px;
+  height: 600px;
+  max-height: 600px;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding: 14px;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+label {
+  min-width: 0;
+  display: block;
+  margin: 10px 0;
+  font-weight: 650;
+}
+
+input,
+select,
+textarea {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  margin-top: 5px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 8px;
+  color: #111827;
+  font: inherit;
+}
+
+textarea {
+  height: 190px;
+  resize: vertical;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.compact-textarea {
+  height: 74px;
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 12px;
+}
+
+.action-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.primary-actions {
+  grid-template-columns: 1fr 1fr;
+}
+
+button {
+  border: 0;
+  border-radius: 7px;
+  min-height: 42px;
+  padding: 9px 10px;
+  color: #fff;
+  background: #111827;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+button.secondary {
+  color: #111827;
+  background: #e5e7eb;
+}
+
+button.danger {
+  background: #b91c1c;
+}
+
+button.ghost {
+  color: #4b5563;
+  background: #f3f4f6;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.optional-section {
+  margin: 12px 0;
+  border-top: 1px solid #eef0f3;
+  border-bottom: 1px solid #eef0f3;
+}
+
+.optional-section > summary {
+  padding: 10px 2px;
+  color: #475467;
+  font-weight: 700;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.optional-section > summary::marker {
+  color: #98a2b3;
+}
+
+.advanced-actions {
+  display: grid;
+  gap: 8px;
+  padding: 0 0 10px;
+}
+
+#status {
+  min-height: 42px;
+  max-height: 84px;
+  margin: 8px 0;
+  overflow-y: auto;
+  color: #4b5563;
+  word-break: break-word;
+}
+
+#status a {
+  color: #2563eb;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}

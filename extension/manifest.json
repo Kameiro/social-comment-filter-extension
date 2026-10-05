@@ -1,0 +1,57 @@
+{
+  "manifest_version": 3,
+  "name": "评论筛选助手",
+  "version": "1.6.6",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArsAIm7xEXBNHvXxx7y7N8r7ppYVgF8HQ2h6UVtJMeu6j19pEDxOVZDr2uTBE8KOGlTjbYT7qEIdqbjwmSPMuL6Ac+ON+jrrdDsBqpT3hTRp/0r7Tl2rBWjjMQbChDUt/bnxUunM9UdjTRFBzM3FJa3Aa4h9lJgqc/X5+2AeaBPTASBwVJsJdCgn2IJd20HbSmr7v4W6nM3j33Cyx3jCohxNldr5ey6pmuBjwM6GVIhmtPhZHxWOjz5nGNS21bNrsPDN7x5Rj1wKEIGltgUyddMeIgvLw1W1GfdvL4/Ek2CPEaA/RMZkyIMdIqdwHecUu5VG2NRB7yLgluBQ4f26fEwIDAQAB",
+  "description": "按关键词、IP属地和日期筛选当前页面已加载的抖音/小红书/快手评论。",
+  "permissions": ["activeTab", "scripting", "storage", "clipboardWrite", "tabs", "windows", "nativeMessaging"],
+  "host_permissions": [
+    "https://www.douyin.com/*",
+    "https://www.xiaohongshu.com/*",
+    "https://www.kuaishou.com/*",
+    "http://127.0.0.1:38765/*",
+    "https://*/*"
+  ],
+  "action": {
+    "default_title": "评论筛选助手",
+    "default_popup": "popup/popup.html"
+  },
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.kuaishou.com/*"],
+      "js": ["content/common/network_capture_main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.kuaishou.com/*"],
+      "js": ["content/common/post_utils.js", "content/common/comment_api.js", "content/platforms/kuaishou.js", "content/common/direct_message.js", "content/common/task_float.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.xiaohongshu.com/*"],
+      "js": ["content/common/network_capture_main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.xiaohongshu.com/*"],
+      "js": ["content/common/post_utils.js", "content/common/comment_api.js", "content/common/profile_metadata.js", "content/platforms/xhs.js", "content/common/direct_message.js", "content/common/task_float.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.douyin.com/*"],
+      "js": ["content/common/network_capture_main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.douyin.com/*"],
+      "js": ["content/common/post_utils.js", "content/common/comment_api.js", "content/common/profile_metadata.js", "content/common/profile_fetch.js", "content/platforms/douyin.js", "content/platforms/douyin_search.js", "content/common/direct_message.js", "content/common/task_float.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

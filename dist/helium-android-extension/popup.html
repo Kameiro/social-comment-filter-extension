@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>评论筛选助手</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <h1>评论筛选</h1>
+
+    <label>
+      关键词
+      <input id="keyword" type="text" placeholder="例如：眼线, 没招；留空则不限关键词">
+    </label>
+
+    <label>
+      排除关键词
+      <input id="excludeKeyword" type="text" placeholder="例如：广告, 私我；命中这些词会排除">
+    </label>
+
+    <label>
+      IP 属地
+      <input id="region" type="text" placeholder="例如：北京, 河北；留空则不限地区">
+    </label>
+
+    <label>
+      条件关系
+      <select id="matchMode">
+        <option value="all">同时满足关键词和地区</option>
+        <option value="any">满足关键词或地区任一项</option>
+      </select>
+    </label>
+
+    <label>
+      只看最近多少天内
+      <input id="relativeDays" type="number" min="1" max="365" step="1" placeholder="例如：30">
+    </label>
+
+    <label>
+      接口页数上限（默认全部）
+      <input id="pageLimit" type="number" min="0" max="10000" step="1" placeholder="留空或 0 表示抓取全部接口分页">
+    </label>
+
+    <label class="desktop-profile-option">
+      性别筛选
+      <select id="genderFilter">
+        <option value="all">全部</option>
+        <option value="male">男</option>
+        <option value="female">女</option>
+      </select>
+    </label>
+
+    <label class="desktop-profile-option">
+      目标性别人数（可选）
+      <input id="targetGenderCount" type="number" min="0" max="10000" step="1" placeholder="留空或 0 表示获取全部符合条件的评论">
+    </label>
+
+    <label>
+      批量帖子链接
+      <textarea id="postUrls" class="compact-textarea" placeholder="一行一个抖音、小红书或快手帖子链接；小红书请保留完整链接参数"></textarea>
+    </label>
+
+    <div class="actions">
+      <div class="action-row primary-actions">
+        <button id="scan">开始扫描</button>
+        <button id="resumeVerification" class="secondary" type="button" hidden>验证完成，继续抓取</button>
+        <button id="stop" class="danger" disabled>停止抓取</button>
+      </div>
+      <div class="action-row">
+        <button id="copy" class="secondary">复制结果</button>
+        <button id="openDashboard" class="secondary">打开评论数据库</button>
+      </div>
+      <details class="optional-section desktop-profile-option">
+        <summary>高级功能</summary>
+        <div class="advanced-actions">
+          <button id="enrichProfiles" class="secondary" type="button">补充主页资料</button>
+          <button id="removeMen" class="ghost" type="button">删除已确认男性</button>
+          <button id="diagnose" class="secondary" type="button">诊断评论容器</button>
+        </div>
+      </details>
+    </div>
+
+    <p id="status">打开抖音、小红书或快手帖子后点击开始扫描。</p>
+    <textarea id="output" readonly placeholder="扫描结果会显示在这里"></textarea>
+  </main>
+  <script src="post_utils.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
