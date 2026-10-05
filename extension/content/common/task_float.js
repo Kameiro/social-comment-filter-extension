@@ -75,6 +75,14 @@
     return /Extension context invalidated/i.test(String(error?.message || error || ""));
   }
 
+  function removeAfterInvalidation(error) {
+    if (!isInvalidExtensionContext(error)) return false;
+    dragging = false;
+    miniDragging = false;
+    host.remove();
+    return true;
+  }
+
   function latestTask(scanTask, profileTask) {
     if (scanTask?.status === "running" || scanTask?.status === "waiting-verification") return scanTask;
     if (profileTask?.status === "running") return profileTask;
@@ -280,7 +288,12 @@
     position = { side: rect.left + rect.width / 2 < window.innerWidth / 2 ? "left" : "right", y: rect.top };
     applyPosition();
     collapse.textContent = position.side === "right" ? "›" : "‹";
-    await chrome.storage.local.set({ [storageKey]: position });
+    try {
+      await chrome.storage.local.set({ [storageKey]: position });
+    } catch (error) {
+      if (!removeAfterInvalidation(error)) console.warn("保存浮窗位置失败：", error);
+      return;
+    }
     try { head.releasePointerCapture(event.pointerId); } catch (error) {}
   });
 
