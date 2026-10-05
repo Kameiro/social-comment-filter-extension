@@ -31,6 +31,7 @@ const STOP_TASK_FALLBACK_MS = 5000;
 const SCAN_WATCHDOG_MS = 90000;
 let activeProfileRequestController = null;
 let stoppingProfileTaskId = null;
+let temporaryProfileTabId = null;
 // ponytail: global lock matches the single progress/stop channel; use per-task state only if parallel scans become a real requirement.
 let startingScanTask = false;
 let taskNumberQueue = Promise.resolve();
@@ -843,6 +844,10 @@ function buildFilterTaskRecord(task, matchedCount = 0, status = "completed", aud
     status,
     completionState: task.status === "profile-incomplete" || task.completionState === "partial" ? "partial" : "complete",
     profileStatus: task.profileStatus || "not-required",
+    profileEnrichedCount: Math.max(0, Number(task.profileEnrichedCount || 0)),
+    profileTargetCount: Math.max(0, Number(task.profileTargetCount || 0)),
+    profileErrors: Array.isArray(task.profileErrors) ? task.profileErrors.slice(0, 20) : [],
+    message: task.message || "",
     pagination: audit || task.pagination || null,
     startedAt: task.startedAt,
     completedAt: task.completedAt || Date.now()
@@ -1241,10 +1246,79 @@ async function readProfileInBackground(url, options = {}) {
   return profileLookup.read(url, options);
 }
 
+async function sendDouyinProfileMessage(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (error) {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["profile_metadata.js", "profile_fetch.js"]
+    });
+    return chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
+async function readDouyinProfileWithBrowserSession(url) {
+  const existingTabs = await chrome.tabs.query({ url: ["https://www.douyin.com/*"] });
+  const existingTab = existingTabs.find(tab => Number.isInteger(tab.id) && !tab.discarded);
+  let tabId = existingTab?.id || null;
+  let temporary = false;
+  if (!tabId) {
+    const tab = await chrome.tabs.create({ url, active: false });
+    tabId = tab.id;
+    temporary = true;
+    temporaryProfileTabId = tabId;
+  }
+  try {
+    if (temporary) {
+      if (!await waitForTabLoaded(tabId, 30000)) throw new Error("当前浏览器后台主页加载超时。");
+      await new Promise(resolve => setTimeout(resolve, 1200));
+    }
+    const fetched = await sendDouyinProfileMessage(tabId, {
+      type: "DY_FETCH_PROFILE_PUBLIC_INFO_V1",
+      url
+    });
+    const rendered = temporary
+      ? await sendDouyinProfileMessage(tabId, { type: "DY_READ_RENDERED_PROFILE_INFO_V1" }).catch(() => null)
+      : null;
+    if (!fetched?.ok && !rendered?.ok) {
+      throw new Error(fetched?.error || rendered?.error || "当前浏览器会话没有返回主页资料。");
+    }
+    const fetchedInfo = fetched?.info || {};
+    const renderedInfo = rendered?.info || {};
+    const info = {
+      ...fetchedInfo,
+      gender: fetchedInfo.gender && fetchedInfo.gender !== "未知" ? fetchedInfo.gender : renderedInfo.gender || fetchedInfo.gender || "未知",
+      profileAge: fetchedInfo.profileAge || renderedInfo.profileAge || "",
+      profileLocation: fetchedInfo.profileLocation || renderedInfo.profileLocation || "",
+      profileReadSource: fetchedInfo.profileReadSource || renderedInfo.profileReadSource || "douyin-browser-session"
+    };
+    if (info.gender === "未知" && !info.profileAge && !info.profileLocation && !info.profileNickname) {
+      throw new Error("当前浏览器会话没有返回公开主页资料。");
+    }
+    return info;
+  } finally {
+    if (temporary && tabId === temporaryProfileTabId) temporaryProfileTabId = null;
+    if (temporary) await chrome.tabs.remove(tabId).catch(() => {});
+  }
+}
+
 async function readProfileWithWorker(url, options = {}) {
   if (isAndroidRuntime()) throw new Error(androidProfileUnsupportedMessage());
   const platform = platformFromUrl(url);
   if (!platform) throw new Error("不支持的主页链接。");
+  // The extension already runs inside the user's logged-in Chromium session.
+  // Read Douyin's public profile HTML there first so Ego/Chrome login cookies
+  // work even when the isolated Playwright profile has never been logged in.
+  if (platform === "douyin") {
+    try {
+      const browserInfo = await readDouyinProfileWithBrowserSession(url);
+      if (browserInfo && (!options.genderOnly || browserInfo.gender !== "未知")) return browserInfo;
+    } catch (error) {
+      // Fall through to the worker. It can use CDP or start the explicit login
+      // flow when the current browser session is unavailable.
+    }
+  }
   await ensureProfileWorkerRunning();
   const controller = new AbortController();
   activeProfileRequestController = controller;
@@ -1437,6 +1511,13 @@ async function readCurrentProfile(task) {
     if (info?.error) throw new Error(info.error);
   } catch (error) {
     task.errors.push({ url: target.url, message: error.message || "读取主页资料失败" });
+    // A missing login session is a task-level blocker, not a failed user.
+    // Stop immediately so one login prompt does not turn every remaining
+    // profile into a misleading failure.
+    if (error.code === "LOGIN_REQUIRED") {
+      await finalizeProfileTask(task, false);
+      return;
+    }
   }
 
   const current = await chrome.storage.local.get({ profileTask: null, stopRequested: false });

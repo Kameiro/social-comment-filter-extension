@@ -204,6 +204,13 @@
       status: String(task.status || "completed"),
       completionState: task.completionState === "partial" ? "partial" : "complete",
       profileStatus: String(task.profileStatus || "not-required"),
+      profileEnrichedCount: Math.max(0, Number(task.profileEnrichedCount || 0)),
+      profileTargetCount: Math.max(0, Number(task.profileTargetCount || 0)),
+      profileErrors: Array.isArray(task.profileErrors) ? task.profileErrors.slice(0, 20).map(error => ({
+        url: String(error?.url || ""),
+        message: String(error?.message || "主页资料核验失败")
+      })) : [],
+      message: String(task.message || ""),
       pagination: task.pagination && typeof task.pagination === "object" ? {
         postUrl: String(task.pagination.postUrl || ""),
         platformCommentCount: Math.max(0, Number(task.pagination.platformCommentCount || 0)),
