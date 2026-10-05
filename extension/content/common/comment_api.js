@@ -67,6 +67,70 @@
     return values.find(value => value !== undefined && value !== null && value !== "") ?? "";
   }
 
+  // Douyin/XHS occasionally return a zero-valued compatibility field next to
+  // the actual engagement count (for example `digg_count: 0` and
+  // `statistics.diggCount: 12`). Never let that placeholder hide a later
+  // non-zero count. A real zero is still preserved when every candidate is 0.
+  const likeCountFields = [
+    "digg_count", "diggCount", "digg_num", "diggNum", "digg_count_v2", "diggCountV2",
+    "like_count", "likeCount", "like_num", "likeNum", "like_count_v2", "likeCountV2",
+    "liked_count", "likedCount", "liked_num", "likedNum"
+  ];
+  const replyCountFields = [
+    "reply_comment_total", "replyCommentTotal", "reply_comment_total_v2", "replyCommentTotalV2",
+    "reply_comment_count", "replyCommentCount", "reply_count", "replyCount", "reply_num", "replyNum",
+    "sub_comment_count", "subCommentCount", "sub_comment_count_v2", "subCommentCountV2",
+    "sub_comment_num", "subCommentNum"
+  ];
+  const countContainerFields = [
+    "statistics", "stats", "interact_info", "interactInfo", "interaction", "interaction_info",
+    "interactionInfo", "comment_info", "commentInfo", "extra", "data"
+  ];
+
+  function countNumber(value) {
+    if (typeof value === "boolean" || value === null || value === undefined) return null;
+    if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : null;
+    const text = clean(value).replace(/,/g, "");
+    if (!text) return null;
+    const match = text.match(/^(\d+(?:\.\d+)?)(万|w)?$/i);
+    if (!match) return null;
+    const number = Number(match[1]) * (match[2] ? 10000 : 1);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  }
+
+  function countContainers(object) {
+    const containers = [];
+    const visited = new Set();
+    const visit = (value, depth) => {
+      if (!value || typeof value !== "object" || Array.isArray(value) || visited.has(value) || depth > 2) return;
+      visited.add(value);
+      containers.push(value);
+      for (const field of countContainerFields) visit(value[field], depth + 1);
+    };
+    visit(object, 0);
+    return containers;
+  }
+
+  function countValue(object, fields) {
+    const values = [];
+    for (const container of countContainers(object)) {
+      for (const field of fields) {
+        if (Object.prototype.hasOwnProperty.call(container, field)) values.push(container[field]);
+      }
+    }
+    const candidates = values
+      .map(value => ({ value, number: countNumber(value) }))
+      .filter(candidate => candidate.number !== null);
+    const positive = candidates.find(candidate => candidate.number > 0);
+    if (positive) return String(positive.value);
+    return candidates.length ? String(candidates[0].value) : "0";
+  }
+
+  function hasCountField(object) {
+    return countContainers(object).some(container => [...likeCountFields, ...replyCountFields]
+      .some(field => Object.prototype.hasOwnProperty.call(container, field)));
+  }
+
   function dateFromTimestamp(value) {
     const number = Number(value);
     if (!Number.isFinite(number) || number <= 0) return null;
@@ -130,7 +194,7 @@
       object.digg_count, object.like_count, object.sub_comment_count,
       object.reply_comment_total, object.ip_location, object.ip_label,
       object.cid, object.comment_id, object.commentId, object.id, object.photoId
-    ].some(value => value !== undefined && value !== null);
+    ].some(value => value !== undefined && value !== null) || hasCountField(object);
     if (!hasMetadata) return false;
     return platform === "xhs" ? Boolean(object.user_info || object.ip_location || object.note_id) : true;
   }
@@ -164,8 +228,8 @@
     const id = clean(firstValue(object.cid, object.comment_id, object.commentId, object.commentID, object.id));
     const rawTimeText = relativeTime(date);
     const dateText = date ? date.toISOString().slice(0, 10) : "日期未识别";
-    const likeCount = String(firstValue(object.digg_count, object.like_count, object.likeCount, object.liked_count, object.likeNum, object.likeCountV2, "0"));
-    const replyCount = String(firstValue(object.reply_comment_total, object.sub_comment_count, object.reply_count, object.replyCount, object.subCommentCount, object.subCommentCountV2, "0"));
+    const likeCount = countValue(object, likeCountFields);
+    const replyCount = countValue(object, replyCountFields);
     const key = id
       ? `${platform}:comment:${id}`
       : [platform, nickname, rawTimeText, ipRegion, text].join("||");
