@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>评论筛选助手 · 管理后台</title>
+  <style>
+    :root { color-scheme: light; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f4f6f8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    main { width: min(960px, calc(100% - 32px)); margin: 40px auto; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+    h1, h2 { margin: 0; }
+    h1 { font-size: 24px; }
+    h2 { font-size: 17px; }
+    section { background: #fff; border: 1px solid #e3e7ed; border-radius: 10px; padding: 20px; margin: 16px 0; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    label { display: block; font-weight: 650; }
+    input, select, button { width: 100%; min-height: 40px; margin-top: 6px; border: 1px solid #cbd3df; border-radius: 7px; padding: 8px 10px; font: inherit; }
+    button { color: #fff; border-color: #1769d5; background: #1769d5; font-weight: 700; cursor: pointer; }
+    button.secondary { width: auto; color: #243047; border-color: #cbd3df; background: #fff; }
+    button.danger { color: #a32c35; border-color: #e4b9bd; background: #fff; }
+    button:disabled { cursor: wait; opacity: .6; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    .actions button { width: auto; }
+    .checkbox { display: flex; align-items: center; gap: 8px; padding-top: 28px; }
+    .checkbox input { width: 18px; min-height: 18px; margin: 0; }
+    .notice { min-height: 24px; color: #58657a; }
+    .error { color: #a32c35; }
+    .muted { color: #667085; }
+    [hidden] { display: none !important; }
+    table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+    th, td { padding: 10px 8px; border-bottom: 1px solid #edf0f4; text-align: left; vertical-align: top; }
+    th { color: #667085; font-size: 13px; }
+    @media (max-width: 640px) { main { width: min(100% - 20px, 960px); margin: 20px auto; } .grid { grid-template-columns: 1fr; } section { padding: 16px; } table { display: block; overflow-x: auto; white-space: nowrap; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>评论筛选助手</h1><div class="muted">管理后台</div></div>
+      <button id="logout" class="secondary" type="button" hidden>退出登录</button>
+    </header>
+    <p id="notice" class="notice" role="status"></p>
+
+    <section id="bootstrapPanel">
+      <h2>首次初始化管理员</h2>
+      <p class="muted">只在服务器还没有管理员时使用。初始化令牌由服务器环境提供，不要分享给普通用户。</p>
+      <form id="bootstrapForm">
+        <div class="grid">
+          <label>初始化令牌<input name="setupToken" type="password" autocomplete="off" required></label>
+          <label>管理员邮箱<input name="email" type="email" autocomplete="email" required></label>
+          <label>管理员密码<input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+          <label>租户名称<input name="tenantName" value="个人云端" maxlength="120" required></label>
+        </div>
+        <div class="actions"><button type="submit">创建管理员</button></div>
+      </form>
+    </section>
+
+    <section id="loginPanel">
+      <h2>管理员登录</h2>
+      <form id="loginForm">
+        <div class="grid">
+          <label>邮箱<input name="email" type="email" autocomplete="username" required></label>
+          <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
+        </div>
+        <div class="actions"><button type="submit">登录后台</button></div>
+      </form>
+    </section>
+
+    <section id="accountPanel" hidden>
+      <h2>忘记管理员密码</h2>
+      <p class="muted">管理员已经存在时，用初始化令牌重设密码。不会创建新账户，也不会删除数据。</p>
+      <form id="recoverForm">
+        <div class="grid">
+          <label>初始化令牌<input name="setupToken" type="password" autocomplete="off" required></label>
+          <label>管理员邮箱<input name="email" type="email" autocomplete="email" required></label>
+          <label>新管理员密码<input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+        </div>
+        <div class="actions"><button class="secondary" type="submit">重设管理员密码</button></div>
+      </form>
+      <h2>修改管理员密码</h2>
+      <form id="passwordForm">
+        <div class="grid">
+          <label>当前密码<input name="currentPassword" type="password" autocomplete="current-password" required></label>
+          <label>新密码<input name="newPassword" type="password" autocomplete="new-password" minlength="12" required></label>
+        </div>
+        <div class="actions"><button class="secondary" type="submit">修改密码</button></div>
+      </form>
+      <h2>SMTP 邮件配置</h2>
+      <p class="muted">用于发送账户注册和登录验证码。SMTP Key 只会加密保存，不会回显；保存时会先验证 SMTP 连接。</p>
+      <form id="smtpForm">
+        <div class="grid">
+          <label>SMTP 主机<input name="host" autocomplete="off" placeholder="smtp-relay.brevo.com" required></label>
+          <label>SMTP 端口<input name="port" type="number" min="1" max="65535" autocomplete="off" required></label>
+          <label>SMTP 用户名<input name="user" autocomplete="off" placeholder="xxx@smtp-brevo.com" required></label>
+          <label>发件人邮箱<input name="from" type="email" autocomplete="off" placeholder="verified@example.com" required></label>
+          <label>SMTP Key / 密码<input name="pass" type="password" autocomplete="new-password" placeholder="留空表示保持现有密钥"></label>
+          <label class="checkbox"><input name="secure" type="checkbox"> 使用 SSL（465 端口通常勾选）</label>
+        </div>
+        <p id="smtpStatus" class="muted">正在读取邮件配置...</p>
+        <div class="actions"><button type="submit">保存并验证邮件配置</button></div>
+      </form>
+      <h2>创建账户</h2>
+      <p class="muted">为插件用户创建登录账户。密码只在创建时设置，后台不保存明文。</p>
+      <form id="accountForm">
+        <div class="grid">
+          <label>用户邮箱<input name="email" type="email" autocomplete="off" required></label>
+          <label>初始密码<input name="password" type="password" autocomplete="new-password" minlength="12" required></label>
+          <label>租户名称<input name="tenantName" maxlength="120" required></label>
+          <label>账户角色<select name="role"><option value="user">普通用户</option><option value="admin">管理员</option></select></label>
+        </div>
+        <div class="actions"><button type="submit">创建账户</button></div>
+      </form>
+      <h2 style="margin-top:24px">账户列表</h2>
+      <div id="accounts" class="muted">正在读取...</div>
+    </section>
+  </main>
+  <script src="/admin/app.js"></script>
+</body>
+</html>
