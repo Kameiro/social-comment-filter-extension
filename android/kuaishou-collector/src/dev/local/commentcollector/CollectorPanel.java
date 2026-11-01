@@ -55,6 +55,7 @@ public final class CollectorPanel {
     private final Runnable closePanel;
     private final LinearLayout root, body;
     private final TextView summary;
+    private final boolean darkModeAtCreate;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private JSONObject filters = new JSONObject();
     private int tab, offset;
@@ -66,7 +67,7 @@ public final class CollectorPanel {
     private volatile String cloudStatusHint = "";
     private final Set<String> selectedPosts = new LinkedHashSet<>(), selectedUsers = new LinkedHashSet<>();
     private final java.util.List<ImageButton> navIcons = new java.util.ArrayList<>();
-    private final int surface, foreground, secondary, link, primary, errorColor;
+    private final int surface, surfaceContainer, surfaceVariant, foreground, secondary, link, primary, onPrimaryContainer, errorColor;
 
     public static boolean showing() {
         Dialog value = open.get();
@@ -129,13 +130,17 @@ public final class CollectorPanel {
     private CollectorPanel(Activity activity, Supplier<String> photo, Runnable close) {
         this.activity = activity; this.photo = photo; this.closePanel = close;
         boolean dark = dark(activity);
+        darkModeAtCreate = dark;
         uiContext = new ContextThemeWrapper(activity, dark ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar);
-        surface = dark ? Color.rgb(25, 26, 28) : Color.WHITE;
-        foreground = dark ? Color.rgb(237, 240, 242) : Color.rgb(28, 34, 40);
-        secondary = dark ? Color.rgb(177, 185, 192) : Color.rgb(78, 90, 102);
-        link = dark ? Color.rgb(126, 182, 246) : Color.rgb(21, 101, 192);
-        primary = dark ? Color.rgb(98, 213, 157) : Color.rgb(11, 124, 89);
-        errorColor = dark ? Color.rgb(255, 137, 118) : Color.rgb(176, 59, 36);
+        surface = dynamicColor("system_neutral1_10", dark ? Color.rgb(28, 28, 30) : Color.rgb(250, 249, 253));
+        surfaceContainer = dynamicColor("system_neutral1_50", dark ? Color.rgb(39, 39, 42) : Color.rgb(243, 242, 247));
+        surfaceVariant = dynamicColor("system_neutral2_100", dark ? Color.rgb(70, 70, 74) : Color.rgb(226, 225, 233));
+        foreground = dynamicColor("system_neutral1_900", dark ? Color.rgb(238, 238, 242) : Color.rgb(28, 27, 32));
+        secondary = dynamicColor("system_neutral2_700", dark ? Color.rgb(202, 196, 208) : Color.rgb(73, 69, 79));
+        primary = dynamicColor("system_accent1_600", dark ? Color.rgb(216, 190, 255) : Color.rgb(103, 80, 164));
+        onPrimaryContainer = dynamicColor("system_accent1_900", dark ? Color.rgb(239, 219, 255) : Color.rgb(33, 0, 93));
+        link = primary;
+        errorColor = dynamicColor("system_accent2_600", dark ? Color.rgb(255, 180, 171) : Color.rgb(186, 26, 26));
         root = vertical(); root.setBackgroundColor(surface);
         root.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
             @Override public void onViewAttachedToWindow(View view) {}
@@ -145,12 +150,12 @@ public final class CollectorPanel {
             android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
         });
-        LinearLayout bar = horizontal(); bar.setPadding(dp(12), 0, dp(8), 0);
-        TextView title = text("评论数据库", 20, true); bar.addView(title, new LinearLayout.LayoutParams(0, dp(56), 1));
+        LinearLayout bar = horizontal(); bar.setPadding(dp(20), dp(8), dp(12), dp(8));
+        TextView title = text("评论数据库", 22, true); bar.addView(title, new LinearLayout.LayoutParams(0, dp(64), 1));
         bar.addView(icon(android.R.drawable.ic_menu_myplaces, "共享账号", this::accountSettings));
         bar.addView(icon(android.R.drawable.ic_menu_preferences, "本机接口", this::apiSettings));
         bar.addView(icon(android.R.drawable.ic_menu_close_clear_cancel, "关闭评论数据库", close)); root.addView(bar);
-        summary = text("", 13, false); summary.setPadding(dp(16), dp(4), dp(16), dp(12)); summary.setTextColor(secondary); root.addView(summary);
+        summary = text("", 13, false); summary.setPadding(dp(16), dp(12), dp(16), dp(14)); summary.setTextColor(secondary); summary.setBackgroundColor(surfaceContainer); root.addView(summary);
         body = vertical(); root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout navigation = horizontal();
         String[] names = {"评论", "帖子", "用户", "分析", "任务"};
@@ -158,21 +163,24 @@ public final class CollectorPanel {
         for (int i = 0; i < names.length; i++) {
             final int index = i; LinearLayout item = vertical(); item.setGravity(Gravity.CENTER); item.setMinimumHeight(dp(72)); item.setPadding(0, 0, 0, dp(4));
             ImageButton image = icon(icons[i], names[i], () -> select(index));
-            navIcons.add(image); image.setImageTintList(ColorStateList.valueOf(i == tab ? primary : secondary));
-            item.addView(image, new LinearLayout.LayoutParams(dp(48), dp(48)));
+            navIcons.add(image); image.setImageTintList(ColorStateList.valueOf(i == tab ? onPrimaryContainer : secondary));
+            if (i == tab) image.setBackground(round(primary, 20));
+            item.addView(image, new LinearLayout.LayoutParams(dp(64), dp(36)));
             TextView name = text(names[i], 12, false); name.setGravity(Gravity.CENTER); item.addView(name); item.setOnClickListener(view -> select(index));
             navigation.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
         }
-        divider(root); root.addView(navigation);
+        navigation.setPadding(dp(8), dp(6), dp(8), dp(10)); navigation.setBackgroundColor(surfaceContainer); divider(root); root.addView(navigation);
         try { filters = api("settings_get", new JSONObject().put("name", "filters")); } catch (Exception ignored) {}
         render();
     }
     private int dp(int value) { return dp(activity, value); }
     private static boolean dark(Activity activity) {
         UiModeManager mode = activity.getSystemService(UiModeManager.class);
-        return mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_YES ||
-            (Resources.getSystem().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES ||
-            (activity.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        int configured = activity.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_YES) return true;
+        if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_NO) return false;
+        return configured == Configuration.UI_MODE_NIGHT_YES ||
+            (Resources.getSystem().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
     }
     private android.app.AlertDialog.Builder alert() { return new android.app.AlertDialog.Builder(activity, dark(activity) ? android.R.style.Theme_Material_Dialog_Alert : android.R.style.Theme_Material_Light_Dialog_Alert); }
     private static int dp(Activity activity, int value) { return Math.round(value * activity.getResources().getDisplayMetrics().density); }
@@ -189,16 +197,26 @@ public final class CollectorPanel {
     }
     private Button button(String label, Runnable action) {
         Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(48));
-        button.setTextColor(foreground); button.setBackgroundTintList(ColorStateList.valueOf(dark(activity) ? Color.rgb(49, 53, 57) : Color.rgb(235, 239, 242)));
-        button.setStateListAnimator(null); button.setPadding(dp(10), 0, dp(10), 0);
+        button.setTextColor(onPrimaryContainer); button.setBackground(round(surfaceVariant, 20));
+        button.setStateListAnimator(null); button.setPadding(dp(16), 0, dp(16), 0);
         button.setOnClickListener(view -> action.run()); return button;
     }
     private void divider(LinearLayout parent) { View line = new View(activity); line.setBackgroundColor(Color.argb(45, 127, 127, 127)); parent.addView(line, new LinearLayout.LayoutParams(-1, dp(1))); }
+    private GradientDrawable round(int color, int radius) { GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape; }
+    private int dynamicColor(String name, int fallback) {
+        int id = activity.getResources().getIdentifier(name, "color", "android");
+        if (id == 0) id = Resources.getSystem().getIdentifier(name, "color", "android");
+        try { return id == 0 ? fallback : activity.getColor(id); } catch (Exception ignored) { return fallback; }
+    }
     private JSONObject api(String operation, JSONObject params) throws Exception { return CollectorClient.call(activity, operation, params); }
     private void error(Exception error) { alert().setMessage(error.getMessage()).setPositiveButton("确定", null).show(); }
     private void select(int index) { tab = index; offset = 0; userFilter = ""; currentScroll = null; render(); }
     private void render() {
-        for (int i = 0; i < navIcons.size(); i++) { navIcons.get(i).setSelected(i == tab); navIcons.get(i).setImageTintList(ColorStateList.valueOf(i == tab ? primary : secondary)); }
+        for (int i = 0; i < navIcons.size(); i++) {
+            navIcons.get(i).setSelected(i == tab);
+            navIcons.get(i).setImageTintList(ColorStateList.valueOf(i == tab ? onPrimaryContainer : secondary));
+            navIcons.get(i).setBackground(i == tab ? round(primary, 20) : null);
+        }
         int scrollY = currentScroll == null ? 0 : currentScroll.getScrollY(); currentScroll = null;
         body.removeAllViews();
         try {
@@ -542,6 +560,11 @@ public final class CollectorPanel {
         Runnable refresh = new Runnable() {
             @Override public void run() {
                 if (activity.isFinishing() || activity.isDestroyed()) return;
+                if (dark(activity) != darkModeAtCreate && showing()) {
+                    closePanel.run();
+                    handler.postDelayed(() -> show(activity, photo), 120);
+                    return;
+                }
                 try {
                     JSONObject health = api("health", new JSONObject()), task = api("status", new JSONObject());
                     String count = switch (task.optString("kind")) {
