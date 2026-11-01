@@ -66,7 +66,8 @@ public final class CollectorPanel {
     private boolean autoSyncRunning;
     private volatile String cloudStatusHint = "";
     private final Set<String> selectedPosts = new LinkedHashSet<>(), selectedUsers = new LinkedHashSet<>();
-    private final java.util.List<ImageButton> navIcons = new java.util.ArrayList<>();
+    private final java.util.List<TextView> navTabs = new java.util.ArrayList<>();
+    private final java.util.List<View> navBars = new java.util.ArrayList<>();
     private final int surface, surfaceContainer, surfaceVariant, foreground, secondary, link, primary, onPrimaryContainer, errorColor;
 
     public static boolean showing() {
@@ -132,15 +133,15 @@ public final class CollectorPanel {
         boolean dark = dark(activity);
         darkModeAtCreate = dark;
         uiContext = new ContextThemeWrapper(activity, dark ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar);
-        surface = dynamicColor(dark ? "system_neutral1_900" : "system_neutral1_10", dark ? Color.rgb(28, 28, 30) : Color.rgb(250, 249, 253));
-        surfaceContainer = dynamicColor(dark ? "system_neutral1_800" : "system_neutral1_50", dark ? Color.rgb(39, 39, 42) : Color.rgb(243, 242, 247));
-        surfaceVariant = dynamicColor(dark ? "system_neutral2_700" : "system_neutral2_100", dark ? Color.rgb(70, 70, 74) : Color.rgb(226, 225, 233));
-        foreground = dynamicColor(dark ? "system_neutral1_100" : "system_neutral1_900", dark ? Color.rgb(238, 238, 242) : Color.rgb(28, 27, 32));
-        secondary = dynamicColor(dark ? "system_neutral2_200" : "system_neutral2_700", dark ? Color.rgb(202, 196, 208) : Color.rgb(73, 69, 79));
-        primary = dynamicColor(dark ? "system_accent1_200" : "system_accent1_600", dark ? Color.rgb(216, 190, 255) : Color.rgb(103, 80, 164));
-        onPrimaryContainer = dynamicColor("system_accent1_900", dark ? Color.rgb(33, 0, 93) : Color.rgb(33, 0, 93));
-        link = primary;
-        errorColor = dynamicColor(dark ? "system_accent2_200" : "system_accent2_600", dark ? Color.rgb(255, 180, 171) : Color.rgb(186, 26, 26));
+        surface = dark ? Color.rgb(18, 18, 20) : Color.rgb(245, 245, 247);
+        surfaceContainer = dark ? Color.rgb(30, 30, 34) : Color.WHITE;
+        surfaceVariant = dark ? Color.rgb(44, 44, 50) : Color.rgb(240, 240, 243);
+        foreground = dark ? Color.rgb(242, 242, 244) : Color.rgb(26, 26, 28);
+        secondary = dark ? Color.rgb(150, 150, 160) : Color.rgb(125, 125, 135);
+        primary = dark ? Color.rgb(255, 90, 31) : Color.rgb(255, 73, 6);
+        onPrimaryContainer = Color.WHITE;
+        link = foreground;
+        errorColor = dark ? Color.rgb(255, 120, 110) : Color.rgb(214, 45, 32);
         root = vertical(); root.setBackgroundColor(surface);
         root.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
             @Override public void onViewAttachedToWindow(View view) {}
@@ -150,26 +151,23 @@ public final class CollectorPanel {
             android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
         });
-        LinearLayout bar = horizontal(); bar.setPadding(dp(20), dp(8), dp(12), dp(8));
-        TextView title = text("评论数据库", 22, true); bar.addView(title, new LinearLayout.LayoutParams(0, dp(64), 1));
+        LinearLayout bar = horizontal(); bar.setPadding(dp(20), dp(4), dp(8), 0);
+        TextView title = text("评论数据库", 20, true); bar.addView(title, new LinearLayout.LayoutParams(0, dp(52), 1));
         bar.addView(icon(android.R.drawable.ic_menu_myplaces, "共享账号", this::accountSettings));
         bar.addView(icon(android.R.drawable.ic_menu_preferences, "本机接口", this::apiSettings));
         bar.addView(icon(android.R.drawable.ic_menu_close_clear_cancel, "关闭评论数据库", close)); root.addView(bar);
-        summary = text("", 13, false); summary.setPadding(dp(16), dp(12), dp(16), dp(14)); summary.setTextColor(secondary); summary.setBackgroundColor(surfaceContainer); root.addView(summary);
-        body = vertical(); root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
-        LinearLayout navigation = horizontal();
+        LinearLayout tabs = horizontal(); tabs.setPadding(dp(8), 0, dp(8), 0);
         String[] names = {"评论", "帖子", "用户", "分析", "任务"};
-        int[] icons = {android.R.drawable.ic_menu_agenda, android.R.drawable.ic_menu_gallery, android.R.drawable.ic_menu_myplaces, android.R.drawable.ic_menu_sort_by_size, android.R.drawable.ic_menu_recent_history};
         for (int i = 0; i < names.length; i++) {
-            final int index = i; LinearLayout item = vertical(); item.setGravity(Gravity.CENTER); item.setMinimumHeight(dp(72)); item.setPadding(0, 0, 0, dp(4));
-            ImageButton image = icon(icons[i], names[i], () -> select(index));
-            navIcons.add(image); image.setImageTintList(ColorStateList.valueOf(i == tab ? onPrimaryContainer : secondary));
-            if (i == tab) image.setBackground(round(primary, 20));
-            item.addView(image, new LinearLayout.LayoutParams(dp(64), dp(36)));
-            TextView name = text(names[i], 12, false); name.setGravity(Gravity.CENTER); item.addView(name); item.setOnClickListener(view -> select(index));
-            navigation.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
+            final int index = i; LinearLayout item = vertical(); item.setGravity(Gravity.CENTER_HORIZONTAL);
+            TextView name = text(names[i], 15, false); name.setGravity(Gravity.CENTER); name.setMinHeight(dp(44)); item.addView(name, new LinearLayout.LayoutParams(-2, -2));
+            View indicator = new View(activity); item.addView(indicator, new LinearLayout.LayoutParams(dp(20), dp(3)));
+            item.setOnClickListener(view -> select(index)); navTabs.add(name); navBars.add(indicator);
+            tabs.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
         }
-        navigation.setPadding(dp(8), dp(6), dp(8), dp(10)); navigation.setBackgroundColor(surfaceContainer); divider(root); root.addView(navigation);
+        root.addView(tabs);
+        summary = text("", 12, false); summary.setPadding(dp(16), dp(10), dp(16), dp(8)); summary.setTextColor(secondary); root.addView(summary);
+        body = vertical(); root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         try { filters = api("settings_get", new JSONObject().put("name", "filters")); } catch (Exception ignored) {}
         render();
     }
@@ -191,7 +189,7 @@ public final class CollectorPanel {
     private LinearLayout vertical() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.VERTICAL); return view; }
     private LinearLayout horizontal() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.HORIZONTAL); view.setGravity(Gravity.CENTER_VERTICAL); return view; }
     private TextView text(String value, int size, boolean bold) {
-        TextView view = new TextView(activity); view.setText(value); view.setTextSize(size); view.setTextColor(foreground); view.setGravity(Gravity.CENTER_VERTICAL);
+        TextView view = new TextView(activity); view.setText(value); view.setTextSize(size); view.setTextColor(size <= 13 && !bold ? secondary : foreground); view.setGravity(Gravity.CENTER_VERTICAL); view.setLineSpacing(0, 1.15f);
         if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return view;
     }
     private ImageButton icon(int drawable, String label, Runnable action) {
@@ -199,12 +197,20 @@ public final class CollectorPanel {
         button.setBackgroundColor(Color.TRANSPARENT); button.setImageTintList(ColorStateList.valueOf(foreground));
         button.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48))); button.setOnClickListener(view -> action.run()); return button;
     }
-    private Button button(String label, Runnable action) {
-        Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(48));
-        button.setTextColor(darkModeAtCreate ? foreground : onPrimaryContainer); button.setBackground(round(surfaceVariant, 20));
+    private Button button(String label, Runnable action) { return styledButton(label, action, surfaceVariant, foreground); }
+    private Button primary(String label, Runnable action) { return styledButton(label, action, primary, Color.WHITE); }
+    private Button styledButton(String label, Runnable action, int background, int textColor) {
+        Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(36)); button.setMinimumHeight(dp(36)); button.setMinWidth(0); button.setMinimumWidth(0);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD); button.setTextColor(textColor); button.setBackground(round(background, 20));
         button.setStateListAnimator(null); button.setPadding(dp(16), 0, dp(16), 0);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(36)); params.setMargins(0, 0, dp(8), 0); button.setLayoutParams(params);
         button.setOnClickListener(view -> action.run()); return button;
     }
+    private LinearLayout card(LinearLayout parent) {
+        LinearLayout card = vertical(); card.setPadding(dp(16), dp(14), dp(16), dp(14)); card.setBackground(round(surfaceContainer, 16));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(10)); parent.addView(card, params); return card;
+    }
+    private CheckBox tint(CheckBox box) { box.setButtonTintList(ColorStateList.valueOf(primary)); return box; }
     private void divider(LinearLayout parent) { View line = new View(activity); line.setBackgroundColor(Color.argb(45, 127, 127, 127)); parent.addView(line, new LinearLayout.LayoutParams(-1, dp(1))); }
     private GradientDrawable round(int color, int radius) { GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape; }
     private int dynamicColor(String name, int fallback) {
@@ -216,10 +222,10 @@ public final class CollectorPanel {
     private void error(Exception error) { alert().setMessage(error.getMessage()).setPositiveButton("确定", null).show(); }
     private void select(int index) { tab = index; offset = 0; userFilter = ""; currentScroll = null; render(); }
     private void render() {
-        for (int i = 0; i < navIcons.size(); i++) {
-            navIcons.get(i).setSelected(i == tab);
-            navIcons.get(i).setImageTintList(ColorStateList.valueOf(i == tab ? onPrimaryContainer : secondary));
-            navIcons.get(i).setBackground(i == tab ? round(primary, 20) : null);
+        for (int i = 0; i < navTabs.size(); i++) {
+            boolean on = i == tab;
+            navTabs.get(i).setTextColor(on ? foreground : secondary); navTabs.get(i).setTypeface(Typeface.DEFAULT, on ? Typeface.BOLD : Typeface.NORMAL);
+            navBars.get(i).setBackground(on ? round(primary, 2) : null);
         }
         int scrollY = currentScroll == null ? 0 : currentScroll.getScrollY(); currentScroll = null;
         body.removeAllViews();
@@ -231,12 +237,12 @@ public final class CollectorPanel {
         if (currentScroll != null && scrollY > 0) currentScroll.post(() -> currentScroll.scrollTo(0, scrollY));
     }
     private LinearLayout scrolling() {
-        ScrollView scroll = new ScrollView(activity); currentScroll = scroll; LinearLayout list = vertical(); list.setPadding(dp(16), 0, dp(16), dp(16)); scroll.addView(list);
+        ScrollView scroll = new ScrollView(activity); currentScroll = scroll; LinearLayout list = vertical(); list.setPadding(dp(12), dp(4), dp(12), dp(16)); scroll.addView(list);
         body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1)); return list;
     }
     private void commands(Runnable refresh) {
-        LinearLayout bar = horizontal(); bar.setPadding(dp(12), 0, dp(8), 0);
-        bar.addView(button("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(48), 1));
+        LinearLayout bar = horizontal(); bar.setPadding(dp(12), dp(4), dp(8), dp(8));
+        bar.addView(primary("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(44), 1));
         bar.addView(icon(android.R.drawable.ic_menu_search, "筛选评论", this::filterDialog));
         bar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新结果", refresh)); body.addView(bar);
     }
@@ -246,13 +252,14 @@ public final class CollectorPanel {
         if (!userFilter.isEmpty()) query.put("userId", userFilter);
         JSONObject data = api("comments", query);
         TextView count = text((userFilter.isEmpty() ? "已保存评论" : "用户评论") + " · " + data.getInt("total") + " 条", 14, true);
-        count.setPadding(dp(16), dp(12), dp(16), dp(12)); body.addView(count);
-        LinearLayout list = scrolling(); JSONArray items = data.getJSONArray("items");
-        if (items.length() == 0) list.addView(text("当前条件下暂无评论", 14, false));
+        count.setPadding(dp(16), dp(2), dp(16), dp(8)); body.addView(count);
+        LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
+        if (items.length() == 0) page.addView(text("当前条件下暂无评论", 14, false));
         for (int i = 0; i < items.length(); i++) {
+            LinearLayout list = card(page);
             JSONObject row = items.getJSONObject(i), user = row.optJSONObject("user");
             String name = row.optString("nickname", row.optString("userId"));
-            TextView author = text(name, 15, true); author.setTextColor(link); author.setMinHeight(dp(48));
+            TextView author = text(name, 15, true); author.setTextColor(link); author.setMinHeight(dp(32));
             author.setOnClickListener(view -> openProfile(row.optString("userId"))); list.addView(author);
             String region = row.optString("ipRegion"); if (region.isEmpty() || "null".equals(region)) region = "未知";
             TextView meta = text((row.optInt("level") == 2 ? "二级评论" : "一级评论") + " · IP " + region + " · " + date(row.optLong("created")), 12, false);
@@ -260,15 +267,15 @@ public final class CollectorPanel {
             TextView content = text(row.optString("text"), 15, false); content.setTextIsSelectable(true); content.setPadding(0, dp(8), 0, dp(8)); list.addView(content);
             TextView metrics = text("赞 " + number(row, "likes") + " · 回复 " + number(row, "replies") + " · 任务 #" + row.optLong("taskId"), 12, false);
             metrics.setTextColor(secondary); list.addView(metrics);
-            LinearLayout actions = horizontal();
+            LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
             actions.addView(button("打开帖子", () -> openPost(row.optString("photoId"))));
-            actions.addView(button("用户评论", () -> { userFilter = row.optString("userId"); offset = 0; render(); })); list.addView(actions); divider(list);
+            actions.addView(button("用户评论", () -> { userFilter = row.optString("userId"); offset = 0; render(); })); list.addView(actions);
         }
         pageControls(data);
     }
     private void posts() throws Exception {
         LinearLayout toolbar = horizontal(); toolbar.setPadding(dp(12), 0, dp(8), 0);
-        toolbar.addView(button("发现帖子", this::discoveryDialog), new LinearLayout.LayoutParams(0, dp(48), 1));
+        toolbar.addView(primary("发现帖子", this::discoveryDialog), new LinearLayout.LayoutParams(0, dp(48), 1));
         toolbar.addView(icon(android.R.drawable.ic_menu_save, "抓取选中帖子", () -> {
             if (selectedPosts.isEmpty()) { error(new IllegalStateException("请先选择帖子")); return; }
             filterDialog(() -> { try { JSONArray tasks = new JSONArray(); for (String id : selectedPosts)
@@ -277,17 +284,18 @@ public final class CollectorPanel {
         }));
         toolbar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新帖子", this::render)); body.addView(toolbar);
         JSONObject data = api("posts", new JSONObject().put("offset", offset).put("limit", 30));
-        LinearLayout list = scrolling(); JSONArray items = data.getJSONArray("items");
-        if (items.length() == 0) list.addView(text("暂无已保存作品", 14, false));
+        LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
+        if (items.length() == 0) page.addView(text("暂无已保存作品", 14, false));
         for (int i = 0; i < items.length(); i++) {
+            LinearLayout list = card(page);
             JSONObject row = items.getJSONObject(i); String id = row.optString("postId");
-            LinearLayout heading = horizontal(); CheckBox select = new CheckBox(uiContext); select.setContentDescription("选择作品 " + id); select.setChecked(selectedPosts.contains(id));
+            LinearLayout heading = horizontal(); CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择作品 " + id); select.setChecked(selectedPosts.contains(id));
             select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedPosts.add(id); else selectedPosts.remove(id); }); heading.addView(select);
             TextView title = text(row.optString("title", "作品 " + id), 16, true); title.setPadding(0, dp(16), 0, dp(8)); heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1)); list.addView(heading);
             list.addView(text("赞 " + number(row, "likes") + " · 分享 " + number(row, "shares") + " · 收藏 " + number(row, "favorites"), 12, false));
             list.addView(text("平台评论 " + number(row, "commentTotal") + " · 快照 " + date(row.optLong("snapshotAt")), 12, false));
-            LinearLayout actions = horizontal(); actions.addView(button("打开帖子", () -> openPost(id)));
-            actions.addView(button("加入采集队列", () -> collect(id, true))); list.addView(actions); divider(list);
+            LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0); actions.addView(button("打开帖子", () -> openPost(id)));
+            actions.addView(button("加入采集队列", () -> collect(id, true))); list.addView(actions);
         }
         pageControls(data);
     }
@@ -298,33 +306,35 @@ public final class CollectorPanel {
         toolbar.addView(icon(android.R.drawable.ic_menu_edit, "补充选中用户资料", () -> profileTask(new JSONArray(selectedUsers))));
         toolbar.addView(icon(android.R.drawable.ic_menu_search, "筛选用户", this::filterDialog));
         toolbar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新用户", this::render)); body.addView(toolbar);
-        LinearLayout list = scrolling(); JSONArray items = data.getJSONArray("items");
-        if (items.length() == 0) list.addView(text("暂无已保存用户", 14, false));
+        LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
+        if (items.length() == 0) page.addView(text("暂无已保存用户", 14, false));
         for (int i = 0; i < items.length(); i++) {
+            LinearLayout list = card(page);
             JSONObject user = items.getJSONObject(i); String id = user.optString("userId");
-            LinearLayout heading = horizontal(); CheckBox select = new CheckBox(uiContext); select.setContentDescription("选择用户 " + id); select.setChecked(selectedUsers.contains(id));
+            LinearLayout heading = horizontal(); CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择用户 " + id); select.setChecked(selectedUsers.contains(id));
             select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedUsers.add(id); else selectedUsers.remove(id); }); heading.addView(select);
             TextView name = text(user.optString("nickname", id), 15, true); name.setTextColor(link); name.setMinHeight(dp(48));
             name.setOnClickListener(view -> openProfile(id)); heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); list.addView(heading);
             list.addView(text("快手 · 性别 " + gender(user.optString("gender")) + " · 年龄 " + number(user, "age"), 12, false));
             list.addView(text("主页 IP " + number(user, "profileIpRegion") + " · 所在地 " + number(user, "location") + "\n评论 IP " + number(user, "lastCommentIpRegion"), 12, false));
-            LinearLayout actions = horizontal();
+            LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
             actions.addView(button("评论 " + user.optInt("commentCount") + " 条", () -> { tab = 0; userFilter = id; offset = 0; render(); }));
-            actions.addView(button("补充资料", () -> profileTask(new JSONArray().put(id)))); list.addView(actions); divider(list);
+            actions.addView(button("补充资料", () -> profileTask(new JSONArray().put(id)))); list.addView(actions);
         }
         pageControls(data);
     }
     private void tasks() throws Exception {
-        JSONObject data = api("tasks", new JSONObject()); LinearLayout bar = horizontal(); bar.setPadding(dp(12), 0, dp(8), 0);
-        bar.addView(button("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(48), 1));
+        JSONObject data = api("tasks", new JSONObject()); LinearLayout bar = horizontal(); bar.setPadding(dp(12), dp(4), dp(8), dp(8));
+        bar.addView(primary("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(44), 1));
         bar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新任务", this::render)); body.addView(bar);
-        LinearLayout list = scrolling(); JSONArray items = data.getJSONArray("items");
+        LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
         for (int i = 0; i < items.length(); i++) {
+            LinearLayout list = card(page);
             JSONObject task = items.getJSONObject(i); long id = task.getLong("taskId"); String state = task.optString("status");
             String kind = task.optString("kind"); boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native-");
             list.addView(text("任务 #" + id + " · " + ("profile".equals(kind) ? "主页资料" : "discovery".equals(kind) ? "发现帖子" : "评论采集") + " · " + (waitingForPage ? "等待返回快手" : state(state)), 16, true));
             if (state.startsWith("running") || "paused".equals(state)) {
-                CheckBox auto = new CheckBox(uiContext); auto.setText("自动加载"); auto.setTextColor(foreground); auto.setChecked(task.optBoolean("auto"));
+                CheckBox auto = tint(new CheckBox(uiContext)); auto.setText("自动加载"); auto.setTextColor(foreground); auto.setChecked(task.optBoolean("auto"));
                 auto.setOnCheckedChangeListener((view, enabled) -> { try { api("auto", new JSONObject().put("taskId", id).put("enabled", enabled)); } catch (Exception error) { error(error); } }); list.addView(auto);
             }
             if ("profile".equals(kind)) list.addView(text("成功 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位 · 失败 " + task.optInt("profilesFailed") + " 位", 13, false));
@@ -333,7 +343,7 @@ public final class CollectorPanel {
             ProgressBar progress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
             long total = "profile".equals(kind) ? task.optLong("profilesTotal") : "discovery".equals(kind) ? task.getJSONObject("params").optLong("target", 20) : task.optLong("total");
             long read = "profile".equals(kind) ? task.optLong("profilesDone") : "discovery".equals(kind) ? task.optLong("discoveredPosts") : task.optLong("comments");
-            progress.setMax(100); progress.setIndeterminate(total <= 0 && state.startsWith("running") && !waitingForPage);
+            progress.setMax(100); progress.setProgressTintList(ColorStateList.valueOf(primary)); progress.setIndeterminateTintList(ColorStateList.valueOf(primary)); progress.setProgressBackgroundTintList(ColorStateList.valueOf(surfaceVariant)); progress.setIndeterminate(total <= 0 && state.startsWith("running") && !waitingForPage);
             if (total > 0) progress.setProgress(Math.min("complete".equals(state) ? 100 : 99, (int) (100 * read / total)));
             list.addView(progress, new LinearLayout.LayoutParams(-1, dp(12)));
             if ("comment".equals(kind)) list.addView(text("主评论 " + task.optInt("rootComments") + " · 回复 " + task.optInt("replyComments") + "\n主评论末页 " + (task.optBoolean("rootComplete") ? "已确认" : "未确认") +
@@ -349,16 +359,16 @@ public final class CollectorPanel {
                     "\n" + runtimeStage(runtime.optString("nativeState")) + " · 分页器 " + runtime.optInt("boundPagers"), 12, false));
             }
             String issue = task.optString("issue"); if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); list.addView(reason); }
-            GridLayout actions = new GridLayout(activity); actions.setColumnCount(2);
+            GridLayout actions = new GridLayout(activity); actions.setColumnCount(2); actions.setPadding(0, dp(10), 0, 0);
             if (waitingForPage) action(actions, button("返回快手继续", closePanel));
             if ("paused".equals(state)) action(actions, button("继续", () -> taskAction("resume", id)));
             if (state.startsWith("running") || "paused".equals(state) || "queued".equals(state)) action(actions, button("停止", () -> taskAction("stop", id)));
             if ("stopped".equals(state)) action(actions, button("重试", () -> taskAction("retry", id)));
             action(actions, button("运行记录", () -> events(id))); if ("comment".equals(kind)) action(actions, button("打开帖子", () -> openPost(task.optString("photoId"))));
             action(actions, button("复制诊断", () -> copyDiagnostics(id)));
-            list.addView(actions); divider(list);
+            list.addView(actions);
         }
-        if (items.length() == 0) list.addView(text("暂无任务", 14, false));
+        if (items.length() == 0) page.addView(text("暂无任务", 14, false));
     }
     private void action(GridLayout parent, Button button) {
         GridLayout.LayoutParams params = new GridLayout.LayoutParams(); params.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
@@ -396,7 +406,7 @@ public final class CollectorPanel {
     }
     private void analysis() {
         LinearLayout commands = horizontal(); commands.setPadding(dp(12), 0, dp(8), 0);
-        commands.addView(button("重新计算", this::render), new LinearLayout.LayoutParams(0, dp(48), 1));
+        commands.addView(primary("重新计算", this::render), new LinearLayout.LayoutParams(0, dp(48), 1));
         commands.addView(icon(android.R.drawable.ic_menu_search, "分析条件", this::filterDialog)); body.addView(commands);
         LinearLayout list = scrolling(); TextView pending = text("正在计算", 14, false); list.addView(pending);
         new Thread(() -> {
@@ -406,11 +416,11 @@ public final class CollectorPanel {
                 JSONArray items = data.optJSONArray("items");
                 if (items.length() == 0) list.addView(text("当前条件下暂无结果", 14, false));
                 for (int i = 0; i < items.length(); i++) {
-                    JSONObject user = items.optJSONObject(i); String uid = user.optString("userId");
-                    TextView name = text(user.optString("nickname", uid), 15, true); name.setMinHeight(dp(48)); name.setTextColor(link); name.setOnClickListener(view -> openProfile(uid)); list.addView(name);
-                    list.addView(text("评论 " + user.optInt("commentCount") + " 条 · 出现 " + user.optInt("postCount") + " 个帖子\n获赞 " + user.optLong("likesReceived") + " · 回复 " + user.optLong("replyCount"), 13, false));
-                    list.addView(text(date(user.optLong("firstCommentAt")) + " 至 " + date(user.optLong("lastCommentAt")), 12, false));
-                    list.addView(button("查看评论", () -> { tab = 0; userFilter = uid; offset = 0; render(); })); divider(list);
+                    JSONObject user = items.optJSONObject(i); String uid = user.optString("userId"); LinearLayout card = card(list);
+                    TextView name = text(user.optString("nickname", uid), 15, true); name.setMinHeight(dp(48)); name.setTextColor(link); name.setOnClickListener(view -> openProfile(uid)); card.addView(name);
+                    card.addView(text("评论 " + user.optInt("commentCount") + " 条 · 出现 " + user.optInt("postCount") + " 个帖子\n获赞 " + user.optLong("likesReceived") + " · 回复 " + user.optLong("replyCount"), 13, false));
+                    card.addView(text(date(user.optLong("firstCommentAt")) + " 至 " + date(user.optLong("lastCommentAt")), 12, false));
+                    card.addView(button("查看评论", () -> { tab = 0; userFilter = uid; offset = 0; render(); }));
                 }
             }); } catch (Exception error) { handler.post(() -> pending.setText("计算失败：" + error.getMessage())); }
         }, "collector-analysis").start();
@@ -422,10 +432,10 @@ public final class CollectorPanel {
         } catch (Exception error) { error(error); }
     }
     private void pageControls(JSONObject data) {
-        LinearLayout controls = horizontal(); controls.setPadding(dp(12), 0, dp(12), 0);
+        LinearLayout controls = horizontal(); controls.setPadding(dp(12), dp(8), dp(4), dp(12));
         Button previous = button("上一页", () -> { offset = Math.max(0, offset - data.optInt("limit", 50)); render(); }); previous.setEnabled(offset > 0);
         Button next = button("下一页", () -> { offset += data.optInt("limit", 50); render(); }); next.setEnabled(offset + data.optInt("limit", 50) < data.optInt("total"));
-        controls.addView(previous, new LinearLayout.LayoutParams(0, dp(48), 1)); controls.addView(next, new LinearLayout.LayoutParams(0, dp(48), 1)); body.addView(controls);
+        controls.addView(previous, new LinearLayout.LayoutParams(0, dp(40), 1)); controls.addView(next, new LinearLayout.LayoutParams(0, dp(40), 1)); body.addView(controls);
     }
     private EditText input(String hint, String value, boolean numeric) {
         EditText view = new EditText(uiContext); view.setHint(hint); view.setText(value); view.setTextSize(14); view.setTextColor(foreground); view.setHintTextColor(secondary);
