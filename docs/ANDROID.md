@@ -41,6 +41,23 @@
 
 如果浏览器没有显示 `Load unpacked`，请确认安装的是支持扩展的 Helium/Titanium Android 版本，并先启用开发者模式。
 
+## 快手 Vector 原生模块
+
+快手 App 内嵌的评论数据库和手机版评论采集模块位于 [`android/kuaishou-collector`](../android/kuaishou-collector/)。它是独立的 Vector/libxposed API 102 模块，不属于 Chromium 扩展，也不会修改快手 APK。当前适配基线为快手 `14.8.40.50567`、Android 16 和 Vector API 102。
+
+在 macOS 本地构建：
+
+```bash
+node android/kuaishou-collector/test.mjs
+node android/kuaishou-collector/build.mjs
+```
+
+APK 会生成到 `android/runtime/collector/kuaishou-collector-debug.apk`。在 Vector 中启用快手和模块自身作用域，覆盖安装 APK 后强行停止并重新打开快手。不要把 `android/runtime/`、数据库、登录状态或测试截图提交到仓库。
+
+`0.1.3` / versionCode `4` 修复 Android 16 真机中的 `Unknown authority dev.local.commentcollector.capture`：模块清单同时注册了 `CaptureProvider`，并声明了该 Provider 的 Android 包可见性。这个错误表示本地采集 Provider 未被系统发现，与快手评论接口或账号登录状态无关。系统悬浮窗权限不是内嵌数据库 Dialog 的前提。
+
+打开快手内的“评论数据库”后，顶部“共享账户”使用与电脑扩展相同的邮箱和密码登录。登录后手机端会先保存本地数据，再自动同步到同一账户；账户面板显示上次同步时间、失败原因，并提供“立即同步”和“退出登录”。密码不保存，平台 Cookie、本机接口密钥和验证码不上传。云端接口契约见 [CLOUD-ACCOUNT.md](CLOUD-ACCOUNT.md)。
+
 ## 首次测试
 
 1. 在一个评论较多的帖子中，手动打开评论区。
