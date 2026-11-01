@@ -132,15 +132,15 @@ public final class CollectorPanel {
         boolean dark = dark(activity);
         darkModeAtCreate = dark;
         uiContext = new ContextThemeWrapper(activity, dark ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar);
-        surface = dynamicColor("system_neutral1_10", dark ? Color.rgb(28, 28, 30) : Color.rgb(250, 249, 253));
-        surfaceContainer = dynamicColor("system_neutral1_50", dark ? Color.rgb(39, 39, 42) : Color.rgb(243, 242, 247));
-        surfaceVariant = dynamicColor("system_neutral2_100", dark ? Color.rgb(70, 70, 74) : Color.rgb(226, 225, 233));
-        foreground = dynamicColor("system_neutral1_900", dark ? Color.rgb(238, 238, 242) : Color.rgb(28, 27, 32));
-        secondary = dynamicColor("system_neutral2_700", dark ? Color.rgb(202, 196, 208) : Color.rgb(73, 69, 79));
-        primary = dynamicColor("system_accent1_600", dark ? Color.rgb(216, 190, 255) : Color.rgb(103, 80, 164));
-        onPrimaryContainer = dynamicColor("system_accent1_900", dark ? Color.rgb(239, 219, 255) : Color.rgb(33, 0, 93));
+        surface = dynamicColor(dark ? "system_neutral1_900" : "system_neutral1_10", dark ? Color.rgb(28, 28, 30) : Color.rgb(250, 249, 253));
+        surfaceContainer = dynamicColor(dark ? "system_neutral1_800" : "system_neutral1_50", dark ? Color.rgb(39, 39, 42) : Color.rgb(243, 242, 247));
+        surfaceVariant = dynamicColor(dark ? "system_neutral2_700" : "system_neutral2_100", dark ? Color.rgb(70, 70, 74) : Color.rgb(226, 225, 233));
+        foreground = dynamicColor(dark ? "system_neutral1_100" : "system_neutral1_900", dark ? Color.rgb(238, 238, 242) : Color.rgb(28, 27, 32));
+        secondary = dynamicColor(dark ? "system_neutral2_200" : "system_neutral2_700", dark ? Color.rgb(202, 196, 208) : Color.rgb(73, 69, 79));
+        primary = dynamicColor(dark ? "system_accent1_200" : "system_accent1_600", dark ? Color.rgb(216, 190, 255) : Color.rgb(103, 80, 164));
+        onPrimaryContainer = dynamicColor("system_accent1_900", dark ? Color.rgb(33, 0, 93) : Color.rgb(33, 0, 93));
         link = primary;
-        errorColor = dynamicColor("system_accent2_600", dark ? Color.rgb(255, 180, 171) : Color.rgb(186, 26, 26));
+        errorColor = dynamicColor(dark ? "system_accent2_200" : "system_accent2_600", dark ? Color.rgb(255, 180, 171) : Color.rgb(186, 26, 26));
         root = vertical(); root.setBackgroundColor(surface);
         root.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
             @Override public void onViewAttachedToWindow(View view) {}
@@ -176,11 +176,15 @@ public final class CollectorPanel {
     private int dp(int value) { return dp(activity, value); }
     private static boolean dark(Activity activity) {
         UiModeManager mode = activity.getSystemService(UiModeManager.class);
+        if (mode != null) {
+            try { return (Boolean) UiModeManager.class.getMethod("isNightModeActive").invoke(mode); }
+            catch (Throwable ignored) { }
+        }
+        int systemConfigured = Resources.getSystem().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
         int configured = activity.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
         if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_YES) return true;
         if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_NO) return false;
-        return configured == Configuration.UI_MODE_NIGHT_YES ||
-            (Resources.getSystem().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        return systemConfigured == Configuration.UI_MODE_NIGHT_YES || configured == Configuration.UI_MODE_NIGHT_YES;
     }
     private android.app.AlertDialog.Builder alert() { return new android.app.AlertDialog.Builder(activity, dark(activity) ? android.R.style.Theme_Material_Dialog_Alert : android.R.style.Theme_Material_Light_Dialog_Alert); }
     private static int dp(Activity activity, int value) { return Math.round(value * activity.getResources().getDisplayMetrics().density); }
@@ -197,7 +201,7 @@ public final class CollectorPanel {
     }
     private Button button(String label, Runnable action) {
         Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(48));
-        button.setTextColor(onPrimaryContainer); button.setBackground(round(surfaceVariant, 20));
+        button.setTextColor(darkModeAtCreate ? foreground : onPrimaryContainer); button.setBackground(round(surfaceVariant, 20));
         button.setStateListAnimator(null); button.setPadding(dp(16), 0, dp(16), 0);
         button.setOnClickListener(view -> action.run()); return button;
     }
