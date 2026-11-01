@@ -200,10 +200,10 @@ public final class CollectorPanel {
     private Button button(String label, Runnable action) { return styledButton(label, action, surfaceVariant, foreground); }
     private Button primary(String label, Runnable action) { return styledButton(label, action, primary, Color.WHITE); }
     private Button styledButton(String label, Runnable action, int background, int textColor) {
-        Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(36)); button.setMinimumHeight(dp(36)); button.setMinWidth(0); button.setMinimumWidth(0);
+        Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(32)); button.setMinimumHeight(dp(32)); button.setMinWidth(0); button.setMinimumWidth(0);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD); button.setTextColor(textColor); button.setBackground(round(background, 20));
-        button.setStateListAnimator(null); button.setPadding(dp(16), 0, dp(16), 0);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(36)); params.setMargins(0, 0, dp(8), 0); button.setLayoutParams(params);
+        button.setStateListAnimator(null); button.setPadding(dp(14), 0, dp(14), 0);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(32)); params.setMargins(0, 0, dp(8), 0); button.setLayoutParams(params);
         button.setOnClickListener(view -> action.run()); return button;
     }
     private LinearLayout card(LinearLayout parent) {
@@ -242,7 +242,7 @@ public final class CollectorPanel {
     }
     private void commands(Runnable refresh) {
         LinearLayout bar = horizontal(); bar.setPadding(dp(12), dp(4), dp(8), dp(8));
-        bar.addView(primary("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(44), 1));
+        bar.addView(primary("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(40), 1));
         bar.addView(icon(android.R.drawable.ic_menu_search, "筛选评论", this::filterDialog));
         bar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新结果", refresh)); body.addView(bar);
     }
@@ -275,7 +275,7 @@ public final class CollectorPanel {
     }
     private void posts() throws Exception {
         LinearLayout toolbar = horizontal(); toolbar.setPadding(dp(12), 0, dp(8), 0);
-        toolbar.addView(primary("发现帖子", this::discoveryDialog), new LinearLayout.LayoutParams(0, dp(48), 1));
+        toolbar.addView(primary("发现帖子", this::discoveryDialog), new LinearLayout.LayoutParams(0, dp(40), 1));
         toolbar.addView(icon(android.R.drawable.ic_menu_save, "抓取选中帖子", () -> {
             if (selectedPosts.isEmpty()) { error(new IllegalStateException("请先选择帖子")); return; }
             filterDialog(() -> { try { JSONArray tasks = new JSONArray(); for (String id : selectedPosts)
@@ -302,7 +302,7 @@ public final class CollectorPanel {
     private void users() throws Exception {
         JSONObject data = api("users", new JSONObject(filters.toString()).put("offset", offset).put("limit", 30));
         LinearLayout toolbar = horizontal(); toolbar.setPadding(dp(12), 0, dp(8), 0);
-        toolbar.addView(text("用户 · " + data.getInt("total"), 16, true), new LinearLayout.LayoutParams(0, dp(48), 1));
+        toolbar.addView(text("用户 · " + data.getInt("total"), 16, true), new LinearLayout.LayoutParams(0, dp(40), 1));
         toolbar.addView(icon(android.R.drawable.ic_menu_edit, "补充选中用户资料", () -> profileTask(new JSONArray(selectedUsers))));
         toolbar.addView(icon(android.R.drawable.ic_menu_search, "筛选用户", this::filterDialog));
         toolbar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新用户", this::render)); body.addView(toolbar);
@@ -325,7 +325,7 @@ public final class CollectorPanel {
     }
     private void tasks() throws Exception {
         JSONObject data = api("tasks", new JSONObject()); LinearLayout bar = horizontal(); bar.setPadding(dp(12), dp(4), dp(8), dp(8));
-        bar.addView(primary("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(44), 1));
+        bar.addView(primary("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(40), 1));
         bar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新任务", this::render)); body.addView(bar);
         LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
         for (int i = 0; i < items.length(); i++) {
@@ -372,7 +372,7 @@ public final class CollectorPanel {
     }
     private void action(GridLayout parent, Button button) {
         GridLayout.LayoutParams params = new GridLayout.LayoutParams(); params.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
-        params.width = 0; params.height = dp(48); params.setMargins(dp(2), dp(2), dp(2), dp(2)); parent.addView(button, params);
+        params.width = 0; params.height = dp(36); params.setMargins(dp(2), dp(2), dp(2), dp(2)); parent.addView(button, params);
     }
     private void taskAction(String operation, long id) {
         try { api(operation, new JSONObject().put("taskId", id));
@@ -406,7 +406,7 @@ public final class CollectorPanel {
     }
     private void analysis() {
         LinearLayout commands = horizontal(); commands.setPadding(dp(12), 0, dp(8), 0);
-        commands.addView(primary("重新计算", this::render), new LinearLayout.LayoutParams(0, dp(48), 1));
+        commands.addView(primary("重新计算", this::render), new LinearLayout.LayoutParams(0, dp(40), 1));
         commands.addView(icon(android.R.drawable.ic_menu_search, "分析条件", this::filterDialog)); body.addView(commands);
         LinearLayout list = scrolling(); TextView pending = text("正在计算", 14, false); list.addView(pending);
         new Thread(() -> {
