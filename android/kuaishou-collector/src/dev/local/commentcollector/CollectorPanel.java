@@ -36,6 +36,7 @@ import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.RelativeLayout;
 import android.widget.ScrollView;
 import android.widget.Spinner;
 import android.widget.Switch;
@@ -64,6 +65,122 @@ public final class CollectorPanel {
     private static WeakReference<Dialog> open = new WeakReference<>(null);
     private static final String FLOATING_TAG = "comment_collector_fab";
     private static final String PILL_TAG = "comment_collector_pill";
+    private static final String SETTINGS_ENTRY_TAG = "comment_collector_douyin_settings_entry";
+
+    /** Injects a "comso 模块设置" row into Douyin's Settings screen right below the top module card (or at the top of the settings list). */
+    public static void attachDouyinSettingsEntry(Activity activity, Supplier<String> currentPhoto) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        String name = activity.getClass().getName();
+        if (!name.contains("DouYinSettingNewVersionActivity") && !name.contains("SettingActivity")) return;
+        Runnable inject = () -> {
+            try {
+                if (activity.isFinishing() || activity.isDestroyed()) return;
+                View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
+                if (!(decor instanceof ViewGroup) || decor.findViewWithTag(SETTINGS_ENTRY_TAG) != null) return;
+                int[] indexOut = {0};
+                LinearLayout container = findDouyinSettingsContainer((ViewGroup) decor, indexOut);
+                if (container == null) return;
+                boolean dark = dark(activity);
+                float d = activity.getResources().getDisplayMetrics().density;
+                RelativeLayout card = new RelativeLayout(activity);
+                card.setTag(SETTINGS_ENTRY_TAG);
+                GradientDrawable bg = new GradientDrawable();
+                bg.setColor(dark ? 0xFF252630 : 0xFFFFFFFF);
+                bg.setCornerRadius(12 * d);
+                card.setBackground(bg);
+                int padH = Math.round(16 * d);
+                card.setPadding(padH, 0, padH, 0);
+
+                M3.Scheme sc = M3.scheme(activity, dark);
+                ImageView icon = new ImageView(activity);
+                icon.setId(0x7f0f0101);
+                GradientDrawable iconBg = new GradientDrawable();
+                iconBg.setColor(sc.primaryContainer);
+                iconBg.setCornerRadius(10 * d);
+                icon.setBackground(iconBg);
+                icon.setScaleType(ImageView.ScaleType.CENTER);
+                icon.setImageDrawable(new M3.IconDrawable(M3.Icon.CHAT, sc.onPrimaryContainer));
+                int iconSize = Math.round(24 * d);
+                RelativeLayout.LayoutParams iconLp = new RelativeLayout.LayoutParams(iconSize, iconSize);
+                iconLp.addRule(RelativeLayout.ALIGN_PARENT_START);
+                iconLp.addRule(RelativeLayout.CENTER_VERTICAL);
+                card.addView(icon, iconLp);
+
+                TextView label = new TextView(activity);
+                label.setText("comso 模块设置");
+                label.setTextSize(16);
+                label.setTextColor(dark ? Color.WHITE : 0xFF161823);
+                RelativeLayout.LayoutParams labelLp = new RelativeLayout.LayoutParams(-2, -2);
+                labelLp.addRule(RelativeLayout.END_OF, icon.getId());
+                labelLp.addRule(RelativeLayout.CENTER_VERTICAL);
+                labelLp.leftMargin = Math.round(12 * d);
+                card.addView(label, labelLp);
+
+                TextView chevron = new TextView(activity);
+                chevron.setText("›");
+                chevron.setTextSize(20);
+                chevron.setTextColor(dark ? 0x80FFFFFF : 0x80161823);
+                RelativeLayout.LayoutParams chevLp = new RelativeLayout.LayoutParams(-2, -2);
+                chevLp.addRule(RelativeLayout.ALIGN_PARENT_END);
+                chevLp.addRule(RelativeLayout.CENTER_VERTICAL);
+                card.addView(chevron, chevLp);
+
+                card.setOnClickListener(v -> showVideoInfoSettings(activity, currentPhoto));
+                card.setOnLongClickListener(v -> { showSettings(activity, currentPhoto); return true; });
+                Motion.press(card);
+
+                int insertIndex = Math.max(0, Math.min(container.getChildCount(), indexOut[0]));
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Math.round(54 * d));
+                int marginH = Math.round(16 * d);
+                lp.setMargins(marginH, Math.round(10 * d), marginH, 0);
+                container.addView(card, insertIndex, lp);
+            } catch (Throwable ignored) {}
+        };
+        inject.run();
+        Handler h = new Handler(Looper.getMainLooper());
+        h.postDelayed(inject, 150);
+        h.postDelayed(inject, 400);
+        h.postDelayed(inject, 900);
+    }
+
+    private static LinearLayout findDouyinSettingsContainer(ViewGroup root, int[] indexOut) {
+        TextView anchor = findTextViewByText(root, "账号");
+        boolean afterAnchor = false;
+        if (anchor == null) { anchor = findTextViewByText(root, "模块设置"); afterAnchor = true; }
+        if (anchor == null) { anchor = findTextViewByText(root, "账号与安全"); }
+        if (anchor == null) { anchor = findTextViewByText(root, "通用"); }
+        if (anchor != null) {
+            View curr = anchor;
+            while (curr.getParent() instanceof View) {
+                View parent = (View) curr.getParent();
+                if (parent instanceof LinearLayout) {
+                    LinearLayout ll = (LinearLayout) parent;
+                    if (ll.getOrientation() == LinearLayout.VERTICAL && ll.getChildCount() >= 3 && ll.getWidth() >= root.getWidth() / 2) {
+                        int idx = ll.indexOfChild(curr);
+                        indexOut[0] = afterAnchor ? idx + 1 : Math.max(0, idx);
+                        return ll;
+                    }
+                }
+                curr = parent;
+            }
+        }
+        return null;
+    }
+
+    private static TextView findTextViewByText(View view, String target) {
+        if (view instanceof TextView) {
+            CharSequence cs = ((TextView) view).getText();
+            if (cs != null && target.equals(cs.toString().trim())) return (TextView) view;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                TextView found = findTextViewByText(group.getChildAt(i), target);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
     private static final int R_FLAGS = 0x7f0f0002; // view tag key for the capsule state flags
     private static final int R_SHAPES = 0x7f0f0001; // view tag key for the capsule re-shape callback
     private static final int PAGE_COLLECT = 0, PAGE_DATA = 1, PAGE_ANALYSIS = 2, PAGE_ME = 3;
@@ -211,10 +328,18 @@ public final class CollectorPanel {
         });
         shapes.run();
         button.setTranslationX(-hidden); button.setAlpha(.72f);
+        if (!VideoInfoSettings.enabled(VideoInfoSettings.current(activity), "floating_button")) button.setVisibility(View.GONE);
         ((FrameLayout) decor).addView(pill, pillParams);
         ((FrameLayout) decor).addView(button, params);
         place.run();
         startPillUpdates(activity, pill);
+    }
+
+    private static void syncFloatingButtonVisibility(Activity activity, boolean visible) {
+        if (activity == null || activity.getWindow() == null) return;
+        View decor = activity.getWindow().getDecorView();
+        View fab = decor == null ? null : decor.findViewWithTag(FLOATING_TAG);
+        if (fab != null) fab.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
     /** Polls task status off the main thread and shows "采集中 120/450" next to the button while a task is active. */
@@ -235,8 +360,11 @@ public final class CollectorPanel {
                         main.post(() -> {
                             busy.set(false);
                             // Keep the screen on only while a task is active; collection needs the app in front and lit.
-                            if (text != null) activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                            else activity.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                            int winFlags = activity.getWindow().getAttributes().flags;
+                            boolean keepOn = (winFlags & android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0;
+                            if (text != null && !keepOn) activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                            else if (text == null && keepOn) activity.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                            syncFloatingButtonVisibility(activity, VideoInfoSettings.enabled(VideoInfoSettings.current(activity), "floating_button"));
                             boolean[] flags = pillFlags(pill);
                             flags[1] = text != null;
                             if (text != null && !text.contentEquals(pill.getText())) pill.setText(text);
@@ -290,13 +418,25 @@ public final class CollectorPanel {
     }
 
     public static void showVideoInfoSettings(Activity activity) {
+        showVideoInfoSettings(activity, () -> "");
+    }
+
+    public static void showVideoInfoSettings(Activity activity, Supplier<String> currentPhoto) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
-        CollectorPanel panel = new CollectorPanel(activity, () -> "", () -> {});
+        CollectorPanel panel = new CollectorPanel(activity, currentPhoto == null ? () -> "" : currentPhoto, () -> {});
         panel.videoInfoSettings();
     }
 
-    /** Opens the panel as a bottom sheet over the current Kuaishou screen. */
+    /** Opens the panel as a bottom sheet over the current screen. */
     public static void show(Activity activity, Supplier<String> currentPhoto) {
+        show(activity, currentPhoto, PAGE_COLLECT);
+    }
+
+    public static void showSettings(Activity activity, Supplier<String> currentPhoto) {
+        show(activity, currentPhoto, PAGE_ME);
+    }
+
+    public static void show(Activity activity, Supplier<String> currentPhoto, int initialPage) {
         if (showing()) return;
         Dialog stale = open.get(); if (stale != null) stale.dismiss(); open.clear();
         FrameLayout frame = new FrameLayout(activity);
@@ -313,7 +453,7 @@ public final class CollectorPanel {
             }
         };
         dialog.setOwnerActivity(activity);
-        CollectorPanel panel = new CollectorPanel(activity, currentPhoto, dialog::dismiss);
+        CollectorPanel panel = new CollectorPanel(activity, currentPhoto, dialog::dismiss, initialPage);
         sheetRef[0] = panel.root;
         int height = (int) (activity.getResources().getDisplayMetrics().heightPixels * .9f);
         panel.root.setBackground(panel.topRounded(panel.surface, 28));
@@ -352,7 +492,11 @@ public final class CollectorPanel {
     private View grip;
 
     private CollectorPanel(Activity activity, Supplier<String> photo, Runnable close) {
-        this.activity = activity; this.photo = photo; this.closePanel = close;
+        this(activity, photo, close, PAGE_COLLECT);
+    }
+
+    private CollectorPanel(Activity activity, Supplier<String> photo, Runnable close, int initialPage) {
+        this.activity = activity; this.photo = photo; this.closePanel = close; this.page = initialPage;
         boolean dark = dark(activity);
         darkModeAtCreate = dark;
         uiContext = new ContextThemeWrapper(activity, dark ? android.R.style.Theme_DeviceDefault_NoActionBar : android.R.style.Theme_DeviceDefault_Light_NoActionBar);
@@ -1194,10 +1338,10 @@ public final class CollectorPanel {
     private void videoInfoSettings() {
         JSONObject saved = VideoInfoSettings.load(activity);
         LinearLayout fields = vertical(); fields.setPadding(dp(20), 0, dp(20), dp(12));
-        TextView note = text("控制帖子正文界面双击后弹出的作品信息。作品带 POI 时显示具体地点，否则显示作品 IP 属地（快手只提供到省）。", 13, false);
+        TextView note = text("控制 comso 模块悬浮按钮与双击作品信息面板的显示项。", 13, false);
         note.setTextColor(secondary); note.setPadding(0, 0, 0, dp(10)); fields.addView(note);
-        String[] keys = {"location", "publish_time", "duration", "statistics", "video", "cover", "current_image", "music", "description", "copy_description"};
-        String[] labels = {"发布地址", "发布时间", "视频时长", "点赞 / 评论 / 收藏 / 分享", "下载视频 / 图片", "封面图片", "当前图片（暂未支持）", "音乐信息与下载", "视频文案", "复制文案按钮"};
+        String[] keys = {"floating_button", "double_tap_info", "location", "publish_time", "duration", "statistics", "video", "cover", "current_image", "music", "description", "copy_description"};
+        String[] labels = {"显示侧边悬浮采集按钮", "双击作品弹出信息面板", "发布地址 / IP 属地", "发布时间", "视频时长", "点赞 / 评论 / 收藏 / 分享", "下载视频 / 图片", "封面图片", "当前图片（暂未支持）", "音乐信息与下载", "作品文案", "复制文案按钮"};
         Switch[] switches = new Switch[keys.length];
         for (int i = 0; i < keys.length; i++) {
             Switch toggle = new Switch(uiContext); toggle.setText(labels[i]); toggle.setTextSize(15); toggle.setTextColor(foreground);
@@ -1211,7 +1355,7 @@ public final class CollectorPanel {
         EditText timeFormat = input("时间格式，例如 yyyy-MM-dd HH:mm:ss", saved.optString("time_format", "yyyy-MM-dd HH:mm:ss"), false);
         fields.addView(timeFormat);
         ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
-        alert().setTitle("视频信息设置").setView(scroll).setNegativeButton("取消", null).setPositiveButton("保存", (dialog, which) -> {
+        alert().setTitle("comso 模块设置").setView(scroll).setNegativeButton("取消", null).setNeutralButton("打开采集面板", (dialog, which) -> show(activity, photo, PAGE_COLLECT)).setPositiveButton("保存", (dialog, which) -> {
             try {
                 JSONObject value = VideoInfoSettings.defaults();
                 for (int i = 0; i < keys.length; i++) value.put(keys[i], switches[i].isChecked());
@@ -1219,7 +1363,8 @@ public final class CollectorPanel {
                 String format = timeFormat.getText().toString().trim();
                 if (!format.isEmpty()) value.put("time_format", format);
                 VideoInfoSettings.save(activity, value);
-                Toast.makeText(activity, "视频信息设置已保存", Toast.LENGTH_SHORT).show();
+                syncFloatingButtonVisibility(activity, value.optBoolean("floating_button", true));
+                Toast.makeText(activity, "模块设置已保存", Toast.LENGTH_SHORT).show();
             } catch (Exception error) { error(error); }
         }).show();
     }

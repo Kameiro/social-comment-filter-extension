@@ -217,7 +217,7 @@ final class DouyinHooks {
         synchronized (this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
         comments.startReplyDriver();
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
-            @Override public void onActivityResumed(Activity value) { activity = value; Log.i(TAG, "douyin_resumed " + value.getClass().getSimpleName() + " loader=" + (hostLoader != null)); if (hostLoader != null) new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start(); if (comments != null) comments.ensurePaging(); CollectorPanel.attach(value, () -> lastPostId); }
+            @Override public void onActivityResumed(Activity value) { activity = value; Log.i(TAG, "douyin_resumed " + value.getClass().getSimpleName() + " loader=" + (hostLoader != null)); if (hostLoader != null) new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start(); if (comments != null) comments.ensurePaging(); CollectorPanel.attach(value, () -> lastPostId); CollectorPanel.attachDouyinSettingsEntry(value, () -> lastPostId); }
             @Override public void onActivityPaused(Activity value) { if (activity == value) activity = null; }
             @Override public void onActivityCreated(Activity value, Bundle state) { if (detector != null) detector.hook(value.getClass()); }
             @Override public void onActivityStarted(Activity value) {}

@@ -44,6 +44,7 @@ final class PostInfoPanel {
 
     static void show(Activity activity, JSONObject source, JSONObject settings) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed() || source == null) return;
+        if (!VideoInfoSettings.enabled(settings, "double_tap_info")) return;
         if (open != null && open.isShowing()) return;
         JSONObject post;
         try { post = new JSONObject(source.toString()); }

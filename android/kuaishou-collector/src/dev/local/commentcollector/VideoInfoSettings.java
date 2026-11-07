@@ -12,6 +12,8 @@ final class VideoInfoSettings {
     static JSONObject defaults() {
         try {
             return new JSONObject()
+                .put("floating_button", true)
+                .put("double_tap_info", true)
                 .put("location", true)
                 .put("publish_time", true)
                 .put("duration", true)
