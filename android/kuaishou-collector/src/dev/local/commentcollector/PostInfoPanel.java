@@ -74,7 +74,9 @@ final class PostInfoPanel {
         android.view.View bar = new android.view.View(activity); bar.setBackground(round(M3.mix(S.onSurfaceVariant, S.surfaceContainerLow, .6f), dp(activity, 2), false));
         handle.addView(bar, new android.widget.FrameLayout.LayoutParams(dp(activity, 32), dp(activity, 4), Gravity.CENTER));
         sheet.addView(handle, new LinearLayout.LayoutParams(-1, dp(activity, 24)));
-        TextView title = M3.type(text(activity, "视频信息", M3.HEADLINE_SMALL, false, S.onSurface), M3.HEADLINE_SMALL, false, S.onSurface);
+        org.json.JSONArray titleImages = post.optJSONArray("imageUrls");
+        boolean imagePost = post.optString("videoUrl", "").isEmpty() && titleImages != null && titleImages.length() > 0;
+        TextView title = M3.type(text(activity, imagePost ? "图文信息" : "视频信息", M3.HEADLINE_SMALL, false, S.onSurface), M3.HEADLINE_SMALL, false, S.onSurface);
         title.setPadding(dp(activity, 4), dp(activity, 4), 0, dp(activity, 12)); sheet.addView(title);
         if (!centered) { Motion.dragToDismiss(handle, sheet, scrim, DIM, dialog::dismiss); Motion.dragToDismiss(title, sheet, scrim, DIM, dialog::dismiss); }
 
@@ -90,7 +92,7 @@ final class PostInfoPanel {
         addRow(activity, content, "发布账号", empty(author) ? "未知" : author);
         if (VideoInfoSettings.enabled(settings, "location")) addRow(activity, content, "发布地点", empty(location) ? "未提供" : location);
         if (VideoInfoSettings.enabled(settings, "publish_time")) addRow(activity, content, "发布时间", formatDate(created, settings));
-        if (VideoInfoSettings.enabled(settings, "duration")) addRow(activity, content, "视频时长", formatDuration(duration));
+        if (!imagePost && VideoInfoSettings.enabled(settings, "duration")) addRow(activity, content, "视频时长", formatDuration(duration));
         if (VideoInfoSettings.enabled(settings, "music") && !music.isEmpty()) addRow(activity, content, "音乐信息", music);
 
         if (VideoInfoSettings.enabled(settings, "statistics")) {
