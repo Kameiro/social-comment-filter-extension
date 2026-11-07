@@ -14,7 +14,7 @@ final class XhsMapper {
 
     static JSONObject post(Object note) throws Exception {
         if (note == null) return null;
-        String id = ModelReader.text(note, "id", "noteId");
+        String id = ModelReader.text(note, "id", "noteId", "sourceNoteId");
         if (id.isEmpty()) return null;
         JSONObject out = new JSONObject().put("platform", "xhs").put("postId", id)
             .put("url", "https://www.xiaohongshu.com/explore/" + id).put("snapshotAt", System.currentTimeMillis()).put("source", "xhs_android.NoteFeed");

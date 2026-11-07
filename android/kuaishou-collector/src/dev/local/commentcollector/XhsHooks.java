@@ -94,14 +94,14 @@ final class XhsHooks {
             }
             if (!isDetailActivity(host)) { Log.i(TAG, "xhs_double_tap_ignored non_detail_activity"); return false; }
             if (isCommentLayer(host, x, y)) { Log.i(TAG, "xhs_double_tap_ignored comment_layer"); return true; }
-            Object note = resolver.resolveActivity(host);
+            Object note = resolver.resolveActivity(host, x, y);
             if (note == null) {
                 WeakReference<Object> ref = detailNote;
                 note = ref == null || System.currentTimeMillis() - detailNoteAt > 2_000 ? null : ref.get();
             }
             if (note == null) { Log.i(TAG, "xhs_double_tap_no_note"); return false; }
             JSONObject post = XhsMapper.post(note);
-            if (post == null) return false;
+            if (post == null) { Log.i(TAG, "xhs_post_map_empty id=" + ModelReader.text(note, "id", "noteId", "sourceNoteId")); return false; }
             Log.i(TAG, "post_info_triggered platform=xhs post=" + post.optString("postId"));
             JSONObject settings = VideoInfoSettings.current(host);
             main.post(() -> PostInfoPanel.show(host, post, settings));
@@ -131,6 +131,16 @@ final class XhsHooks {
             });
             Log.i(TAG, "xhs_detail_hook_installed model=pfa.c method=f");
         } catch (Throwable error) { Log.w(TAG, "xhs_detail_args_hook_unavailable", error); }
+        try {
+            Class<?> publisher = loader.loadClass("com.xingin.matrix.detail.page.ItemVisibilityStatePublisher");
+            Method current = publisher.getDeclaredMethod("k", int.class);
+            xposed.hook(current).intercept(chain -> {
+                Object result = chain.proceed();
+                rememberDetail(result, "visibility.k");
+                return result;
+            });
+            Log.i(TAG, "xhs_detail_hook_installed model=ItemVisibilityStatePublisher method=k");
+        } catch (Throwable error) { Log.w(TAG, "xhs_visibility_hook_unavailable", error); }
     }
 
     private void hookCommentDialogs() {
@@ -197,7 +207,10 @@ final class XhsHooks {
     }
 
     private static boolean isDetailActivity(Activity host) {
-        return host != null && host.getClass().getName().contains("com.xingin.matrix.notedetail.NoteDetailActivity");
+        if (host == null) return false;
+        String name = host.getClass().getName();
+        return name.contains("com.xingin.matrix.notedetail.NoteDetailActivity")
+            || name.contains("com.xingin.matrix.detail.activity.DetailFeedActivity");
     }
 
     private static boolean isCommentActivity(Activity host) {

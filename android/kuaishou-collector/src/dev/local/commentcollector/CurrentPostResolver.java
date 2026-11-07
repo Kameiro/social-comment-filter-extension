@@ -7,6 +7,7 @@ import android.util.Log;
 import android.view.View;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -110,11 +111,25 @@ final class CurrentPostResolver {
 
     /** Finds the NoteFeed held by XHS's NoteDetailActivity/repository object graph. */
     Object resolveActivity(Activity activity) {
+        return resolveActivity(activity, -1, -1);
+    }
+
+    Object resolveActivity(Activity activity, float rawX, float rawY) {
         Class<?> photo = photoType;
         if (activity == null || photo == null) return null;
         String name = activity.getClass().getName();
-        if (!name.contains("com.xingin.matrix.notedetail.NoteDetailActivity")) return null;
-        Object found = find(activity, photo, 6);
+        if (!name.contains("com.xingin.matrix.notedetail.NoteDetailActivity")
+            && !name.contains("com.xingin.matrix.detail.activity.DetailFeedActivity")) return null;
+        Object found = null;
+        if (rawX >= 0 && rawY >= 0 && activity.getWindow() != null) {
+            View touched = deepestView(activity.getWindow().getDecorView(), rawX, rawY);
+            for (View current = touched; current != null && found == null; ) {
+                found = findPreferId(current, photo, 6);
+                Object parent = current.getParent();
+                current = parent instanceof View ? (View) parent : null;
+            }
+        }
+        if (found == null) found = findPreferId(activity, photo, 8);
         if (found != null) Log.i(TAG, "current_post_resolved source=xhs_detail_activity");
         return found;
     }
@@ -143,6 +158,8 @@ final class CurrentPostResolver {
                 Object value;
                 try { value = field.get(object); } catch (Throwable ignored) { continue; }
                 if (value == null) continue;
+                Object lazyValue = unwrapLazy(value);
+                if (lazyValue != value) value = lazyValue;
                 if (photo.isInstance(value)) return value;
                 if (level + 1 >= maxDepth || visited.contains(value) || !traversable(value)) continue;
                 visited.add(value);
@@ -150,6 +167,54 @@ final class CurrentPostResolver {
             }
         }
         return null;
+    }
+
+    private Object findPreferId(Object root, Class<?> photo, int maxDepth) {
+        Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayDeque<Object[]> queue = new ArrayDeque<>();
+        queue.add(new Object[]{root, 0}); visited.add(root);
+        Object first = null;
+        int nodes = 0;
+        while (!queue.isEmpty() && nodes++ < MAX_NODES) {
+            Object[] item = queue.poll(); Object object = item[0]; int level = (Integer) item[1];
+            for (Field field : fields(object.getClass())) {
+                Object value;
+                try { value = field.get(object); } catch (Throwable ignored) { continue; }
+                if (value == null) continue;
+                Object lazyValue = unwrapLazy(value); if (lazyValue != value) value = lazyValue;
+                if (photo.isInstance(value)) {
+                    if (first == null) first = value;
+                    if (!ModelReader.text(value, "id", "noteId", "sourceNoteId").isEmpty()) return value;
+                    continue;
+                }
+                if (level + 1 >= maxDepth || visited.contains(value) || !traversable(value)) continue;
+                visited.add(value); queue.add(new Object[]{value, level + 1});
+            }
+        }
+        return first;
+    }
+
+    private static View deepestView(View root, float x, float y) {
+        if (root == null || root.getVisibility() != View.VISIBLE || !root.isShown()) return null;
+        int[] at = new int[2]; root.getLocationOnScreen(at);
+        if (x < at[0] || y < at[1] || x >= at[0] + root.getWidth() || y >= at[1] + root.getHeight()) return null;
+        if (root instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) root;
+            for (int i = group.getChildCount() - 1; i >= 0; i--) {
+                View found = deepestView(group.getChildAt(i), x, y);
+                if (found != null) return found;
+            }
+        }
+        return root;
+    }
+
+    private static Object unwrapLazy(Object value) {
+        if (value == null || !value.getClass().getName().startsWith("kotlin.")) return value;
+        try {
+            Method getValue = value.getClass().getMethod("getValue");
+            Object result = getValue.invoke(value);
+            return result == null ? value : result;
+        } catch (Throwable ignored) { return value; }
     }
 
     private boolean traversable(Object value) {
