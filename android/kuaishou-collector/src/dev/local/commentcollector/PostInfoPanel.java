@@ -174,9 +174,13 @@ final class PostInfoPanel {
         dialog.setContentView(root); dialog.setOnDismissListener(value -> { if (open == dialog) open = null; });
         Motion.pressAll(actions);
         Motion.stagger(content, 120);
-        dialog.show(); open = dialog;
+        // Configure the window before show() so its surface is created translucent from the first frame.
         Window window = dialog.getWindow();
         if (window != null) {
+            // The dark Material theme gives the window an opaque surface. Full-screen, its transparent
+            // areas then show black plus stale pixels from earlier frames (the ghosting seen on close).
+            // A translucent surface composites the scrim and sheet over the live video instead.
+            window.setFormat(android.graphics.PixelFormat.TRANSLUCENT);
             window.setBackgroundDrawableResource(android.R.color.transparent);
             window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             window.setWindowAnimations(0);
@@ -185,6 +189,7 @@ final class PostInfoPanel {
             window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
             Motion.highRefreshRate(activity, window);
         }
+        dialog.show(); open = dialog;
         Motion.enter(sheet, scrim, centered, DIM);
     }
 
