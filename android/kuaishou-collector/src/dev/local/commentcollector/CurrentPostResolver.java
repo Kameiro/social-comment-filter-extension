@@ -108,6 +108,17 @@ final class CurrentPostResolver {
         return null;
     }
 
+    /** Finds the NoteFeed held by XHS's NoteDetailActivity/repository object graph. */
+    Object resolveActivity(Activity activity) {
+        Class<?> photo = photoType;
+        if (activity == null || photo == null) return null;
+        String name = activity.getClass().getName();
+        if (!name.contains("com.xingin.matrix.notedetail.NoteDetailActivity")) return null;
+        Object found = find(activity, photo, 6);
+        if (found != null) Log.i(TAG, "current_post_resolved source=xhs_detail_activity");
+        return found;
+    }
+
     private static int depth(View view) {
         int depth = 0;
         for (Object parent = view.getParent(); parent instanceof View; parent = ((View) parent).getParent()) depth++;
@@ -115,6 +126,10 @@ final class CurrentPostResolver {
     }
 
     private Object find(Object root, Class<?> photo) {
+        return find(root, photo, MAX_DEPTH);
+    }
+
+    private Object find(Object root, Class<?> photo, int maxDepth) {
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         ArrayDeque<Object[]> queue = new ArrayDeque<>();
         queue.add(new Object[]{root, 0});
@@ -129,7 +144,7 @@ final class CurrentPostResolver {
                 try { value = field.get(object); } catch (Throwable ignored) { continue; }
                 if (value == null) continue;
                 if (photo.isInstance(value)) return value;
-                if (level + 1 >= MAX_DEPTH || visited.contains(value) || !traversable(value)) continue;
+                if (level + 1 >= maxDepth || visited.contains(value) || !traversable(value)) continue;
                 visited.add(value);
                 queue.add(new Object[]{value, level + 1});
             }

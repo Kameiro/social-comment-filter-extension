@@ -2,16 +2,20 @@ package dev.local.commentcollector;
 
 import android.app.Activity;
 import android.app.Application;
+import android.app.Dialog;
 import android.app.Instrumentation;
 import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.View;
+import android.view.MotionEvent;
 import io.github.libxposed.api.XposedInterface;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.WeakHashMap;
 import org.json.JSONObject;
 
 /**
@@ -28,10 +32,13 @@ final class XhsHooks {
     private volatile Activity activity;
     private volatile WeakReference<Object> lastNote;
     private volatile long lastNoteAt;
+    private volatile WeakReference<Object> detailNote;
+    private volatile long detailNoteAt;
     private final WeakIdentityMap<Boolean> recorded = new WeakIdentityMap<>();
     private final CurrentPostResolver resolver = new CurrentPostResolver();
     private DoubleTapDetector detector;
     private XhsComments comments;
+    private final WeakHashMap<Dialog, DialogTapState> commentDialogTaps = new WeakHashMap<>();
 
     XhsHooks(XposedInterface xposed) { this.xposed = xposed; }
 
@@ -58,11 +65,13 @@ final class XhsHooks {
             } catch (NoSuchMethodException ignored) {}
             Log.i(TAG, "xhs_note_getters_hooked=" + hooked);
         } catch (Throwable error) { Log.w(TAG, "xhs_note_hook_unavailable", error); }
+        hookDetailModels(loader);
         detector = new DoubleTapDetector(xposed, new DoubleTapDetector.Handler() {
             @Override public Activity activity() { return activity; }
             @Override public boolean onDoubleTap(Activity host, float x, float y) { return showPost(host, x, y); }
         });
         detector.install();
+        hookCommentDialogs();
         comments = new XhsComments(xposed, loader, () -> context, this::currentPostId);
         comments.install();
         Log.i(TAG, "xhs_hooks_installed");
@@ -70,8 +79,8 @@ final class XhsHooks {
 
     private String currentPostId() {
         try {
-            WeakReference<Object> ref = lastNote;
-            Object note = ref == null || System.currentTimeMillis() - lastNoteAt > 60_000 ? null : ref.get();
+            WeakReference<Object> ref = detailNote;
+            Object note = ref == null || System.currentTimeMillis() - detailNoteAt > 30_000 ? null : ref.get();
             JSONObject post = XhsMapper.post(note);
             return post == null ? "" : post.optString("postId");
         } catch (Throwable ignored) { return ""; }
@@ -79,8 +88,17 @@ final class XhsHooks {
 
     private boolean showPost(Activity host, float x, float y) {
         try {
-            Object note = resolver.resolve(host, x, y, null);
-            if (note == null) { WeakReference<Object> ref = lastNote; note = ref == null || System.currentTimeMillis() - lastNoteAt > 60_000 ? null : ref.get(); }
+            if (isCommentActivity(host)) {
+                Log.i(TAG, "xhs_comment_double_tap_suppressed");
+                return true;
+            }
+            if (!isDetailActivity(host)) { Log.i(TAG, "xhs_double_tap_ignored non_detail_activity"); return false; }
+            if (isCommentLayer(host, x, y)) { Log.i(TAG, "xhs_double_tap_ignored comment_layer"); return true; }
+            Object note = resolver.resolveActivity(host);
+            if (note == null) {
+                WeakReference<Object> ref = detailNote;
+                note = ref == null || System.currentTimeMillis() - detailNoteAt > 2_000 ? null : ref.get();
+            }
             if (note == null) { Log.i(TAG, "xhs_double_tap_no_note"); return false; }
             JSONObject post = XhsMapper.post(note);
             if (post == null) return false;
@@ -89,6 +107,131 @@ final class XhsHooks {
             main.post(() -> PostInfoPanel.show(host, post, settings));
             return true;
         } catch (Throwable error) { Log.w(TAG, "xhs_post_map_failed", error); return false; }
+    }
+
+    private void hookDetailModels(ClassLoader loader) {
+        try {
+            Class<?> repository = loader.loadClass("com.xingin.matrix.notedetail.v3.repo.NoteDetailRepository");
+            Method current = repository.getDeclaredMethod("d");
+            xposed.hook(current).intercept(chain -> {
+                Object result = chain.proceed();
+                rememberDetail(result, "repository.d");
+                return result;
+            });
+            Log.i(TAG, "xhs_detail_hook_installed model=NoteDetailRepository method=d");
+        } catch (Throwable error) { Log.w(TAG, "xhs_detail_hook_unavailable", error); }
+        try {
+            Class<?> args = loader.loadClass("pfa.c");
+            Class<?> item = loader.loadClass("com.xingin.entities.NoteItemBean");
+            Method current = args.getDeclaredMethod("f", item);
+            xposed.hook(current).intercept(chain -> {
+                Object result = chain.proceed();
+                rememberDetail(result, "detail_args.f");
+                return result;
+            });
+            Log.i(TAG, "xhs_detail_hook_installed model=pfa.c method=f");
+        } catch (Throwable error) { Log.w(TAG, "xhs_detail_args_hook_unavailable", error); }
+    }
+
+    private void hookCommentDialogs() {
+        try {
+            Method dispatch = Dialog.class.getDeclaredMethod("dispatchTouchEvent", MotionEvent.class);
+            xposed.hook(dispatch).intercept(chain -> {
+                Dialog dialog = (Dialog) chain.getThisObject();
+                MotionEvent event = (MotionEvent) chain.getArg(0);
+                if (isCommentDialog(dialog) && suppressCommentDoubleTap(dialog, event)) return true;
+                return chain.proceed();
+            });
+            Log.i(TAG, "xhs_comment_dialog_hook_installed");
+        } catch (Throwable error) { Log.w(TAG, "xhs_comment_dialog_hook_unavailable", error); }
+    }
+
+    private boolean suppressCommentDoubleTap(Dialog dialog, MotionEvent event) {
+        if (event == null) return false;
+        long now = event.getEventTime();
+        DialogTapState state;
+        synchronized (commentDialogTaps) {
+            state = commentDialogTaps.get(dialog);
+            if (state == null) { state = new DialogTapState(); commentDialogTaps.put(dialog, state); }
+        }
+        int action = event.getActionMasked();
+        if (state.consuming) {
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) state.consuming = false;
+            return true;
+        }
+        if (action == MotionEvent.ACTION_DOWN) {
+            float density = dialog.getContext().getResources().getDisplayMetrics().density;
+            boolean second = state.lastUp > 0 && now - state.lastUp < 320
+                && Math.hypot(event.getX() - state.lastX, event.getY() - state.lastY) < 47 * density;
+            state.downAt = now; state.downX = event.getX(); state.downY = event.getY();
+            if (second) {
+                state.lastUp = 0; state.consuming = true;
+                Log.i(TAG, "xhs_comment_double_tap_suppressed");
+                return true;
+            }
+        } else if (action == MotionEvent.ACTION_UP) {
+            boolean tap = now - state.downAt < 220 && Math.hypot(event.getX() - state.downX, event.getY() - state.downY) < 40;
+            state.lastUp = tap ? now : 0; state.lastX = event.getX(); state.lastY = event.getY();
+        }
+        return false;
+    }
+
+    private static boolean isCommentDialog(Dialog dialog) {
+        if (dialog == null) return false;
+        String name = dialog.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+        return name.contains("comment") && name.contains("dialog");
+    }
+
+    private static final class DialogTapState {
+        long lastUp, downAt;
+        float lastX, lastY, downX, downY;
+        boolean consuming;
+    }
+
+    private void rememberDetail(Object note, String source) {
+        if (note == null || !XhsMapper.NOTE_CLASS.equals(note.getClass().getName())) return;
+        detailNote = new WeakReference<>(note);
+        detailNoteAt = System.currentTimeMillis();
+        Log.i(TAG, "xhs_current_note source=" + source + " id=" + ModelReader.text(note, "id"));
+        remember(note);
+    }
+
+    private static boolean isDetailActivity(Activity host) {
+        return host != null && host.getClass().getName().contains("com.xingin.matrix.notedetail.NoteDetailActivity");
+    }
+
+    private static boolean isCommentActivity(Activity host) {
+        return host != null && host.getClass().getName().contains("com.xingin.comment.input.ui.NoteCommentActivity");
+    }
+
+    private static boolean isCommentLayer(Activity host, float x, float y) {
+        if (host == null || host.getWindow() == null) return false;
+        View view = deepestView(host.getWindow().getDecorView(), x, y);
+        for (View current = view; current != null; ) {
+            String name = current.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+            CharSequence description = current.getContentDescription();
+            String text = description == null ? "" : description.toString().toLowerCase(java.util.Locale.ROOT);
+            if (name.contains("comment") || name.contains("reply") || name.contains("input") || name.contains("bottomsheet")
+                || name.contains("dialog") || current instanceof android.widget.EditText
+                || text.contains("评论") || text.contains("回复")) return true;
+            Object parent = current.getParent();
+            current = parent instanceof View ? (View) parent : null;
+        }
+        return false;
+    }
+
+    private static View deepestView(View root, float x, float y) {
+        if (root == null || root.getVisibility() != View.VISIBLE || !root.isShown()) return null;
+        int[] location = new int[2]; root.getLocationOnScreen(location);
+        if (x < location[0] || y < location[1] || x >= location[0] + root.getWidth() || y >= location[1] + root.getHeight()) return null;
+        if (root instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) root;
+            for (int i = group.getChildCount() - 1; i >= 0; i--) {
+                View found = deepestView(group.getChildAt(i), x, y);
+                if (found != null) return found;
+            }
+        }
+        return root;
     }
 
     private void remember(Object note) {

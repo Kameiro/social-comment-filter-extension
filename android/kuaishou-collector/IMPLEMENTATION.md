@@ -9,6 +9,7 @@
 - 抖音评论现场验证：打开当前作品评论页后，原生响应记录 `douyin_comment_list rows=20 post=7696705623878127793 more=true cursor=20 total=11571`；另一个回复页记录 3 条、`more=true`。因为当前数据库任务状态是 `discovery/paused`，模块按设计记录 `task_not_running` 并跳过任务落库。
 - 快手原生设置入口、作品信息双击和开关保存已复测；关闭“视频文案”后弹窗隐藏该行，恢复开关后默认显示恢复。
 - 小红书 9.51.0 已完成真机验证：`NoteFeed.F0()` 记录当前笔记；正文区域双击弹出作品信息面板，第二次点击被消费且点赞数未变化。`com.xingin.entities.q` 的 `CommentNoteCommentListData` 实测返回 10 条评论、`hasMore=true` 和 JSON 游标，滚动后捕获 `index=3` 折叠页及下一次 `UNFOLDED` 页。当前任务为暂停中的 discovery 任务，日志记录 `xhs_comment_skipped task_not_running`，因此本次只验收原生响应读取，未把该次数据计入评论任务。
+- 小红书双击错位修复：详情页通过 `NoteDetailRepository.d()` / `pfa.c.f()` 绑定当前 `NoteFeed`，不再使用预加载视频覆盖当前作品；评论层识别为安全拦截区，`NoteCommentActivity` 和详情页评论层的第二次点击直接消费，不打开回复输入框。图片帖正文双击仍显示当前图片帖信息。
 
 ## 2026-11-07 更新
 
