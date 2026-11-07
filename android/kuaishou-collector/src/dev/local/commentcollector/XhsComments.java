@@ -43,6 +43,9 @@ final class XhsComments {
             if (app == null) return;
             JSONObject page = XhsCommentMapper.page(response, currentPost.get());
             if (page == null) return;
+            JSONArray rows = page.getJSONArray("rows");
+            Log.i(TAG, "xhs_comment_list rows=" + rows.length() + " post=" + page.optString("photoId")
+                + " more=" + page.opt("hasMore") + " cursor=" + page.optString("cursor"));
             JSONObject task = CollectorClient.call(app, "status", new JSONObject());
             String status = task.optString("status");
             if (!"comment".equals(task.optString("kind")) || !status.startsWith("running")) {
@@ -54,12 +57,9 @@ final class XhsComments {
                 Log.i(TAG, "xhs_comment_skipped other_post task=" + wanted + " page=" + page.optString("photoId"));
                 return;
             }
-            JSONArray rows = page.getJSONArray("rows");
             String fingerprint = page.optString("cursor") + ":" + page.optString("photoId") + ":" + rows.length()
                 + ":" + firstId(rows) + ":" + task.optLong("taskId") + ":" + task.optLong("generation");
             synchronized (seen) { if (fingerprint.equals(seen.put(response, fingerprint))) return; }
-            Log.i(TAG, "xhs_comment_list rows=" + rows.length() + " post=" + page.optString("photoId")
-                + " more=" + page.opt("hasMore") + " cursor=" + page.optString("cursor"));
             Bundle args = new Bundle(); args.putString("page", page.toString());
             args.putLong("taskId", task.optLong("taskId")); args.putLong("generation", task.optLong("generation"));
             Bundle result = CollectorClient.callRaw(app, "append", args);

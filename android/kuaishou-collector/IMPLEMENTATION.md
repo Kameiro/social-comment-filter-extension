@@ -8,7 +8,7 @@
 - 抖音真机现场验证：`com.ss.android.ugc.aweme` 作用域已加载，双击视频触发 `douyin_double_tap aweme=true`，随后显示作品信息面板；作品地点为“云南 西双版纳傣族自治州”。
 - 抖音评论现场验证：打开当前作品评论页后，原生响应记录 `douyin_comment_list rows=20 post=7696705623878127793 more=true cursor=20 total=11571`；另一个回复页记录 3 条、`more=true`。因为当前数据库任务状态是 `discovery/paused`，模块按设计记录 `task_not_running` 并跳过任务落库。
 - 快手原生设置入口、作品信息双击和开关保存已复测；关闭“视频文案”后弹窗隐藏该行，恢复开关后默认显示恢复。
-- 小红书 9.51.0 静态分析确认：`NoteFeed.F0()` 是笔记 ID 访问器；`com.xingin.entities.q` 是 `CommentNoteCommentListData`，`comments/cursor/hasMore/commentCount` 与 `CommentCommentInfo` 的正文、用户、点赞、回复数、时间、IP 属地字段已接入。模块重开日志确认 `xhs_note_getters_hooked=1` 和 `xhs_comment_hook_installed`。当前设备处于锁屏，物理双击、评论页翻页和真实账号数据仍待解锁后验证。
+- 小红书 9.51.0 已完成真机验证：`NoteFeed.F0()` 记录当前笔记；正文区域双击弹出作品信息面板，第二次点击被消费且点赞数未变化。`com.xingin.entities.q` 的 `CommentNoteCommentListData` 实测返回 10 条评论、`hasMore=true` 和 JSON 游标，滚动后捕获 `index=3` 折叠页及下一次 `UNFOLDED` 页。当前任务为暂停中的 discovery 任务，日志记录 `xhs_comment_skipped task_not_running`，因此本次只验收原生响应读取，未把该次数据计入评论任务。
 
 ## 2026-11-07 更新
 
@@ -63,7 +63,7 @@
 
 ## 尚未包含
 
-浏览器数据库直接导入、正式商业授权/签名及付费系统。小红书评论物理端到端验收仍待在已登录且解锁的设备上完成。
+浏览器数据库直接导入、正式商业授权/签名及付费系统。小红书任务运行态筛选、落库和长时间自动续页仍需单独验收。
 App 不在前台时不自动翻页，不将“任务保存”表述为“关闭 App 后无限后台抓取”。
 平台验证、隐藏或不可访问资料由用户处理，不破解或绕过。
 
