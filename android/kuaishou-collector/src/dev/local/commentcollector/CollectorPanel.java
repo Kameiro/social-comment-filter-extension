@@ -1114,9 +1114,23 @@ public final class CollectorPanel {
     }
 
     private void taskAction(String operation, long id) {
-        try { api(operation, new JSONObject().put("taskId", id));
-            if (("resume".equals(operation) || "retry".equals(operation)) && showing()) open.get().dismiss(); else render(); }
-        catch (Exception error) { error(error); }
+        try {
+            JSONObject updated = api(operation, new JSONObject().put("taskId", id));
+            if (("resume".equals(operation) || "retry".equals(operation)) && "queued".equals(updated.optString("status"))) {
+                Toast.makeText(activity, "已加入排队，当前任务完成后自动续跑", Toast.LENGTH_SHORT).show();
+                render();
+                return;
+            }
+            if (("resume".equals(operation) || "retry".equals(operation)) && showing()) {
+                String targetPhoto = updated.optString("photoId");
+                String currentPhoto = photo.get() == null ? "" : photo.get();
+                if ("comment".equals(updated.optString("kind")) && !targetPhoto.isEmpty() && !targetPhoto.equals(currentPhoto)) {
+                    openPost(targetPhoto);
+                } else {
+                    open.get().dismiss();
+                }
+            } else render();
+        } catch (Exception error) { error(error); }
     }
 
     // ---------------------------------------------------------------- settings dialogs (unchanged behaviour)
@@ -1263,8 +1277,32 @@ public final class CollectorPanel {
         launch(scheme + Uri.encode(id));
     }
     private void launch(String url) {
-        try { if (showing()) open.get().dismiss(); activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(activity.getPackageName())); }
-        catch (Exception error) { error(error); }
+        try {
+            if (showing()) open.get().dismiss();
+            activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(activity.getPackageName()));
+            if ("douyin".equals(hostPlatform()) && url.startsWith("snssdk1128://aweme/detail/")) {
+                handler.postDelayed(() -> clickCommentButton(activity, 0), 2500);
+            }
+        } catch (Exception error) { error(error); }
+    }
+    private static void clickCommentButton(Activity host, int attempt) {
+        if (attempt > 6 || host == null || host.isFinishing()) return;
+        try {
+            View root = host.getWindow().getDecorView();
+            View btn = findCommentButton(root);
+            if (btn != null && btn.performClick()) return;
+        } catch (Throwable ignored) {}
+        new Handler(Looper.getMainLooper()).postDelayed(() -> clickCommentButton(host, attempt + 1), 1200);
+    }
+    private static View findCommentButton(View view) {
+        if (view == null || view.getVisibility() != View.VISIBLE) return null;
+        CharSequence description = view.getContentDescription();
+        if (description != null && description.toString().contains("评论") && !description.toString().contains("发表") && view.isClickable()) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) { View found = findCommentButton(group.getChildAt(i)); if (found != null) return found; }
+        }
+        return null;
     }
     /** Relaunches the collector process via its invisible WakeActivity, then reloads the panel. */
     private void wakeCollector() {

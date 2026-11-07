@@ -306,8 +306,7 @@ public final class CaptureProvider extends ContentProvider {
             }
             if (input.has("taskId") && !"start".equals(method) && !"append".equals(method)) {
                 long requested = input.getLong("taskId");
-                if (!"status".equals(method) && !"export".equals(method) && requested != id &&
-                    !(id == 0 && ("resume".equals(method) || "retry".equals(method))) &&
+                if (!"status".equals(method) && !"export".equals(method) && !"retry".equals(method) && !"resume".equals(method) && requested != id &&
                     !("stop".equals(method) && "queued".equals(status(requested).optString("status"))))
                     throw new IllegalStateException("任务已变化，请刷新状态");
                 id = requested;
@@ -412,7 +411,23 @@ public final class CaptureProvider extends ContentProvider {
                 JSONObject previous = status(id);
                 if ("resume".equals(method) && !Arrays.asList("paused", "stopped").contains(previous.optString("status")))
                     throw new IllegalStateException("任务不可继续");
-                if ("resume".equals(method)) db.execSQL("DELETE FROM settings WHERE name='platform_block'");
+                if ("resume".equals(method)) {
+                    long currentActive = activeId();
+                    if (currentActive != 0 && currentActive != id) {
+                        JSONObject activeTask = status(currentActive);
+                        if ("paused".equals(activeTask.optString("status"))) {
+                            db.execSQL("UPDATE tasks SET status='stopped',generation=generation+1,updated=? WHERE id=?", new Object[]{System.currentTimeMillis(), currentActive});
+                            event(currentActive, "superseded_by_resume");
+                        } else {
+                            db.execSQL("UPDATE tasks SET status='queued',issue=NULL,generation=generation+1,updated=? WHERE id=?", new Object[]{System.currentTimeMillis(), id});
+                            event(id, "queued_for_resume");
+                            out.putString("json", status(id).toString());
+                            writeStatus(status(id));
+                            return out;
+                        }
+                    }
+                    db.execSQL("DELETE FROM settings WHERE name='platform_block'");
+                }
                 String nextState = "resume".equals(method) ? ("profile".equals(previous.optString("kind")) ? "running-profiles" : previous.optBoolean("rootComplete") ? "running-replies" : "running") : "stopped";
                 if ("resume".equals(method) && "profile".equals(previous.optString("kind")))
                     db.execSQL("UPDATE profile_targets SET status='pending',issue=NULL WHERE task=? AND status='failed'", new Object[]{id});
@@ -535,8 +550,13 @@ public final class CaptureProvider extends ContentProvider {
     private void advance() throws Exception {
         if (activeId() != 0 || !scalar("SELECT data FROM settings WHERE name='platform_block'").isEmpty()) return;
         String next = scalar("SELECT id FROM tasks WHERE status='queued' ORDER BY id LIMIT 1");
-        if (!next.isEmpty()) { long id = Long.parseLong(next); String state = "profile".equals(status(id).optString("kind")) ? "running-profiles" : "running";
-            db.execSQL("UPDATE tasks SET status=?,updated=? WHERE id=?", new Object[]{state, System.currentTimeMillis(), id}); event(id, "queue_started"); }
+        if (!next.isEmpty()) {
+            long id = Long.parseLong(next);
+            JSONObject queued = status(id);
+            String state = "profile".equals(queued.optString("kind")) ? "running-profiles" : queued.optBoolean("rootComplete") ? "running-replies" : "running";
+            db.execSQL("UPDATE tasks SET status=?,updated=? WHERE id=?", new Object[]{state, System.currentTimeMillis(), id});
+            event(id, "queue_started");
+        }
     }
     private void finishProfiles(long id) throws Exception {
         if (count("SELECT count(*) FROM profile_targets WHERE task=? AND status='pending'", id) > 0) return;
