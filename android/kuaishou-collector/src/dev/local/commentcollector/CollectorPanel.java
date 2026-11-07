@@ -83,6 +83,9 @@ public final class CollectorPanel {
     private boolean allTasks;
     private ScrollView currentScroll;
     private String lastTaskSnapshot = "";
+    /** Structure-only fingerprint of the active task (numbers stripped): progress ticks update views in place instead of rebuilding the page. */
+    private String lastTaskShape = "";
+    private java.util.function.Consumer<JSONObject> liveUpdate;
     private long lastAutoSyncTaskId;
     private boolean autoSyncRunning;
     private volatile String cloudStatusHint = "";
@@ -435,7 +438,7 @@ public final class CollectorPanel {
             ((M3.IconDrawable) navIcons.get(i).getDrawable()).setIconColor(on ? sc.onSecondaryContainer : secondary);
             navIndicators.get(i).setBackground(round(on ? sc.secondaryContainer : Color.TRANSPARENT, 16));
         }
-        int scrollY = currentScroll == null ? 0 : currentScroll.getScrollY(); currentScroll = null;
+        int scrollY = currentScroll == null ? 0 : currentScroll.getScrollY(); currentScroll = null; liveUpdate = null;
         body.removeAllViews();
         try {
             switch (page) {
@@ -557,6 +560,34 @@ public final class CollectorPanel {
         taskDetails(card, task, live);
     }
 
+    private String readLine(JSONObject task) {
+        return "作品 " + task.optString("photoId") + " · 已读 " + task.optInt("comments") + " 条 / 平台 " + number(task, "total") + " 条";
+    }
+    private String repliesLine(JSONObject task) {
+        return "主评论 " + task.optInt("rootComments") + " · 回复 " + task.optInt("replyComments") + " · 主评论末页 " + (task.optBoolean("rootComplete") ? "已确认" : "未确认")
+            + " · 回复组 " + task.optInt("replyGroupsComplete") + "/" + task.optInt("replyGroups");
+    }
+    private String driverLine(JSONObject task) {
+        return "意图 " + taskPagingMode(task) + " · 实际 " + (task.optString("pagingDriver").startsWith("native-") ? "原生接口" : "页面加载")
+            + " · 原生 " + task.optInt("nativeLoads") + " 次 · 滑动 " + task.optInt("uiScrolls") + " 次";
+    }
+    private static void setIfChanged(TextView view, String value) { if (!value.contentEquals(view.getText())) view.setText(value); }
+    /** Task JSON with every number removed except ids, so only real state changes (status, buttons, issues) count as structural. */
+    private static String shape(Object value) {
+        if (value instanceof JSONObject object) {
+            StringBuilder out = new StringBuilder("{");
+            java.util.TreeSet<String> keys = new java.util.TreeSet<>(); for (java.util.Iterator<String> it = object.keys(); it.hasNext(); ) keys.add(it.next());
+            for (String key : keys) {
+                Object child = object.opt(key);
+                if (child instanceof Number && !key.toLowerCase(java.util.Locale.ROOT).endsWith("id")) { if (key.equals("platformCountGap")) out.append(key).append('=').append(((Number) child).longValue() > 0); continue; }
+                out.append(key).append('=').append(shape(child)).append(',');
+            }
+            return out.append('}').toString();
+        }
+        if (value instanceof JSONArray array) { StringBuilder out = new StringBuilder("["); for (int i = 0; i < array.length(); i++) out.append(shape(array.opt(i))).append(','); return out.append(']').toString(); }
+        return String.valueOf(value);
+    }
+
     private void taskDetails(LinearLayout card, JSONObject task, boolean live) throws Exception {
         long id = task.getLong("taskId"); String state = task.optString("status"), kind = task.optString("kind");
         boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native-");
@@ -564,7 +595,8 @@ public final class CollectorPanel {
         long read = "profile".equals(kind) ? task.optLong("profilesDone") : "discovery".equals(kind) ? task.optLong("discoveredPosts") : task.optLong("comments");
         if ("profile".equals(kind)) card.addView(text("成功 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位 · 失败 " + task.optInt("profilesFailed") + " 位", 13, false));
         else if ("discovery".equals(kind)) card.addView(text(task.getJSONObject("params").optString("keyword") + " · 已发现 " + task.optInt("discoveredPosts") + " 条", 13, false));
-        else card.addView(text("作品 " + task.optString("photoId") + " · 已读 " + task.optInt("comments") + " 条 / 平台 " + number(task, "total") + " 条", 13, false));
+        else card.addView(text(readLine(task), 13, false));
+        TextView readView = (TextView) card.getChildAt(card.getChildCount() - 1);
         ProgressBar progress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(100); progress.setProgressTintList(ColorStateList.valueOf(primary)); progress.setIndeterminateTintList(ColorStateList.valueOf(primary));
         progress.setProgressBackgroundTintList(ColorStateList.valueOf(surfaceVariant));
@@ -572,12 +604,11 @@ public final class CollectorPanel {
         if (total > 0) progress.setProgress(Math.min("complete".equals(state) ? 100 : 99, (int) (100 * read / total)));
         LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, dp(10)); barParams.setMargins(0, dp(8), 0, dp(6));
         card.addView(progress, barParams);
+        TextView repliesView = null, gapView = null, driverView = null;
         if ("comment".equals(kind)) {
-            card.addView(muted("主评论 " + task.optInt("rootComments") + " · 回复 " + task.optInt("replyComments") + " · 主评论末页 " + (task.optBoolean("rootComplete") ? "已确认" : "未确认")
-                + " · 回复组 " + task.optInt("replyGroupsComplete") + "/" + task.optInt("replyGroups"), 12));
-            if (task.optLong("platformCountGap") > 0) card.addView(muted("与平台数量相差 " + task.optLong("platformCountGap") + " 条", 12));
-            card.addView(muted("意图 " + taskPagingMode(task) + " · 实际 " + (task.optString("pagingDriver").startsWith("native-") ? "原生接口" : "页面加载")
-                + " · 原生 " + task.optInt("nativeLoads") + " 次 · 滑动 " + task.optInt("uiScrolls") + " 次", 12));
+            repliesView = muted(repliesLine(task), 12); card.addView(repliesView);
+            if (task.optLong("platformCountGap") > 0) { gapView = muted("与平台数量相差 " + task.optLong("platformCountGap") + " 条", 12); card.addView(gapView); }
+            driverView = muted(driverLine(task), 12); card.addView(driverView);
             JSONObject params = task.optJSONObject("params");
             if (params != null) { String conditions = describe(params, true); if (!conditions.isEmpty()) card.addView(muted("条件 " + conditions, 12)); }
         }
@@ -590,6 +621,21 @@ public final class CollectorPanel {
             Switch auto = new Switch(uiContext); auto.setText("自动加载"); auto.setTextColor(foreground); auto.setTextSize(13); auto.setChecked(task.optBoolean("auto"));
             auto.setOnCheckedChangeListener((view, enabled) -> { try { api("auto", new JSONObject().put("taskId", id).put("enabled", enabled)); } catch (Exception error) { error(error); } });
             card.addView(auto);
+        }
+        if (live) {
+            final TextView fRead = readView, fReplies = repliesView, fGap = gapView, fDriver = driverView;
+            liveUpdate = fresh -> {
+                String freshKind = fresh.optString("kind"), freshState = fresh.optString("status");
+                long freshTotal = "profile".equals(freshKind) ? fresh.optLong("profilesTotal") : "discovery".equals(freshKind) ? (fresh.optJSONObject("params") == null ? 20 : fresh.optJSONObject("params").optLong("target", 20)) : fresh.optLong("total");
+                long freshRead = "profile".equals(freshKind) ? fresh.optLong("profilesDone") : "discovery".equals(freshKind) ? fresh.optLong("discoveredPosts") : fresh.optLong("comments");
+                if ("profile".equals(freshKind)) setIfChanged(fRead, "成功 " + fresh.optInt("profilesDone") + " / " + fresh.optInt("profilesTotal") + " 位 · 失败 " + fresh.optInt("profilesFailed") + " 位");
+                else if ("discovery".equals(freshKind)) setIfChanged(fRead, (fresh.optJSONObject("params") == null ? "" : fresh.optJSONObject("params").optString("keyword")) + " · 已发现 " + fresh.optInt("discoveredPosts") + " 条");
+                else setIfChanged(fRead, readLine(fresh));
+                if (freshTotal > 0) progress.setProgress(Math.min("complete".equals(freshState) ? 100 : 99, (int) (100 * freshRead / freshTotal)));
+                if (fReplies != null) setIfChanged(fReplies, repliesLine(fresh));
+                if (fGap != null) setIfChanged(fGap, "与平台数量相差 " + fresh.optLong("platformCountGap") + " 条");
+                if (fDriver != null) setIfChanged(fDriver, driverLine(fresh));
+            };
         }
         String issue = task.optString("issue");
         if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); card.addView(reason); }
@@ -1252,7 +1298,8 @@ public final class CollectorPanel {
                     maybeAutoSync(task);
                     if (page == PAGE_COLLECT && !lastTaskSnapshot.equals(task.toString())) {
                         boolean first = lastTaskSnapshot.isEmpty(); lastTaskSnapshot = task.toString();
-                        if (!first) render();
+                        String shaped = shape(task); boolean sameShape = shaped.equals(lastTaskShape); lastTaskShape = shaped;
+                        if (!first) { if (sameShape && liveUpdate != null) liveUpdate.accept(task); else render(); }
                     }
                 } catch (Exception error) { summary.setText("采集服务不可用 · 可在“我的”中唤醒"); }
                 handler.postDelayed(this, 2000);
