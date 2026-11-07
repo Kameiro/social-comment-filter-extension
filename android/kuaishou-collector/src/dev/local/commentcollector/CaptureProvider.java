@@ -83,7 +83,7 @@ public final class CaptureProvider extends ContentProvider {
     private boolean owner(int uid) { return uid == Process.myUid(); }
     private void authorize(int uid) {
         String[] packages = getContext().getPackageManager().getPackagesForUid(uid);
-        if (!owner(uid) && (packages == null || !Arrays.asList(packages).contains("com.smile.gifmaker")))
+        if (!owner(uid) && (packages == null || java.util.Collections.disjoint(Arrays.asList(packages), Platforms.HOSTS)))
             throw new SecurityException("Caller is not in the collector scope");
     }
     private void authorize() { authorize(Binder.getCallingUid()); }

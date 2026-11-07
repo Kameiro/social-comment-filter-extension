@@ -130,24 +130,24 @@ final class PostInfoPanel {
         org.json.JSONArray imageUrls = post.optJSONArray("imageUrls");
         if (VideoInfoSettings.enabled(settings, "video") && videoUrl.startsWith("http")) {
             Button video = button(activity, "下载视频", neutral, onNeutral);
-            video.setOnClickListener(view -> saveMedia(activity, video, new String[]{videoUrl}, Kind.VIDEO, "kuaishou-" + post.optString("postId")));
+            video.setOnClickListener(view -> saveMedia(activity, video, new String[]{videoUrl}, Kind.VIDEO, post.optString("platform", "kuaishou") + "-" + post.optString("postId")));
             buttons.add(video);
         } else if (VideoInfoSettings.enabled(settings, "video") && imageUrls != null && imageUrls.length() > 0) {
             String[] urls = new String[imageUrls.length()];
             for (int i = 0; i < urls.length; i++) urls[i] = imageUrls.optString(i);
             Button images = button(activity, "下载图片", neutral, onNeutral);
-            images.setOnClickListener(view -> saveMedia(activity, images, urls, Kind.IMAGE, "kuaishou-" + post.optString("postId")));
+            images.setOnClickListener(view -> saveMedia(activity, images, urls, Kind.IMAGE, post.optString("platform", "kuaishou") + "-" + post.optString("postId")));
             buttons.add(images);
         }
         if (VideoInfoSettings.enabled(settings, "cover") && coverUrl.startsWith("http")) {
             Button coverButton = button(activity, "下载封面", neutral, onNeutral);
-            coverButton.setOnClickListener(view -> saveMedia(activity, coverButton, new String[]{coverUrl}, Kind.IMAGE, "kuaishou-" + post.optString("postId") + "-cover"));
+            coverButton.setOnClickListener(view -> saveMedia(activity, coverButton, new String[]{coverUrl}, Kind.IMAGE, post.optString("platform", "kuaishou") + "-" + post.optString("postId") + "-cover"));
             buttons.add(coverButton);
         }
         String musicUrl = first(post, "musicUrl");
         if (VideoInfoSettings.enabled(settings, "music") && musicUrl.startsWith("http")) {
             Button musicButton = button(activity, "下载音乐", neutral, onNeutral);
-            String musicFile = "kuaishou-" + post.optString("postId") + "-music" + (first(post, "musicName").isEmpty() ? "" : "-" + safeName(first(post, "musicName")));
+            String musicFile = post.optString("platform", "kuaishou") + "-" + post.optString("postId") + "-music" + (first(post, "musicName").isEmpty() ? "" : "-" + safeName(first(post, "musicName")));
             musicButton.setOnClickListener(view -> saveMedia(activity, musicButton, new String[]{musicUrl}, Kind.AUDIO, musicFile));
             buttons.add(musicButton);
         }
@@ -290,7 +290,7 @@ final class PostInfoPanel {
         new Thread(() -> {
             try {
                 try { CollectorClient.call(activity, "record_post", new JSONObject().put("post", post)); } catch (Exception ignored) {}
-                try (OutputStream output = open(activity, Kind.FILE, "kuaishou-" + post.optString("postId") + "-info.txt", "text/plain")) { output.write(bytes); }
+                try (OutputStream output = open(activity, Kind.FILE, post.optString("platform", "kuaishou") + "-" + post.optString("postId") + "-info.txt", "text/plain")) { output.write(bytes); }
                 finish(activity, button, label, "已保存 ✓", null);
             } catch (Exception error) { finish(activity, button, label, null, "保存信息失败：" + error.getMessage()); }
         }, "post-info-save-text").start();

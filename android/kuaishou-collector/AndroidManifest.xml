@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <queries>
         <package android:name="com.smile.gifmaker" />
+        <package android:name="com.ss.android.ugc.aweme" />
+        <package android:name="com.xingin.xhs" />
         <provider android:authorities="dev.local.commentcollector.capture" />
     </queries>
     <application android:label="快手评论采集" android:description="@string/description"

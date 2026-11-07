@@ -16,7 +16,7 @@ public final class CollectorClient {
             // ColorOS can reject cross-UID provider lookup. Never block Kuaishou's
             // render/network callbacks on a 15-second bridge timeout for read-only
             // status probes; the next write will still try the bridge.
-            if (("status".equals(operation) || "runtime_update".equals(operation)) && "com.smile.gifmaker".equals(context.getPackageName())) {
+            if (("status".equals(operation) || "runtime_update".equals(operation)) && Platforms.HOSTS.contains(context.getPackageName())) {
                 if (providerError != null) throw providerError;
                 throw new IllegalStateException("Provider 不可用");
             }
