@@ -21,6 +21,8 @@ final class DoubleTapDetector {
         Activity activity();
         /** Called on the second tap in the media area. Return true to consume it. */
         boolean onDoubleTap(Activity activity, float rawX, float rawY);
+        /** Whether the first tap should be held so the host cannot fire a single-tap action before a double tap. */
+        default boolean holdSingleTap(Activity activity, float rawX, float rawY) { return false; }
     }
 
     private static final String TAG = "CommentCollector";
@@ -31,6 +33,7 @@ final class DoubleTapDetector {
     private long lastTapUp, lastTapDown;
     private float lastX, lastY, downX, downY;
     private boolean consuming;
+    private boolean holding;
 
     DoubleTapDetector(XposedInterface xposed, Handler handler) { this.xposed = xposed; this.handler = handler; }
 
@@ -69,9 +72,14 @@ final class DoubleTapDetector {
                             && Math.hypot(downX - lastX, downY - lastY) < 47 * host.getResources().getDisplayMetrics().density
                             && inMedia(host, downX, downY);
                         if (second && handler.onDoubleTap(host, e.getRawX(), e.getRawY())) { consuming = true; lastTapUp = 0; return true; }
+                        if (!second && inMedia(host, downX, downY) && handler.holdSingleTap(host, e.getRawX(), e.getRawY())) holding = true;
                     } else if (action == MotionEvent.ACTION_UP) {
                         boolean tap = e.getEventTime() - lastTapDown < 220 && Math.hypot(e.getX() - downX, e.getY() - downY) < 40;
                         lastTapUp = tap ? e.getEventTime() : 0; lastX = e.getX(); lastY = e.getY();
+                    }
+                    if (holding) {
+                        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) holding = false;
+                        return true;
                     }
                 } catch (Throwable error) { Log.w(TAG, "double_tap_failed", error); }
                 depth++;

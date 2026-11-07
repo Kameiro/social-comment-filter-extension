@@ -11,6 +11,7 @@
 - 小红书 9.51.0 已完成真机验证：`NoteFeed.F0()` 记录当前笔记；正文区域双击弹出作品信息面板，第二次点击被消费且点赞数未变化。`com.xingin.entities.q` 的 `CommentNoteCommentListData` 实测返回 10 条评论、`hasMore=true` 和 JSON 游标，滚动后捕获 `index=3` 折叠页及下一次 `UNFOLDED` 页。当前任务为暂停中的 discovery 任务，日志记录 `xhs_comment_skipped task_not_running`，因此本次只验收原生响应读取，未把该次数据计入评论任务。
 - 小红书双击错位修复：详情页通过 `NoteDetailRepository.d()` / `pfa.c.f()` 绑定当前 `NoteFeed`，不再使用预加载视频覆盖当前作品；评论层识别为安全拦截区，`NoteCommentActivity` 和详情页评论层的第二次点击直接消费，不打开回复输入框。图片帖正文双击仍显示当前图片帖信息。
 - 视频详情补充适配：`DetailFeedActivity` 不复用图片帖的详情入口，当前视频从触点对象树和 `ItemVisibilityStatePublisher.k()` 解析；现场日志确认 `xhs_current_note` 与 `post_info_triggered` 使用同一作品 ID。
+- 图文帖图片双击修复：`DoubleTapDetector` 对图片层暂存首击并消费，避免小红书单击手势先打开大图；双击仍显示作品信息，真机已确认单击留在详情页、双击弹出信息面板。
 
 ## 2026-11-07 更新
 

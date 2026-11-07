@@ -69,6 +69,7 @@ final class XhsHooks {
         detector = new DoubleTapDetector(xposed, new DoubleTapDetector.Handler() {
             @Override public Activity activity() { return activity; }
             @Override public boolean onDoubleTap(Activity host, float x, float y) { return showPost(host, x, y); }
+            @Override public boolean holdSingleTap(Activity host, float x, float y) { return shouldHoldImageTap(host, x, y); }
         });
         detector.install();
         hookCommentDialogs();
@@ -215,6 +216,15 @@ final class XhsHooks {
 
     private static boolean isCommentActivity(Activity host) {
         return host != null && host.getClass().getName().contains("com.xingin.comment.input.ui.NoteCommentActivity");
+    }
+
+    private static boolean shouldHoldImageTap(Activity host, float x, float y) {
+        if (!isDetailActivity(host) || isCommentLayer(host, x, y)) return false;
+        View view = deepestView(host.getWindow() == null ? null : host.getWindow().getDecorView(), x, y);
+        if (view == null) return false;
+        String name = view.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+        if (name.contains("video") || name.contains("surface") || name.contains("player")) return false;
+        return name.contains("image") || name.contains("photo") || view instanceof android.widget.ImageView;
     }
 
     private static boolean isCommentLayer(Activity host, float x, float y) {
