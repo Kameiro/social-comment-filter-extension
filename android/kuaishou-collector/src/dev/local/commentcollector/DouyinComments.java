@@ -38,6 +38,9 @@ final class DouyinComments {
         main.postDelayed(this::tick, 900);
     }
 
+    /** Starts the driver when a task is created after the comment drawer is already visible. */
+    void ensurePaging() { startPaging(); }
+
     private void stopPaging(String why) { if (paging) { paging = false; Log.i(TAG, "douyin_auto_page_stop " + why); } }
 
     private void tick() {
@@ -57,7 +60,12 @@ final class DouyinComments {
                 if (nativeMode && DouyinNativePager.ready() && nextCursor >= 0) {
                     long cursor = nextCursor; nextCursor = -1;
                     new Thread(() -> { Object result = DouyinNativePager.fetch(cursor, DouyinNativePager.post()); if (result != null) observe(result, DouyinNativePager.post()); }, "douyin-native-page").start();
-                } else if (!nativeMode || !DouyinNativePager.ready()) scrollComments();
+                } else {
+                    // The native request may be installed before its first cursor is captured,
+                    // or a replay may fail transiently. Keep the task moving through Douyin's
+                    // visible comment list instead of waiting forever for a cursor that is not there.
+                    scrollComments();
+                }
                 main.postDelayed(this::tick, nativeMode ? 1500 : 1100);
             });
         }, "douyin-auto-page").start();
