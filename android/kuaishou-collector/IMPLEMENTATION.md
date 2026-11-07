@@ -1,7 +1,13 @@
 # 实现与验收记录
 
 用户目标：快手手机版评论与公开 IP 获取优先，功能封装成接口，管理界面内嵌快手。
-环境：Android 16 ARM64 模拟器；一加 13T / ReSukiSU / Vector 真机未连接、未修改。
+环境：PKX110 / Android 17 / Vector 3090；另有 Android 16 ARM64 模拟器回归环境。
+
+## 2026-11-08 更新
+
+- 抖音真机现场验证：`com.ss.android.ugc.aweme` 作用域已加载，双击视频触发 `douyin_double_tap aweme=true`，随后显示作品信息面板；作品地点为“云南 西双版纳傣族自治州”。
+- 抖音评论现场验证：打开当前作品评论页后，原生响应记录 `douyin_comment_list rows=20 post=7696705623878127793 more=true cursor=20 total=11571`；另一个回复页记录 3 条、`more=true`。因为当前数据库任务状态是 `discovery/paused`，模块按设计记录 `task_not_running` 并跳过任务落库。
+- 快手原生设置入口、作品信息双击和开关保存已复测；关闭“视频文案”后弹窗隐藏该行，恢复开关后默认显示恢复。
 
 ## 2026-11-07 更新
 
