@@ -46,11 +46,15 @@ final class DoubleTapDetector {
         }
     }
 
+    /** Time of the last real finger touch; module-injected gestures bypass Activity.dispatchTouchEvent, so they never set it. */
+    static volatile long lastUserTouch;
+
     private void hookMethod(Method dispatch) {
         try {
             xposed.hook(dispatch).intercept(chain -> {
                 if (depth > 0) return chain.proceed();
                 MotionEvent e = (MotionEvent) chain.getArg(0);
+                lastUserTouch = android.os.SystemClock.uptimeMillis();
                 Activity host = chain.getThisObject() instanceof Activity ? (Activity) chain.getThisObject() : handler.activity();
                 if (host == null) return chain.proceed();
                 try {

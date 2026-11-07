@@ -6,17 +6,42 @@ import org.json.JSONObject;
 
 public final class CollectorClient {
     private CollectorClient() {}
+    /** Provider first; if the collector process is gone, wake it silently and retry; finally the bridge service. */
+    static Bundle callRaw(Context context, String operation, Bundle args) throws Exception {
+        Bundle result = null; Exception providerError = null;
+        try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
+        catch (Exception error) { providerError = error; }
+        if (result == null && CollectorWake.wake(context)) {
+            for (int attempt = 0; attempt < 14 && result == null; attempt++) {
+                try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
+                try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
+                catch (Exception error) { providerError = error; }
+            }
+        }
+        if (result != null) return result;
+        try { return CaptureBridge.call(context, operation, args); }
+        catch (Exception bridgeError) { if (providerError != null) throw providerError; throw bridgeError; }
+    }
+
     public static JSONObject call(Context context, String operation, JSONObject params) throws Exception {
         Bundle args = new Bundle();
         args.putString("body", params == null ? "{}" : params.toString());
         Bundle result = null; Exception providerError = null;
+        boolean host = Platforms.HOSTS.contains(context.getPackageName());
         try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
         catch (Exception error) { providerError = error; }
+        if (result == null && host && CollectorWake.wake(context)) {
+            // The collector process was frozen or killed: wake it silently, then retry the provider for a few seconds.
+            for (int attempt = 0; attempt < 14 && result == null; attempt++) {
+                try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
+                try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); providerError = null; }
+                catch (Exception error) { providerError = error; }
+            }
+        }
         if (result == null) {
-            // ColorOS can reject cross-UID provider lookup. Never block Kuaishou's
-            // render/network callbacks on a 15-second bridge timeout for read-only
-            // status probes; the next write will still try the bridge.
-            if (("status".equals(operation) || "runtime_update".equals(operation)) && Platforms.HOSTS.contains(context.getPackageName())) {
+            // ColorOS can reject cross-UID provider lookup. Never block the host app's render/network callbacks on a
+            // 15-second bridge timeout for read-only status probes; the next write will still try the bridge.
+            if (("status".equals(operation) || "runtime_update".equals(operation)) && host) {
                 if (providerError != null) throw providerError;
                 throw new IllegalStateException("Provider 不可用");
             }

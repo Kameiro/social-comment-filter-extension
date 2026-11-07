@@ -44,7 +44,29 @@ final class VideoInfoSettings {
         return result;
     }
 
+    private static volatile JSONObject cache;
+    private static volatile long cachedAt;
+    private static final java.util.concurrent.atomic.AtomicBoolean refreshing = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /**
+     * Never blocks: returns the last loaded settings (or defaults) at once and refreshes them in the background,
+     * so a double-tap does not wait on a cross-process provider call (which can take seconds if it must be woken).
+     */
+    static JSONObject current(Context context) {
+        JSONObject value = cache;
+        if ((value == null || System.currentTimeMillis() - cachedAt > 30000) && context != null && refreshing.compareAndSet(false, true)) {
+            new Thread(() -> {
+                try { JSONObject loaded = load(context); cache = loaded; cachedAt = System.currentTimeMillis(); }
+                finally { refreshing.set(false); }
+            }, "video-info-settings").start();
+        }
+        return value == null ? defaults() : value;
+    }
+
     static void save(Context context, JSONObject settings) throws Exception {
+        JSONObject merged = defaults(); java.util.Iterator<String> keys = settings.keys();
+        while (keys.hasNext()) { String key = keys.next(); try { merged.put(key, settings.opt(key)); } catch (Exception ignored) {} }
+        cache = merged; cachedAt = System.currentTimeMillis();
         CollectorClient.call(context, "settings_save", new JSONObject().put("name", NAME).put("value", settings));
     }
 

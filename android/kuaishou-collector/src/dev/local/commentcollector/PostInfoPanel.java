@@ -50,6 +50,7 @@ final class PostInfoPanel {
         catch (Exception error) { return; }
         int dialogStyle = dark(activity) ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar;
         boolean centered = VideoInfoSettings.centered(settings);
+        S = M3.scheme(activity, dark(activity));
         LinearLayout sheet = new LinearLayout(activity);
         // Full-screen window with our own scrim view: dim and sheet animate in one surface, so there is
         // no per-frame window relayout (the old window-dim animation left ghost frames on dismiss).
@@ -67,12 +68,14 @@ final class PostInfoPanel {
         };
         sheet.setOrientation(LinearLayout.VERTICAL);
         sheet.setPadding(dp(activity, 20), dp(activity, 10), dp(activity, 20), dp(activity, 18));
-        sheet.setBackground(round(dark(activity) ? Color.rgb(37, 37, 40) : Color.WHITE, dp(activity, 24), !centered));
+        sheet.setBackground(round(S.surfaceContainerLow, dp(activity, 28), !centered));
 
-        TextView handle = text(activity, "—", 28, false, dark(activity) ? Color.rgb(130, 130, 135) : Color.LTGRAY);
-        handle.setGravity(Gravity.CENTER); sheet.addView(handle, new LinearLayout.LayoutParams(-1, dp(activity, 24)));
-        TextView title = text(activity, "视频信息", 22, true, dark(activity) ? Color.WHITE : Color.rgb(28, 28, 30));
-        title.setPadding(0, dp(activity, 4), 0, dp(activity, 12)); sheet.addView(title);
+        android.widget.FrameLayout handle = new android.widget.FrameLayout(activity);
+        android.view.View bar = new android.view.View(activity); bar.setBackground(round(M3.mix(S.onSurfaceVariant, S.surfaceContainerLow, .6f), dp(activity, 2), false));
+        handle.addView(bar, new android.widget.FrameLayout.LayoutParams(dp(activity, 32), dp(activity, 4), Gravity.CENTER));
+        sheet.addView(handle, new LinearLayout.LayoutParams(-1, dp(activity, 24)));
+        TextView title = M3.type(text(activity, "视频信息", M3.HEADLINE_SMALL, false, S.onSurface), M3.HEADLINE_SMALL, false, S.onSurface);
+        title.setPadding(dp(activity, 4), dp(activity, 4), 0, dp(activity, 12)); sheet.addView(title);
         if (!centered) { Motion.dragToDismiss(handle, sheet, scrim, DIM, dialog::dismiss); Motion.dragToDismiss(title, sheet, scrim, DIM, dialog::dismiss); }
 
         ScrollView scroll = new ScrollView(activity);
@@ -91,20 +94,21 @@ final class PostInfoPanel {
         if (VideoInfoSettings.enabled(settings, "music") && !music.isEmpty()) addRow(activity, content, "音乐信息", music);
 
         if (VideoInfoSettings.enabled(settings, "statistics")) {
-            LinearLayout metrics = new LinearLayout(activity); metrics.setGravity(Gravity.CENTER); metrics.setPadding(0, dp(activity, 8), 0, dp(activity, 12));
+            LinearLayout metrics = new LinearLayout(activity); metrics.setGravity(Gravity.CENTER); metrics.setPadding(dp(activity, 8), dp(activity, 14), dp(activity, 8), dp(activity, 14));
+            metrics.setBackground(round(S.surfaceContainer, dp(activity, 16), false));
             String[] keys = {"likes", "commentTotal", "favorites", "shares"};
             String[] labels = {"点赞", "评论", "收藏", "分享"};
             for (int i = 0; i < keys.length; i++) {
                 TextView number = metric(activity, metrics, formatCount(post.opt(keys[i])), labels[i]);
                 Motion.countUp(number, post.opt(keys[i]), PostInfoPanel::formatCount, 180 + i * 60L);
             }
-            content.addView(metrics, new LinearLayout.LayoutParams(-1, -2));
+            LinearLayout.LayoutParams metricsParams = new LinearLayout.LayoutParams(-1, -2); metricsParams.setMargins(0, dp(activity, 8), 0, dp(activity, 12)); content.addView(metrics, metricsParams);
         }
 
         String coverUrl = first(post, "coverUrl", "cover", "coverImageUrl");
         if (VideoInfoSettings.enabled(settings, "cover") && coverUrl.startsWith("http")) {
             ImageView cover = new ImageView(activity); cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            cover.setBackground(round(dark(activity) ? Color.rgb(55, 55, 60) : Color.rgb(240, 240, 243), dp(activity, 14), false));
+            cover.setBackground(round(S.surfaceContainerHighest, dp(activity, 16), false)); cover.setClipToOutline(true);
             content.addView(cover, new LinearLayout.LayoutParams(-1, dp(activity, 170)));
             loadImage(cover, coverUrl);
         }
@@ -115,11 +119,11 @@ final class PostInfoPanel {
         sheet.addView(scroll, new LinearLayout.LayoutParams(-1, maxHeight));
 
         LinearLayout actions = new LinearLayout(activity); actions.setOrientation(LinearLayout.VERTICAL); actions.setPadding(0, dp(activity, 12), 0, 0);
-        int neutral = dark(activity) ? Color.rgb(72, 72, 78) : Color.rgb(240, 240, 243);
-        int onNeutral = dark(activity) ? Color.WHITE : Color.rgb(30, 30, 32);
+        int neutral = S.secondaryContainer;
+        int onNeutral = S.onSecondaryContainer;
         java.util.List<Button> buttons = new java.util.ArrayList<>();
         if (VideoInfoSettings.enabled(settings, "copy_description")) {
-            Button copy = button(activity, "复制文案", dark(activity) ? Color.rgb(255, 90, 31) : Color.rgb(255, 73, 6), Color.WHITE);
+            Button copy = button(activity, "复制文案", S.primary, S.onPrimary);
             copy.setOnClickListener(view -> { copy(activity, post.optString("title")); Motion.flashLabel(copy, "已复制 ✓", 1200); });
             buttons.add(copy);
         }
@@ -150,6 +154,16 @@ final class PostInfoPanel {
             String musicFile = post.optString("platform", "kuaishou") + "-" + post.optString("postId") + "-music" + (first(post, "musicName").isEmpty() ? "" : "-" + safeName(first(post, "musicName")));
             musicButton.setOnClickListener(view -> saveMedia(activity, musicButton, new String[]{musicUrl}, Kind.AUDIO, musicFile));
             buttons.add(musicButton);
+        }
+        if (UserLinks.canOpen(post)) {
+            java.util.List<Button> people = new java.util.ArrayList<>();
+            Button home = button(activity, "主页", neutral, onNeutral);
+            home.setOnClickListener(view -> UserLinks.profile(activity, post));
+            Button chat = button(activity, "私信", S.primary, S.onPrimary);
+            chat.setOnClickListener(view -> UserLinks.message(activity, post));
+            people.add(home); people.add(chat);
+            grid(activity, actions, people, 2);
+            LinearLayout spacer = new LinearLayout(activity); actions.addView(spacer, new LinearLayout.LayoutParams(-1, dp(activity, 8)));
         }
         grid(activity, actions, buttons, 1);
         // Buttons are stacked one per row, so give the info area only the height that is left
@@ -194,32 +208,33 @@ final class PostInfoPanel {
     }
 
     private static final float DIM = .45f;
+    private static M3.Scheme S; // colour roles for the popup being built (main thread only)
 
     private static void addRow(Activity activity, LinearLayout parent, String label, String value) {
         LinearLayout row = new LinearLayout(activity); row.setOrientation(LinearLayout.VERTICAL); row.setPadding(0, dp(activity, 5), 0, dp(activity, 5));
-        TextView key = text(activity, label, 13, false, Color.rgb(155, 155, 160)); row.addView(key);
-        TextView val = text(activity, value, 16, false, dark(activity) ? Color.WHITE : Color.rgb(38, 38, 40)); val.setTextIsSelectable(true); row.addView(val);
+        TextView key = M3.type(text(activity, label, M3.LABEL_MEDIUM, false, S.onSurfaceVariant), M3.LABEL_MEDIUM, false, S.onSurfaceVariant); row.addView(key);
+        TextView val = text(activity, value, M3.BODY_LARGE, false, S.onSurface); val.setTextIsSelectable(true); row.addView(val);
         parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
     }
 
     private static TextView metric(Activity activity, LinearLayout parent, String value, String label) {
         LinearLayout item = new LinearLayout(activity); item.setOrientation(LinearLayout.VERTICAL); item.setGravity(Gravity.CENTER);
-        TextView number = text(activity, value, 17, true, dark(activity) ? Color.WHITE : Color.rgb(48, 48, 52)); number.setGravity(Gravity.CENTER);
+        TextView number = text(activity, value, M3.TITLE_MEDIUM + 2, true, S.onSurface); number.setGravity(Gravity.CENTER);
         item.addView(number, new LinearLayout.LayoutParams(-1, dp(activity, 28)));
-        TextView caption = text(activity, label, 12, false, Color.rgb(155, 155, 160)); caption.setGravity(Gravity.CENTER); item.addView(caption);
+        TextView caption = text(activity, label, M3.LABEL_MEDIUM, false, S.onSurfaceVariant); caption.setGravity(Gravity.CENTER); item.addView(caption);
         parent.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
         return number;
     }
 
     private static Button button(Activity activity, String label, int background, int foreground) {
         Button button = new Button(activity);
-        button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        button.setTextColor(foreground); button.setStateListAnimator(null); button.setPadding(dp(activity, 8), 0, dp(activity, 8), 0); button.setBackground(round(background, dp(activity, 22), false));
+        button.setText(label); button.setTextSize(M3.LABEL_LARGE); button.setAllCaps(false); button.setTypeface(M3.medium()); button.setLetterSpacing(.01f);
+        button.setTextColor(foreground); button.setStateListAnimator(null); button.setPadding(dp(activity, 20), 0, dp(activity, 20), 0); button.setBackground(round(background, dp(activity, 22), false));
         return button;
     }
 
     private static TextView text(Activity activity, String value, int size, boolean bold, int color) {
-        TextView view = new TextView(activity); view.setText(value); view.setTextSize(size); view.setTextColor(color); view.setLineSpacing(0, 1.15f); if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return view;
+        TextView view = new TextView(activity); view.setText(value); return M3.type(view, size, bold, color);
     }
 
     private static GradientDrawable round(int color, int radius, boolean topOnly) {

@@ -89,6 +89,38 @@ final class DouyinHooks {
         Log.i(TAG, "douyin_panel_methods_tracked=" + tracked);
 
         installDoubleTap();
+        hostLoader = loader;
+        awaitApplication(0);
+        DouyinComments.hook(xposed, loader, list -> {
+            Context app = context;
+            if (app == null) return;
+            synchronized (DouyinHooks.this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
+            DouyinComments target = comments;
+            new Thread(() -> target.observe(list, lastPostId), "douyin-comments").start();
+        });
+
+        DouyinProfiles.hook(xposed, loader, user -> {
+            Context app = context;
+            if (app == null) return;
+            if (profiles == null) { profiles = new DouyinProfiles(app, () -> activity); profiles.startDriver(); }
+            profiles.observe(user);
+        });
+
+        DouyinProfiles.hookPosts(xposed, loader, loaded -> {
+            Context app = context;
+            if (app == null) return;
+            if (profiles == null) { profiles = new DouyinProfiles(app, () -> activity); profiles.startDriver(); }
+            ensurePager();
+            profiles.observePost(loaded);
+        });
+
+        DouyinProfiles.hookPostLists(xposed, loader, loaded -> {
+            Context app = context;
+            if (app == null) return;
+            if (profiles == null) { profiles = new DouyinProfiles(app, () -> activity); profiles.startDriver(); }
+            ensurePager();
+            profiles.observePost(loaded);
+        });
 
         // Record every post that becomes current, so browsed posts show up in the database like on Kuaishou.
         try {
@@ -102,6 +134,17 @@ final class DouyinHooks {
     }
 
     private static volatile java.lang.ref.WeakReference<Object> livePanel;
+    private volatile ClassLoader hostLoader;
+    private final java.util.concurrent.atomic.AtomicBoolean pagerStarted = new java.util.concurrent.atomic.AtomicBoolean();
+
+    /** Hooks the Retrofit layer once the feed is loading, i.e. once Douyin's network stack is certainly up. */
+    private void ensurePager() {
+        if (hostLoader == null || !pagerStarted.compareAndSet(false, true)) return;
+        new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start();
+    }
+
+    private volatile DouyinComments comments;
+    private volatile DouyinProfiles profiles;
 
     private DoubleTapDetector detector;
 
@@ -137,13 +180,13 @@ final class DouyinHooks {
             JSONObject post = DouyinMapper.post(aweme);
             if (post == null) return false;
             Log.i(TAG, "post_info_triggered platform=douyin post=" + post.optString("postId"));
-            new Thread(() -> {
-                JSONObject settings = VideoInfoSettings.load(current);
-                main.post(() -> PostInfoPanel.show(current, post, settings));
-            }, "post-info-settings").start();
+            JSONObject settings = VideoInfoSettings.current(current);
+            main.post(() -> PostInfoPanel.show(current, post, settings));
             return true;
         } catch (Throwable error) { Log.w(TAG, "douyin_post_map_failed", error); return false; }
     }
+
+    private volatile String lastPostId = "";
 
     private void remember(Object aweme) {
         Context app = context;
@@ -152,16 +195,29 @@ final class DouyinHooks {
         new Thread(() -> {
             try {
                 JSONObject post = DouyinMapper.post(aweme);
+                if (post != null) lastPostId = post.optString("postId");
                 if (post != null) CollectorClient.call(app, "record_post", new JSONObject().put("post", post));
             } catch (Throwable ignored) {}
         }, "douyin-record-post").start();
     }
 
+    /** Application.onCreate can finish before the module hooks it; poll for the live Application and attach to it. */
+    private void awaitApplication(int attempt) {
+        if (context != null || attempt > 60) return;
+        try {
+            Application live = (Application) Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null);
+            if (live != null) { attach(live); return; }
+        } catch (Throwable error) { Log.w(TAG, "douyin_attach_poll_failed", error); }
+        main.postDelayed(() -> awaitApplication(attempt + 1), 500);
+    }
+
     private void attach(Application app) {
         if (context != null) return;
         context = app;
+        synchronized (this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
+        comments.startReplyDriver();
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
-            @Override public void onActivityResumed(Activity value) { activity = value; }
+            @Override public void onActivityResumed(Activity value) { activity = value; Log.i(TAG, "douyin_resumed " + value.getClass().getSimpleName() + " loader=" + (hostLoader != null)); if (hostLoader != null) new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start(); CollectorPanel.attach(value, () -> lastPostId); }
             @Override public void onActivityPaused(Activity value) { if (activity == value) activity = null; }
             @Override public void onActivityCreated(Activity value, Bundle state) { if (detector != null) detector.hook(value.getClass()); }
             @Override public void onActivityStarted(Activity value) {}
@@ -170,5 +226,6 @@ final class DouyinHooks {
             @Override public void onActivityDestroyed(Activity value) {}
         });
         Log.i(TAG, "douyin_application_attached");
+        main.postDelayed(() -> new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start(), 2500);
     }
 }

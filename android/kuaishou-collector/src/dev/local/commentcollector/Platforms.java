@@ -15,14 +15,14 @@ final class Platforms {
     /** "kuaishou" / "douyin" / "xiaohongshu" for a host package. */
     static String name(String packageName) {
         if (DOUYIN.equals(packageName)) return "douyin";
-        if (XHS.equals(packageName)) return "xiaohongshu";
+        if (XHS.equals(packageName)) return "xhs";
         return "kuaishou";
     }
 
     static String label(String platform) {
         switch (platform == null ? "" : platform) {
             case "douyin": return "抖音";
-            case "xiaohongshu": return "小红书";
+            case "xhs": case "xiaohongshu": return "小红书";
             default: return "快手";
         }
     }

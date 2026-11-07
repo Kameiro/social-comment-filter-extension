@@ -89,7 +89,8 @@ HTTP 401 表示缺少密钥，403 表示不允许的网页 Origin，409 表示�
 - 帖子查询可用 `taskId` 限定某个发现任务，`keyword` 匹配标题，`searchKeyword` 匹配最近发现关键词。相同作品在不同任务中去重，任务归属分别保存。
 - 评论查询：`taskId,photoId,userId,keyword,ipRegion,ipRegions,gender,minAge,maxAge,sort,limit,offset`。
 - `ipRegions` 为 OR 条件。GET 可用逗号分隔字符串（Node 客户端数组会自动编码），分析 POST 可传数组；原生表单支持顿号、逗号及空白分隔，最多 20 项。两个地区参数同时提供时优先使用 `ipRegions`。
-- 性别：`all/female/male/unknown/female-or-unknown`。有年龄条件时不匹配未知年龄。
+- 地区来源 `ipSource`：`profile`（主页 IP，默认）/`comment`（评论 IP）/`post`（最新帖子地址，字段 `latestPostLocation`）。所选 IP 取不到时回退到主页 IP，主页 IP 缺失时才用评论 IP。
+- 性别：`all/female/male/unknown`，可用逗号多选（如 `female,unknown`），兼容旧值 `female-or-unknown`。有年龄条件时不匹配未知年龄。
 - 排序：`captured_desc/captured_asc/created_desc/created_asc/likes_desc`。
 - 单任务 `comments` 是该任务读取数量，不是数据库全局数量。`platformCountGap` 为 `max(0,total-comments)`，总数未知时为 null；差值并不证明存在可见漏抓。
 - `rootPages` 单独统计已保存的主评论页；`pages` 包括主评论和回复。新任务尚未取得主评论首页时会重新打开目标作品；超过等待期限仍没有主评论页，记录 `root_page_not_observed`，不无限显示采集中。

@@ -69,7 +69,7 @@ public final class KuaishouModule extends XposedModule {
 
     @Override public void onModuleLoaded(ModuleLoadedParam param) {
         process = param.getProcessName();
-        Log.i(TAG, "module_loaded process=" + process);
+        Log.i(TAG, "module_loaded process=" + process + "");
         if (!Platforms.HOSTS.contains(process) && !"dev.local.commentcollector".equals(process)) detach();
     }
 
@@ -229,10 +229,8 @@ public final class KuaishouModule extends XposedModule {
                 if (sameMedia && post != null && !post.optString("postId").isEmpty()) {
                     Log.i(TAG, "post_info_triggered post=" + post.optString("postId"));
                     lastTapAt = 0L;
-                    new Thread(() -> {
-                        JSONObject settings = VideoInfoSettings.load(activity);
-                        mainHandler.post(() -> PostInfoPanel.show(activity, post, settings));
-                    }, "post-info-settings").start();
+                    JSONObject settings = VideoInfoSettings.current(activity);
+                    mainHandler.post(() -> PostInfoPanel.show(activity, post, settings));
                 } else {
                     lastTapAt = 0L;
                 }
@@ -682,9 +680,7 @@ public final class KuaishouModule extends XposedModule {
         writer.execute(() -> {
             try {
                 Bundle args = new Bundle(); args.putString("page", payload); args.putLong("taskId", taskId); args.putLong("generation", generation);
-                Bundle result;
-                try { result = context.getContentResolver().call(CaptureProvider.URI, "append", null, args); }
-                catch (Exception providerError) { result = CaptureBridge.call(context, "append", args); }
+                Bundle result = CollectorClient.callRaw(context, "append", args);
                 if (result != null && result.containsKey("error")) Log.w(TAG, "page_storage_failed");
             } catch (Exception error) { Log.w(TAG, "storage_unavailable"); }
         });
@@ -693,8 +689,7 @@ public final class KuaishouModule extends XposedModule {
         if (context == null) return;
         try {
             Bundle args = new Bundle(); args.putString("code", code);
-            try { context.getContentResolver().call(CaptureProvider.URI, "pause", null, args); }
-            catch (Exception providerError) { CaptureBridge.call(context, "pause", args); }
+            CollectorClient.callRaw(context, "pause", args);
         } catch (Exception ignored) {}
     }
 }

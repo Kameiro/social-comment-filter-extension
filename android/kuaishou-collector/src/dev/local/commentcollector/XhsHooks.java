@@ -74,10 +74,8 @@ final class XhsHooks {
             JSONObject post = XhsMapper.post(note);
             if (post == null) return false;
             Log.i(TAG, "post_info_triggered platform=xhs post=" + post.optString("postId"));
-            new Thread(() -> {
-                JSONObject settings = VideoInfoSettings.load(host);
-                main.post(() -> PostInfoPanel.show(host, post, settings));
-            }, "post-info-settings").start();
+            JSONObject settings = VideoInfoSettings.current(host);
+            main.post(() -> PostInfoPanel.show(host, post, settings));
             return true;
         } catch (Throwable error) { Log.w(TAG, "xhs_post_map_failed", error); return false; }
     }

@@ -177,7 +177,7 @@ public final class CaptureProvider extends ContentProvider {
                 out.putString("data", new JSONObject().put("running", LocalApi.running()).put("port", LocalApi.PORT).toString()); return out;
             }
             if ("comments".equals(method)) { out.putString("data", comments(input).toString()); return out; }
-            if ("analysis".equals(method)) { out.putString("data", Analysis.run(input, query -> comments(query)).toString()); return out; }
+            if ("analysis".equals(method)) { out.putString("data", Analysis.run(input, (query, sink, max) -> comments(query, sink, max)).toString()); return out; }
             if ("batch_start".equals(method)) {
                 JSONArray requests = input.getJSONArray("tasks"), results = new JSONArray();
                 if (requests.length() == 0 || requests.length() > 50) throw new IllegalArgumentException("批量任务需包含 1 至 50 个任务");
@@ -191,8 +191,16 @@ public final class CaptureProvider extends ContentProvider {
             }
             if ("users".equals(method)) { out.putString("data", users(input).toString()); return out; }
             if ("summary".equals(method)) {
-                out.putString("data", new JSONObject().put("posts", Integer.parseInt(scalar("SELECT count(*) FROM posts")))
-                    .put("comments", Integer.parseInt(scalar("SELECT count(DISTINCT id) FROM comments"))).put("users", Integer.parseInt(scalar("SELECT count(*) FROM users"))).toString());
+                String platform = input.optString("platform");
+                if (platform.isEmpty() || "all".equals(platform)) {
+                    out.putString("data", new JSONObject().put("posts", Integer.parseInt(scalar("SELECT count(*) FROM posts")))
+                        .put("comments", Integer.parseInt(scalar("SELECT count(DISTINCT id) FROM comments"))).put("users", Integer.parseInt(scalar("SELECT count(*) FROM users"))).toString());
+                } else {
+                    String test = " WHERE coalesce(json_extract(data,'$.platform'),'kuaishou')=?";
+                    out.putString("data", new JSONObject().put("posts", Integer.parseInt(scalar("SELECT count(*) FROM posts" + test, platform)))
+                        .put("comments", Integer.parseInt(scalar("SELECT count(DISTINCT id) FROM comments" + test, platform)))
+                        .put("users", Integer.parseInt(scalar("SELECT count(*) FROM users" + test, platform))).toString());
+                }
                 return out;
             }
             if ("posts".equals(method)) { out.putString("data", records("posts", input).toString()); return out; }
@@ -541,22 +549,24 @@ public final class CaptureProvider extends ContentProvider {
         JSONObject merged = previous.isEmpty() ? new JSONObject() : new JSONObject(previous);
         java.util.Iterator<String> keys = incoming.keys();
         while (keys.hasNext()) { String key = keys.next(); Object value = incoming.opt(key);
-            if (incoming.has("profileCapturedAt") && Arrays.asList("gender", "age", "bio", "location", "profileIpRegion").contains(key)) { merged.put(key, value); continue; }
+            if (incoming.has("profileCapturedAt") && Arrays.asList("gender", "age", "bio", "location", "profileIpRegion", "latestPostLocation", "latestPostCity", "latestPostAt").contains(key)) { merged.put(key, value); continue; }
             if ("lastCommentAt".equals(key) && merged.optLong(key) > incoming.optLong(key)) continue;
             if (value != null && value != JSONObject.NULL && !(value instanceof String && ((String) value).isEmpty())) merged.put(key, value);
         }
         if ("users".equals(table) && !merged.has("gender")) merged.put("gender", "unknown");
         db.execSQL("INSERT OR REPLACE INTO " + table + " VALUES (?,?,?)", new Object[]{id, merged.toString(), System.currentTimeMillis()});
     }
-    private JSONObject comments(JSONObject query) throws Exception {
+    private JSONObject comments(JSONObject query) throws Exception { return comments(query, null, 0); }
+    private JSONObject comments(JSONObject query, java.util.function.Consumer<JSONObject> sink, int maxRows) throws Exception {
         List<String> args = new ArrayList<>();
         StringBuilder where = new StringBuilder("c.task=(SELECT max(d.task) FROM comments d WHERE d.id=c.id)");
         if (query.has("taskId")) { where = new StringBuilder("c.task=?"); args.add(String.valueOf(query.getLong("taskId"))); }
+        platformClause(where, args, query, "c.data");
         match(where, args, query, "photoId", "json_extract(c.data,'$.photoId')", false);
         match(where, args, query, "userId", "json_extract(c.data,'$.userId')", false);
         // Keyword and region combine with AND (default) or OR, like the desktop "条件关系".
         StringBuilder regionClause = new StringBuilder(); List<String> regionArgs = new ArrayList<>();
-        RegionFilter.append(regionClause, regionArgs, query, "ipRegion", "ipRegions", "json_extract(c.data,'$.ipRegion')");
+        RegionFilter.append(regionClause, regionArgs, query, "ipRegion", "ipRegions", ipExpression(query.optString("ipSource"), "json_extract(c.data,'$.ipRegion')", "u"));
         StringBuilder keywordClause = new StringBuilder(); List<String> keywordArgs = new ArrayList<>();
         keywordTerms(keywordClause, keywordArgs, query.optString("keyword"), "json_extract(c.data,'$.text')");
         if ("or".equals(query.optString("relation")) && regionClause.length() > 0 && keywordClause.length() > 0) {
@@ -576,13 +586,7 @@ public final class CaptureProvider extends ContentProvider {
             where.append(" AND (coalesce(json_extract(c.data,'$.text'),'') LIKE ? ESCAPE '\\' OR coalesce(json_extract(c.data,'$.nickname'),'') LIKE ? ESCAPE '\\' OR json_extract(c.data,'$.userId')=?)");
             args.add("%" + like(search) + "%"); args.add("%" + like(search) + "%"); args.add(search);
         }
-        String gender = query.optString("gender", "all");
-        if (!"all".equals(gender)) {
-            String expression = "coalesce(json_extract(u.data,'$.gender'),'unknown')";
-            if ("female-or-unknown".equals(gender)) where.append(" AND ").append(expression).append(" IN ('female','unknown')");
-            else if (Arrays.asList("male", "female", "unknown").contains(gender)) { where.append(" AND ").append(expression).append("=?"); args.add(gender); }
-            else throw new IllegalArgumentException("性别条件无效");
-        }
+        genderClause(where, args, "coalesce(json_extract(u.data,'$.gender'),'unknown')", query.optString("gender", "all"));
         for (String key : Arrays.asList("minAge", "maxAge")) if (query.has(key) && !query.isNull(key)) {
             where.append(" AND CAST(json_extract(u.data,'$.age') AS INTEGER)").append("minAge".equals(key) ? ">=?" : "<=?"); args.add(String.valueOf(query.getInt(key)));
         }
@@ -596,6 +600,19 @@ public final class CaptureProvider extends ContentProvider {
         };
         int limit = Math.max(1, Math.min(200, query.optInt("limit", 50))), offset = Math.max(0, query.optInt("offset"));
         String from = " FROM comments c LEFT JOIN users u ON u.id=json_extract(c.data,'$.userId') WHERE " + where;
+        if (sink != null) {
+            // Streaming mode (analysis): one pass, no ORDER BY / OFFSET / count, capped at maxRows.
+            int read = 0; boolean more = false;
+            try (Cursor cursor = db.rawQuery("SELECT c.data,u.data" + from, args.toArray(new String[0]))) {
+                while (cursor.moveToNext()) {
+                    if (read >= maxRows) { more = true; break; }
+                    JSONObject row = new JSONObject(cursor.getString(0));
+                    row.put("user", cursor.isNull(1) ? new JSONObject() : new JSONObject(cursor.getString(1)));
+                    sink.accept(row); read++;
+                }
+            }
+            return new JSONObject().put("read", read).put("more", more);
+        }
         int total = Integer.parseInt(scalar("SELECT count(*)" + from, args.toArray(new String[0])));
         JSONArray items = new JSONArray();
         try (Cursor cursor = db.rawQuery("SELECT c.data,c.task,u.data" + from + " ORDER BY " + order + ",c.id LIMIT " + limit + " OFFSET " + offset, args.toArray(new String[0]))) {
@@ -631,15 +648,13 @@ public final class CaptureProvider extends ContentProvider {
     }
     private JSONObject users(JSONObject query) throws Exception {
         List<String> args = new ArrayList<>(); StringBuilder where = new StringBuilder("1=1");
+        platformClause(where, args, query, "data");
         match(where, args, query, "keyword", "json_extract(data,'$.nickname')", true);
-        RegionFilter.append(where, args, query, "ipRegion", "ipRegions", "json_extract(data,'$.lastCommentIpRegion')");
+        RegionFilter.append(where, args, query, "ipRegion", "ipRegions", ipExpression(query.optString("ipSource"), "json_extract(data,'$.lastCommentIpRegion')", ""));
         match(where, args, query, "profileIpRegion", "json_extract(data,'$.profileIpRegion')", true);
         String userSearch = query.optString("search").trim();
         if (!userSearch.isEmpty()) { where.append(" AND (coalesce(json_extract(data,'$.nickname'),'') LIKE ? ESCAPE '\\' OR id=?)"); args.add("%" + like(userSearch) + "%"); args.add(userSearch); }
-        String gender = query.optString("gender", "all");
-        if ("female-or-unknown".equals(gender)) where.append(" AND coalesce(json_extract(data,'$.gender'),'unknown') IN ('female','unknown')");
-        else if (!"all".equals(gender)) { if (!Arrays.asList("male", "female", "unknown").contains(gender)) throw new IllegalArgumentException("性别条件无效");
-            where.append(" AND coalesce(json_extract(data,'$.gender'),'unknown')=?"); args.add(gender); }
+        genderClause(where, args, "coalesce(json_extract(data,'$.gender'),'unknown')", query.optString("gender", "all"));
         for (String key : Arrays.asList("minAge", "maxAge")) if (query.has(key)) {
             where.append(" AND CAST(json_extract(data,'$.age') AS INTEGER)").append("minAge".equals(key) ? ">=?" : "<=?"); args.add(String.valueOf(query.getInt(key)));
         }
@@ -667,6 +682,7 @@ public final class CaptureProvider extends ContentProvider {
             where.append(" AND EXISTS (SELECT 1 FROM discovered d WHERE d.task=? AND d.post=posts.id)");
             args.add(String.valueOf(query.getLong("taskId")));
         }
+        platformClause(where, args, query, "data");
         match(where, args, query, "keyword", "json_extract(data,'$.title')", true);
         match(where, args, query, "searchKeyword", "json_extract(data,'$.searchKeyword')", false);
         String postSearch = query.optString("search").trim();
@@ -734,4 +750,44 @@ public final class CaptureProvider extends ContentProvider {
     @Override public Uri insert(Uri uri, ContentValues values) { throw new UnsupportedOperationException(); }
     @Override public int delete(Uri uri, String selection, String[] args) { throw new UnsupportedOperationException(); }
     @Override public int update(Uri uri, ContentValues values, String selection, String[] args) { throw new UnsupportedOperationException(); }
+
+    /** Gender filter: "all", a single key, the legacy "female-or-unknown", or a comma list such as "female,unknown". */
+    static void genderClause(StringBuilder where, List<String> args, String expression, String gender) {
+        if (gender == null || gender.isEmpty() || "all".equals(gender)) return;
+        if ("female-or-unknown".equals(gender)) gender = "female,unknown";
+        List<String> keys = new java.util.ArrayList<>();
+        for (String key : gender.split(",")) {
+            key = key.trim();
+            if (!Arrays.asList("male", "female", "unknown").contains(key)) throw new IllegalArgumentException("性别条件无效");
+            if (!keys.contains(key)) keys.add(key);
+        }
+        if (keys.size() >= 3) return; // all three selected means no restriction
+        where.append(" AND ").append(expression).append(" IN (");
+        for (int i = 0; i < keys.size(); i++) { where.append(i == 0 ? "?" : ",?"); args.add(keys.get(i)); }
+        where.append(")");
+    }
+
+    /**
+     * Which IP a region filter looks at: "profile" (the profile page, also the default), "comment" (shown with the
+     * comment) or "post" (where the user's latest post was published, city-level on Douyin). A missing value falls back
+     * to the profile IP first; the profile IP itself falls back to the comment IP only when the profile has none.
+     */
+    static String ipExpression(String source, String commentExpression, String userAlias) {
+        String prefix = userAlias.isEmpty() ? "" : userAlias + ".";
+        String profile = "nullif(json_extract(" + prefix + "data,'$.profileIpRegion'),'')";
+        String post = "nullif(json_extract(" + prefix + "data,'$.latestPostLocation'),'')";
+        String comment = "nullif(" + commentExpression + ",'')";
+        return switch (source == null ? "" : source) {
+            case "comment" -> "coalesce(" + comment + "," + profile + ")";
+            case "post" -> "coalesce(" + post + "," + profile + "," + comment + ")";
+            default -> "coalesce(" + profile + "," + comment + ")";
+        };
+    }
+
+    /** Restricts a query to one platform ("all" or empty means every platform). Rows saved before platforms existed are Kuaishou. */
+    static void platformClause(StringBuilder where, List<String> args, JSONObject query, String dataColumn) {
+        String platform = query.optString("platform");
+        if (platform.isEmpty() || "all".equals(platform)) return;
+        where.append(" AND coalesce(json_extract(").append(dataColumn).append(",'$.platform'),'kuaishou')=?"); args.add(platform);
+    }
 }

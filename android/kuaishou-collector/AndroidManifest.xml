@@ -10,7 +10,7 @@
         <package android:name="com.xingin.xhs" />
         <provider android:authorities="dev.local.commentcollector.capture" />
     </queries>
-    <application android:label="快手评论采集" android:description="@string/description"
+    <application android:label="comso" android:description="@string/description"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:allowBackup="false" android:debuggable="true">
         <activity android:name=".MainActivity" android:exported="true">

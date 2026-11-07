@@ -3,3 +3,6 @@ services/playwright-worker/node_modules/
 services/playwright-worker/browser-data/
 services/playwright-worker/browser-data-*/
 services/playwright-worker/*.log
+
+work/
+android/runtime/

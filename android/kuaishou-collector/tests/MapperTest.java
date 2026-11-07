@@ -123,13 +123,10 @@ public final class MapperTest {
         photo.mLocation = null;
         mappedPost = PublicMapper.post(photo);
         check(mappedPost.getString("location").equals("IP属地：广东") && mappedPost.getString("ipRegion").equals("广东"), "Posts without POI fall back to caption IP region");
-        JSONObject analysis = Analysis.run(new JSONObject().put("excludePhrase", "exclude"), query -> {
-            org.json.JSONArray items = new org.json.JSONArray();
-            if (query.optInt("offset") == 0) {
-                items.put(new JSONObject().put("userId", "u").put("photoId", "p1").put("text", "public").put("likes", 3).put("replies", 2).put("created", 1000));
-                items.put(new JSONObject().put("userId", "u").put("photoId", "p2").put("text", "exclude").put("likes", JSONObject.NULL).put("replies", JSONObject.NULL).put("created", 2000));
-            }
-            return new JSONObject().put("items", items).put("total", 2);
+        JSONObject analysis = Analysis.run(new JSONObject().put("excludePhrase", "exclude"), (query, sink, max) -> {
+            sink.accept(new JSONObject().put("userId", "u").put("photoId", "p1").put("text", "public").put("likes", 3).put("replies", 2).put("created", 1000));
+            sink.accept(new JSONObject().put("userId", "u").put("photoId", "p2").put("text", "exclude").put("likes", JSONObject.NULL).put("replies", JSONObject.NULL).put("created", 2000));
+            return new JSONObject().put("read", 2).put("more", false);
         });
         JSONObject stats = analysis.getJSONArray("items").getJSONObject(0);
         check(stats.getInt("commentCount") == 2 && stats.getInt("postCount") == 2, "Cross-post comment statistics");

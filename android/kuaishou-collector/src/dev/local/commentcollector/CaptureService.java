@@ -27,7 +27,7 @@ public final class CaptureService extends Service {
             manager.createNotificationChannel(new NotificationChannel(CHANNEL, "评论采集桥接", NotificationManager.IMPORTANCE_LOW));
         }
         Notification.Builder notification = android.os.Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
-        notification.setSmallIcon(android.R.drawable.stat_sys_download_done).setContentTitle("快手评论采集").setContentText("桥接服务运行中").setOngoing(true);
+        notification.setSmallIcon(android.R.drawable.stat_sys_download_done).setContentTitle("comso").setContentText("桥接服务运行中").setOngoing(true);
         startForeground(1001, notification.build());
         worker = new HandlerThread("collector-bridge"); worker.start();
         messenger = new Messenger(new Handler(worker.getLooper(), message -> {

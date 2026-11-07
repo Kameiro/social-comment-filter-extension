@@ -64,6 +64,8 @@ public final class CollectorPanel {
     private static WeakReference<Dialog> open = new WeakReference<>(null);
     private static final String FLOATING_TAG = "comment_collector_fab";
     private static final String PILL_TAG = "comment_collector_pill";
+    private static final int R_FLAGS = 0x7f0f0002; // view tag key for the capsule state flags
+    private static final int R_SHAPES = 0x7f0f0001; // view tag key for the capsule re-shape callback
     private static final int PAGE_COLLECT = 0, PAGE_DATA = 1, PAGE_ANALYSIS = 2, PAGE_ME = 3;
     private static final int DATA_COMMENTS = 0, DATA_POSTS = 1, DATA_USERS = 2;
 
@@ -87,6 +89,8 @@ public final class CollectorPanel {
     private final Set<String> selectedPosts = new LinkedHashSet<>(), selectedUsers = new LinkedHashSet<>();
     private final List<TextView> navLabels = new ArrayList<>();
     private final List<ImageView> navIcons = new ArrayList<>();
+    private final List<FrameLayout> navIndicators = new ArrayList<>();
+    private final M3.Scheme sc;
     private final int surface, surfaceContainer, surfaceVariant, foreground, secondary, link, primary, onPrimaryContainer, errorColor;
 
     // ---------------------------------------------------------------- entry points
@@ -106,52 +110,107 @@ public final class CollectorPanel {
         if (activity.isFinishing() || activity.getClass().getName().contains(".login.")) return;
         View decor = activity.getWindow().getDecorView();
         if (!(decor instanceof FrameLayout) || decor.findViewWithTag(FLOATING_TAG) != null) return;
+        M3.Scheme sc = M3.scheme(activity, dark(activity));
+        int size = dp(activity, 48);
+
         ImageButton button = new ImageButton(activity); button.setTag(FLOATING_TAG);
-        button.setContentDescription("打开评论采集"); button.setImageResource(android.R.drawable.ic_menu_agenda);
-        button.setImageTintList(ColorStateList.valueOf(Color.WHITE));
-        GradientDrawable background = new GradientDrawable(); background.setShape(GradientDrawable.OVAL); background.setColor(Color.rgb(11, 124, 89));
-        button.setBackground(background); button.setElevation(dp(activity, 6));
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(activity, 52), dp(activity, 52), Gravity.TOP | Gravity.START);
-        params.leftMargin = dp(activity, 8); params.topMargin = dp(activity, 110);
+        button.setContentDescription("打开评论采集");
+        button.setScaleType(ImageView.ScaleType.CENTER);
+        button.setImageDrawable(new M3.IconDrawable(M3.Icon.CHAT, sc.onPrimaryContainer));
+        button.setBackground(M3.shape(sc.primaryContainer, dp(activity, 16)));
+        button.setElevation(dp(activity, 4));
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(size, size, Gravity.TOP | Gravity.START);
+        params.leftMargin = 0; params.topMargin = dp(activity, 140);
 
         TextView pill = new TextView(activity); pill.setTag(PILL_TAG);
-        pill.setTextColor(Color.WHITE); pill.setTextSize(12); pill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        pill.setGravity(Gravity.CENTER_VERTICAL); pill.setPadding(dp(activity, 30), 0, dp(activity, 14), 0);
-        GradientDrawable pillBackground = new GradientDrawable(); pillBackground.setCornerRadius(dp(activity, 20)); pillBackground.setColor(Color.argb(225, 11, 124, 89));
-        pill.setBackground(pillBackground); pill.setElevation(dp(activity, 5)); pill.setVisibility(View.GONE);
-        FrameLayout.LayoutParams pillParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 36), Gravity.TOP | Gravity.START);
-        Runnable placePill = () -> { pillParams.leftMargin = params.leftMargin + dp(activity, 30); pillParams.topMargin = params.topMargin + dp(activity, 8); pill.setLayoutParams(pillParams); };
-        placePill.run();
+        M3.type(pill, M3.LABEL_MEDIUM, true, sc.onPrimaryContainer);
+        pill.setGravity(Gravity.CENTER_VERTICAL); pill.setPadding(dp(activity, 6), 0, dp(activity, 16), 0);
+        pill.setElevation(dp(activity, 4)); pill.setVisibility(View.GONE);
+        int pillHeight = size; // same height as the button so the two read as one capsule
+        FrameLayout.LayoutParams pillParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, pillHeight, Gravity.TOP | Gravity.START);
         pill.setOnClickListener(view -> show(activity, currentPhoto));
-
         button.setOnClickListener(view -> show(activity, currentPhoto));
+
+        // Edge docking: the button can be dragged anywhere; on release it snaps to the nearest side and slides mostly out
+        // of sight. Touching (or swiping on) the exposed sliver slides it back out; it tucks away again after a moment.
+        boolean[] dockRight = {false};
+        Handler main = new Handler(Looper.getMainLooper());
+        // One capsule: while a task runs the pill sits flush against the button and shares its colour; the touching corners go square.
+        Runnable shapes = () -> {
+            float r = dp(activity, 16), flat = 0f;
+            boolean joined = pill.getVisibility() == View.VISIBLE, right = dockRight[0];
+            android.graphics.drawable.GradientDrawable buttonShape = new android.graphics.drawable.GradientDrawable();
+            buttonShape.setColor(sc.primaryContainer);
+            android.graphics.drawable.GradientDrawable pillShape = new android.graphics.drawable.GradientDrawable();
+            pillShape.setColor(sc.primaryContainer);
+            if (!joined) buttonShape.setCornerRadius(r);
+            else if (right) buttonShape.setCornerRadii(new float[]{flat, flat, r, r, r, r, flat, flat}); // pill sits on its left
+            else buttonShape.setCornerRadii(new float[]{r, r, flat, flat, flat, flat, r, r});           // pill sits on its right
+            if (right) pillShape.setCornerRadii(new float[]{r, r, flat, flat, flat, flat, r, r});
+            else pillShape.setCornerRadii(new float[]{flat, flat, r, r, r, r, flat, flat});
+            button.setBackground(buttonShape); pill.setBackground(pillShape);
+        };
+        pill.setTag(R_SHAPES, shapes);
+        float hidden = size * .62f;
+        Runnable place = () -> {
+            int gap = 0, pillWidth = pill.getWidth() > 0 ? pill.getWidth() : dp(activity, 110);
+            pillParams.topMargin = params.topMargin + (size - pillHeight) / 2;
+            pillParams.leftMargin = dockRight[0] ? Math.max(0, params.leftMargin + Math.round(button.getTranslationX()) - pillWidth - gap)
+                : params.leftMargin + size + Math.round(button.getTranslationX()) + gap;
+            pill.setLayoutParams(pillParams);
+        };
+        Runnable[] tuck = new Runnable[1];
+        tuck[0] = () -> {
+            if (!button.isAttachedToWindow()) return;
+            pillFlags(pill)[0] = false; syncPill(activity, pill);
+            button.animate().translationX(dockRight[0] ? hidden : -hidden).alpha(.72f).scaleX(1f).scaleY(1f).setDuration(260).setInterpolator(Motion.EXIT)
+                .setUpdateListener(animation -> place.run()).start();
+        };
+        Runnable reveal = () -> {
+            main.removeCallbacks(tuck[0]);
+            pillFlags(pill)[0] = true; syncPill(activity, pill);
+            button.animate().translationX(0f).alpha(1f).setDuration(180).setInterpolator(Motion.ENTER).setUpdateListener(animation -> place.run()).start();
+        };
         button.setOnTouchListener(new View.OnTouchListener() {
             float startX, startY; int left, top; boolean moving;
             @Override public boolean onTouch(View view, MotionEvent event) {
-                if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                    startX = event.getRawX(); startY = event.getRawY(); left = params.leftMargin; top = params.topMargin;
-                    moving = false; view.animate().scaleX(.92f).scaleY(.92f).setDuration(90).start(); return true;
-                }
-                if (event.getAction() == MotionEvent.ACTION_MOVE) {
-                    float x = event.getRawX() - startX, y = event.getRawY() - startY;
-                    if (Math.abs(x) + Math.abs(y) > dp(activity, 8)) moving = true;
-                    if (moving) {
-                        params.leftMargin = Math.max(0, Math.min(decor.getWidth() - params.width, left + (int) x));
-                        params.topMargin = Math.max(dp(activity, 30), Math.min(decor.getHeight() - params.height - dp(activity, 40), top + (int) y));
-                        button.setLayoutParams(params); placePill.run();
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                        startX = event.getRawX(); startY = event.getRawY(); left = params.leftMargin; top = params.topMargin; moving = false;
+                        reveal.run(); view.animate().scaleX(.94f).scaleY(.94f).setDuration(90).start(); return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float x = event.getRawX() - startX, y = event.getRawY() - startY;
+                        if (Math.abs(x) + Math.abs(y) > dp(activity, 8)) moving = true;
+                        if (moving) {
+                            params.leftMargin = Math.max(0, Math.min(decor.getWidth() - size, left + (int) x));
+                            params.topMargin = Math.max(dp(activity, 30), Math.min(decor.getHeight() - size - dp(activity, 40), top + (int) y));
+                            button.setLayoutParams(params); place.run();
+                        }
+                        return true;
                     }
-                    return true;
-                }
-                if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
-                    view.animate().scaleX(1f).scaleY(1f).setDuration(200).setInterpolator(new android.view.animation.OvershootInterpolator(2f)).start();
-                    if (event.getAction() == MotionEvent.ACTION_UP && !moving) button.performClick();
-                    return true;
+                    case MotionEvent.ACTION_UP: case MotionEvent.ACTION_CANCEL: {
+                        view.animate().scaleX(1f).scaleY(1f).setDuration(160).start();
+                        if (moving) {
+                            dockRight[0] = params.leftMargin + size / 2 > decor.getWidth() / 2;
+                            shapes.run();
+                            int target = dockRight[0] ? decor.getWidth() - size : 0;
+                            android.animation.ValueAnimator snap = android.animation.ValueAnimator.ofInt(params.leftMargin, target);
+                            snap.setDuration(220); snap.setInterpolator(Motion.ENTER);
+                            snap.addUpdateListener(animation -> { params.leftMargin = (Integer) animation.getAnimatedValue(); button.setLayoutParams(params); place.run(); });
+                            snap.start();
+                        } else if (event.getAction() == MotionEvent.ACTION_UP) button.performClick();
+                        main.removeCallbacks(tuck[0]); main.postDelayed(tuck[0], moving ? 700 : 2600);
+                        return true;
+                    }
                 }
                 return false;
             }
         });
+        shapes.run();
+        button.setTranslationX(-hidden); button.setAlpha(.72f);
         ((FrameLayout) decor).addView(pill, pillParams);
         ((FrameLayout) decor).addView(button, params);
+        place.run();
         startPillUpdates(activity, pill);
     }
 
@@ -172,17 +231,13 @@ public final class CollectorPanel {
                         String text = label;
                         main.post(() -> {
                             busy.set(false);
-                            boolean show = text != null && !showing();
-                            if (show) {
-                                if (!text.contentEquals(pill.getText())) pill.setText(text);
-                                if (pill.getVisibility() != View.VISIBLE) {
-                                    pill.setVisibility(View.VISIBLE); pill.setAlpha(0f); pill.setTranslationX(-dp(activity, 16));
-                                    pill.animate().alpha(1f).translationX(0f).setDuration(240).setInterpolator(Motion.ENTER).start();
-                                }
-                            } else if (pill.getVisibility() == View.VISIBLE) {
-                                pill.animate().alpha(0f).translationX(-dp(activity, 16)).setDuration(180).setInterpolator(Motion.EXIT)
-                                    .withEndAction(() -> pill.setVisibility(View.GONE)).start();
-                            }
+                            // Keep the screen on only while a task is active; collection needs the app in front and lit.
+                            if (text != null) activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                            else activity.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                            boolean[] flags = pillFlags(pill);
+                            flags[1] = text != null;
+                            if (text != null && !text.contentEquals(pill.getText())) pill.setText(text);
+                            syncPill(activity, pill);
                         });
                     }, "collector-pill").start();
                 }
@@ -190,6 +245,33 @@ public final class CollectorPanel {
             }
         };
         main.postDelayed(tick, 800);
+    }
+
+    /** flags[0]: the button is revealed (touched); flags[1]: a task is active. The capsule shows only when both hold. */
+    private static boolean[] pillFlags(TextView pill) {
+        Object flags = pill.getTag(R_FLAGS);
+        if (!(flags instanceof boolean[])) { flags = new boolean[2]; pill.setTag(R_FLAGS, flags); }
+        return (boolean[]) flags;
+    }
+
+    private static void syncPill(Activity activity, TextView pill) {
+        boolean[] flags = pillFlags(pill);
+        boolean show = flags[0] && flags[1] && !showing() && pill.getText().length() > 0;
+        if (show) {
+            if (pill.getVisibility() != View.VISIBLE) {
+                pill.animate().cancel();
+                pill.setVisibility(View.VISIBLE); reshape(pill); pill.setAlpha(0f); pill.setTranslationX(-dp(activity, 16));
+                pill.animate().alpha(1f).translationX(0f).setDuration(240).setInterpolator(Motion.ENTER).start();
+            }
+        } else if (pill.getVisibility() == View.VISIBLE) {
+            pill.animate().alpha(0f).translationX(-dp(activity, 16)).setDuration(180).setInterpolator(Motion.EXIT)
+                .withEndAction(() -> { if (!(pillFlags(pill)[0] && pillFlags(pill)[1])) { pill.setVisibility(View.GONE); reshape(pill); } }).start();
+        }
+    }
+
+    private static void reshape(TextView pill) {
+        Object callback = pill.getTag(R_SHAPES);
+        if (callback instanceof Runnable) ((Runnable) callback).run();
     }
 
     private static String pillLabel(JSONObject task) {
@@ -231,7 +313,7 @@ public final class CollectorPanel {
         CollectorPanel panel = new CollectorPanel(activity, currentPhoto, dialog::dismiss);
         sheetRef[0] = panel.root;
         int height = (int) (activity.getResources().getDisplayMetrics().heightPixels * .9f);
-        panel.root.setBackground(panel.topRounded(panel.surface, 22));
+        panel.root.setBackground(panel.topRounded(panel.surface, 28));
         panel.root.setClipToOutline(true);
         scrim.setOnClickListener(view -> dialog.dismiss());
         frame.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
@@ -270,16 +352,17 @@ public final class CollectorPanel {
         this.activity = activity; this.photo = photo; this.closePanel = close;
         boolean dark = dark(activity);
         darkModeAtCreate = dark;
-        uiContext = new ContextThemeWrapper(activity, dark ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar);
-        surface = dark ? Color.rgb(18, 18, 20) : Color.rgb(245, 245, 247);
-        surfaceContainer = dark ? Color.rgb(30, 30, 34) : Color.WHITE;
-        surfaceVariant = dark ? Color.rgb(44, 44, 50) : Color.rgb(236, 236, 240);
-        foreground = dark ? Color.rgb(242, 242, 244) : Color.rgb(26, 26, 28);
-        secondary = dark ? Color.rgb(150, 150, 160) : Color.rgb(120, 120, 130);
-        primary = dark ? Color.rgb(255, 90, 31) : Color.rgb(255, 73, 6);
-        onPrimaryContainer = Color.WHITE;
+        uiContext = new ContextThemeWrapper(activity, dark ? android.R.style.Theme_DeviceDefault_NoActionBar : android.R.style.Theme_DeviceDefault_Light_NoActionBar);
+        sc = M3.scheme(activity, dark);
+        surface = sc.surfaceContainerLow;
+        surfaceContainer = sc.surfaceContainer;
+        surfaceVariant = sc.surfaceContainerHighest;
+        foreground = sc.onSurface;
+        secondary = sc.onSurfaceVariant;
+        primary = sc.primary;
+        onPrimaryContainer = sc.onPrimary; // text/icon colour on filled primary surfaces
         link = foreground;
-        errorColor = dark ? Color.rgb(255, 120, 110) : Color.rgb(214, 45, 32);
+        errorColor = sc.error;
         root = vertical(); root.setBackgroundColor(surface);
         root.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
             @Override public void onViewAttachedToWindow(View view) {}
@@ -293,18 +376,18 @@ public final class CollectorPanel {
         });
 
         FrameLayout gripFrame = new FrameLayout(activity);
-        View handle = new View(activity); handle.setBackground(round(Color.argb(90, 127, 127, 127), 3));
-        gripFrame.addView(handle, new FrameLayout.LayoutParams(dp(36), dp(5), Gravity.CENTER));
+        View handle = new View(activity); handle.setBackground(round(M3.mix(sc.onSurfaceVariant, sc.surfaceContainerLow, .6f), 2));
+        gripFrame.addView(handle, new FrameLayout.LayoutParams(dp(32), dp(4), Gravity.CENTER));
         gripFrame.setVisibility(View.GONE); grip = gripFrame;
         root.addView(gripFrame, new LinearLayout.LayoutParams(-1, dp(22)));
 
         LinearLayout header = horizontal(); header.setPadding(dp(20), dp(4), dp(8), dp(4));
         LinearLayout titles = vertical();
-        titles.addView(text("评论采集", 20, true));
-        summary = text("快手 · 正在读取…", 12, false); summary.setTextColor(secondary); summary.setSingleLine(true); summary.setEllipsize(TextUtils.TruncateAt.END);
+        titles.addView(M3.type(new TextView(activity), M3.TITLE_LARGE, false, foreground)); ((TextView) titles.getChildAt(0)).setText("comso");
+        summary = text("正在读取…", 14, false); summary.setTextColor(secondary); summary.setSingleLine(true); summary.setEllipsize(TextUtils.TruncateAt.END);
         titles.addView(summary);
         header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
-        header.addView(icon(android.R.drawable.ic_menu_close_clear_cancel, "关闭", close));
+        header.addView(icon(M3.Icon.CLOSE, "关闭", close));
         root.addView(header);
 
         body = vertical(); root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -313,19 +396,23 @@ public final class CollectorPanel {
         render();
     }
 
+    /** M3 navigation bar: tonal surface, 64x32 pill indicator behind the active icon, medium-weight labels. */
     private View bottomNav() {
-        LinearLayout nav = horizontal(); nav.setBackgroundColor(surfaceContainer); nav.setPadding(0, dp(6), 0, dp(6));
+        LinearLayout nav = horizontal(); nav.setBackgroundColor(surfaceContainer); nav.setPadding(0, dp(12), 0, dp(16));
         String[] labels = {"采集", "数据", "分析", "我的"};
-        int[] icons = {android.R.drawable.ic_menu_add, android.R.drawable.ic_menu_agenda, android.R.drawable.ic_menu_sort_by_size, android.R.drawable.ic_menu_myplaces};
+        M3.Icon[] icons = {M3.Icon.COLLECT, M3.Icon.DATA, M3.Icon.ANALYSIS, M3.Icon.PERSON};
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
-            LinearLayout item = vertical(); item.setGravity(Gravity.CENTER); item.setMinimumHeight(dp(52));
-            ImageView image = new ImageView(activity); image.setImageResource(icons[i]);
-            item.addView(image, new LinearLayout.LayoutParams(dp(24), dp(24)));
-            TextView label = text(labels[i], 11, false); label.setGravity(Gravity.CENTER); item.addView(label);
+            LinearLayout item = vertical(); item.setGravity(Gravity.CENTER_HORIZONTAL);
+            FrameLayout indicator = new FrameLayout(activity); indicator.setBackground(round(Color.TRANSPARENT, 16));
+            ImageView image = new ImageView(activity); image.setImageDrawable(new M3.IconDrawable(icons[i], secondary)); image.setScaleType(ImageView.ScaleType.CENTER);
+            indicator.addView(image, new FrameLayout.LayoutParams(dp(64), dp(32), Gravity.CENTER));
+            item.addView(indicator, new LinearLayout.LayoutParams(dp(64), dp(32)));
+            TextView label = M3.type(new TextView(activity), M3.LABEL_MEDIUM, false, secondary); label.setText(labels[i]); label.setGravity(Gravity.CENTER); label.setPadding(0, dp(4), 0, 0);
+            item.addView(label);
             item.setOnClickListener(view -> go(index)); Motion.press(item);
             item.setContentDescription(labels[i]);
-            navLabels.add(label); navIcons.add(image);
+            navLabels.add(label); navIcons.add(image); navIndicators.add(indicator);
             nav.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
         }
         return nav;
@@ -343,9 +430,10 @@ public final class CollectorPanel {
     private void render() {
         for (int i = 0; i < navLabels.size(); i++) {
             boolean on = i == page;
-            navLabels.get(i).setTextColor(on ? primary : secondary);
-            navLabels.get(i).setTypeface(Typeface.DEFAULT, on ? Typeface.BOLD : Typeface.NORMAL);
-            navIcons.get(i).setImageTintList(ColorStateList.valueOf(on ? primary : secondary));
+            navLabels.get(i).setTextColor(on ? foreground : secondary);
+            navLabels.get(i).setTypeface(on ? M3.medium() : Typeface.DEFAULT);
+            ((M3.IconDrawable) navIcons.get(i).getDrawable()).setIconColor(on ? sc.onSecondaryContainer : secondary);
+            navIndicators.get(i).setBackground(round(on ? sc.secondaryContainer : Color.TRANSPARENT, 16));
         }
         int scrollY = currentScroll == null ? 0 : currentScroll.getScrollY(); currentScroll = null;
         body.removeAllViews();
@@ -366,7 +454,7 @@ public final class CollectorPanel {
         LinearLayout card = card(list);
         TextView failed = text("读取失败", 16, true); failed.setTextColor(errorColor); card.addView(failed);
         card.addView(muted(String.valueOf(error.getMessage()), 12));
-        TextView hint = text("采集服务可能被系统在后台结束了。点下方按钮唤醒；若经常出现，请在系统设置中为“快手评论采集”开启自启动、关联启动并允许后台运行。", 13, false);
+        TextView hint = text("采集服务可能被系统在后台结束了。点下方按钮唤醒；若经常出现，请在系统设置中为“comso”开启自启动、关联启动并允许后台运行。", 13, false);
         hint.setPadding(0, dp(8), 0, dp(12)); card.addView(hint);
         card.addView(primary("唤醒采集服务", this::wakeCollector), new LinearLayout.LayoutParams(-1, dp(44)));
     }
@@ -381,7 +469,7 @@ public final class CollectorPanel {
         postCard.addView(muted("当前帖子", 12));
         if (current.isEmpty()) {
             postCard.addView(text("还没有识别到帖子", 16, true));
-            postCard.addView(muted("在快手打开一个帖子的评论区，再回到这里即可一键采集；也可以批量添加帖子链接。", 12));
+            postCard.addView(muted("在" + hostName() + "打开一个帖子的评论区，再回到这里即可一键采集；也可以批量添加帖子链接。", 12));
         } else {
             JSONObject post = null;
             try { JSONArray found = api("posts", new JSONObject().put("search", current).put("limit", 1)).optJSONArray("items"); if (found != null && found.length() > 0) post = found.getJSONObject(0); }
@@ -434,7 +522,7 @@ public final class CollectorPanel {
         TextView title = text("#" + task.optLong("taskId") + " " + kindName(kind), 14, true);
         line.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         TextView badge = text(state(state), 12, true); badge.setPadding(dp(8), dp(2), dp(8), dp(2));
-        badge.setTextColor("complete".equals(state) ? Color.rgb(16, 150, 90) : "paused".equals(state) || "stopped".equals(state) ? errorColor : secondary);
+        badge.setTextColor("paused".equals(state) || "stopped".equals(state) ? errorColor : "complete".equals(state) ? primary : secondary);
         badge.setBackground(round(surfaceVariant, 10)); line.addView(badge);
         row.addView(line);
         row.addView(muted(taskSummary(task), 12));
@@ -461,7 +549,10 @@ public final class CollectorPanel {
         LinearLayout line = horizontal();
         line.addView(text("#" + task.optLong("taskId") + " " + kindName(kind), 15, true), new LinearLayout.LayoutParams(0, -2, 1));
         boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native-");
-        TextView badge = text(waitingForPage ? "等待返回快手" : state(state), 12, true); badge.setTextColor(primary); line.addView(badge);
+        TextView badge = text(waitingForPage ? "等待返回应用" : state(state), 12, true);
+        boolean bad = "paused".equals(state) || "stopped".equals(state) || "failed".equals(state), good = "complete".equals(state);
+        badge.setTextColor(bad ? sc.onErrorContainer : good ? sc.onPrimaryContainer : sc.onSecondaryContainer); badge.setPadding(dp(10), dp(3), dp(10), dp(3));
+        badge.setBackground(round(bad ? sc.errorContainer : good ? sc.primaryContainer : sc.secondaryContainer, 8)); line.addView(badge);
         card.addView(line);
         taskDetails(card, task, live);
     }
@@ -504,7 +595,7 @@ public final class CollectorPanel {
         if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); card.addView(reason); }
         LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
         List<Button> buttons = new ArrayList<>();
-        if (waitingForPage) buttons.add(primary("返回快手继续", closePanel));
+        if (waitingForPage) buttons.add(primary("返回" + hostName() + "继续", closePanel));
         if ("paused".equals(state)) buttons.add(primary("继续", () -> taskAction("resume", id)));
         if (state.startsWith("running") || "paused".equals(state) || "queued".equals(state)) buttons.add(button("停止", () -> taskAction("stop", id)));
         if ("stopped".equals(state)) buttons.add(button("续跑", () -> taskAction("retry", id)));
@@ -518,9 +609,19 @@ public final class CollectorPanel {
 
     // ---- 数据
 
+    /** Host app's platform key ("kuaishou"/"douyin"/"xhs") and display name. */
+    private String hostPlatform() { return Platforms.name(activity.getPackageName()); }
+    private String hostName() { return Platforms.label(hostPlatform()); }
+    private boolean allPlatforms;
+    /** Platform sent with data queries: the host app's own data unless the user switched to all platforms. */
+    private String scope() { return allPlatforms ? "all" : hostPlatform(); }
+
     private void dataPage() throws Exception {
         LinearLayout top = vertical(); top.setPadding(dp(12), dp(2), dp(12), dp(4));
         top.addView(segmented(new String[]{"评论", "帖子", "用户"}, dataKind, index -> { dataKind = index; offset = 0; selectedPosts.clear(); selectedUsers.clear(); render(); }));
+        LinearLayout scopeRow = vertical(); scopeRow.setPadding(0, dp(8), 0, 0);
+        scopeRow.addView(segmented(new String[]{"仅" + hostName(), "全部平台"}, allPlatforms ? 1 : 0, index -> { allPlatforms = index == 1; offset = 0; selectedPosts.clear(); selectedUsers.clear(); render(); }));
+        top.addView(scopeRow);
         EditText box = input(dataKind == DATA_COMMENTS ? "搜索评论内容或昵称" : dataKind == DATA_POSTS ? "搜索帖子标题、作者或 ID" : "搜索昵称或用户 ID", search, false);
         box.setImeOptions(EditorInfo.IME_ACTION_SEARCH); box.setBackground(round(surfaceContainer, 14)); box.setPadding(dp(14), 0, dp(14), 0);
         box.setCompoundDrawablesRelativeWithIntrinsicBounds(android.R.drawable.ic_menu_search, 0, 0, 0); box.setCompoundDrawablePadding(dp(6));
@@ -553,7 +654,7 @@ public final class CollectorPanel {
     }
 
     private void comments() throws Exception {
-        JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 50);
+        JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 50).put("platform", scope());
         if (!userFilter.isEmpty()) query.put("userId", userFilter);
         if (!postFilter.isEmpty()) query.put("photoId", postFilter);
         if (!search.isEmpty()) query.put("search", search);
@@ -584,7 +685,7 @@ public final class CollectorPanel {
     }
 
     private void posts() throws Exception {
-        JSONObject query = new JSONObject().put("offset", offset).put("limit", 30);
+        JSONObject query = new JSONObject().put("offset", offset).put("limit", 30).put("platform", scope());
         if (!search.isEmpty()) query.put("search", search);
         JSONObject data = api("posts", query);
         JSONArray items = data.getJSONArray("items");
@@ -621,7 +722,7 @@ public final class CollectorPanel {
     }
 
     private void users() throws Exception {
-        JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 30);
+        JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 30).put("platform", scope());
         query.remove("keyword"); // comment keyword does not apply to nicknames
         if (!search.isEmpty()) query.put("search", search);
         JSONObject data = api("users", query);
@@ -755,14 +856,14 @@ public final class CollectorPanel {
         try { config = CloudAccountClient.config(activity); } catch (Exception ignored) {}
         boolean signedIn = !config.optString("accessToken").isEmpty();
         LinearLayout group = card(list); group.setPadding(0, dp(4), 0, dp(4));
-        menuRow(group, android.R.drawable.ic_menu_myplaces, "共享账号", signedIn ? (config.optString("email") + " · " + syncStateText(config)) : "未登录 · 登录后与电脑端同步", this::accountSettings);
+        menuRow(group, android.R.drawable.ic_menu_myplaces, "登录账户", signedIn ? (config.optString("email") + " · " + syncStateText(config)) : "未登录 · 登录后与电脑端同步", this::accountSettings);
         menuRow(group, android.R.drawable.ic_menu_info_details, "视频信息设置", "双击帖子弹出的信息与下载按钮", this::videoInfoSettings);
         menuRow(group, android.R.drawable.ic_menu_preferences, "本机接口", "127.0.0.1:" + LocalApi.PORT + " · 接口密钥、导出任务", this::apiSettings);
         LinearLayout group2 = card(list); group2.setPadding(0, dp(4), 0, dp(4));
         menuRow(group2, android.R.drawable.ic_menu_recent_history, "全部任务", "查看、续跑或诊断所有任务", () -> { page = PAGE_COLLECT; allTasks = true; offset = 0; render(); });
         menuRow(group2, android.R.drawable.ic_popup_sync, "唤醒采集服务", "数据库读取失败时使用", this::wakeCollector);
         String runtimeText = "";
-        try { JSONObject runtime = api("runtime", new JSONObject()); runtimeText = "模块 " + runtime.optString("installedVersion") + " · 快手 " + runtime.optString("appVersion", ""); } catch (Exception ignored) {}
+        try { JSONObject runtime = api("runtime", new JSONObject()); runtimeText = "模块 " + runtime.optString("installedVersion") + " · " + hostName() + " " + runtime.optString("appVersion", ""); } catch (Exception ignored) {}
         TextView about = muted((runtimeText.isEmpty() ? "" : runtimeText + "\n") + "构建 " + BuildInfo.ID, 11);
         about.setPadding(dp(8), dp(12), dp(8), 0); list.addView(about);
     }
@@ -790,7 +891,7 @@ public final class CollectorPanel {
             if (!search.isEmpty()) flow.addView(chip("搜索：" + search, true, () -> { search = ""; offset = 0; render(); }));
         }
         String[][] parts = conditionParts(filters, forCollect);
-        for (String[] part : parts) flow.addView(chip(part[1], true, () -> { filters.remove(part[0]); if ("ipRegion".equals(part[0])) filters.remove("relation"); saveFilters(); render(); }));
+        for (String[] part : parts) flow.addView(chip(part[1], true, () -> { filters.remove(part[0]); if ("ipRegion".equals(part[0])) { filters.remove("relation"); filters.remove("ipSource"); } saveFilters(); render(); }));
         flow.addView(chip(parts.length == 0 ? "+ 添加条件" : "编辑条件", false, () -> filterSheet(forCollect)));
         return flow;
     }
@@ -800,7 +901,7 @@ public final class CollectorPanel {
         List<String[]> out = new ArrayList<>();
         if (!f.optString("keyword").isEmpty()) out.add(new String[]{"keyword", "含 " + f.optString("keyword")});
         if (!f.optString("excludeKeyword").isEmpty()) out.add(new String[]{"excludeKeyword", "排除 " + f.optString("excludeKeyword")});
-        if (!f.optString("ipRegion").isEmpty()) out.add(new String[]{"ipRegion", ("or".equals(f.optString("relation")) && !f.optString("keyword").isEmpty() ? "或 " : "") + "IP " + f.optString("ipRegion")});
+        if (!f.optString("ipRegion").isEmpty()) out.add(new String[]{"ipRegion", ("or".equals(f.optString("relation")) && !f.optString("keyword").isEmpty() ? "或 " : "") + ipSourceName(f.optString("ipSource", "profile")) + " " + f.optString("ipRegion")});
         String g = f.optString("gender", "all");
         if (!"all".equals(g)) out.add(new String[]{"gender", genderFilterName(g)});
         if (f.has("minAge") || f.has("maxAge")) out.add(new String[]{"minAge", (f.has("minAge") ? f.optString("minAge") : "") + "–" + (f.has("maxAge") ? f.optString("maxAge") : "") + " 岁"});
@@ -831,13 +932,22 @@ public final class CollectorPanel {
         EditText keyword = input("包含关键词，多个用逗号分隔", filters.optString("keyword"), false); fields.addView(keyword);
         EditText exclude = input("排除关键词，多个用逗号分隔", filters.optString("excludeKeyword"), false); fields.addView(exclude);
         section(fields, "地区");
-        EditText region = input("评论 IP 属地（北京、河北）", filters.optString("ipRegion"), false); fields.addView(region);
+        EditText region = input("IP 属地（北京、河北）", filters.optString("ipRegion"), false); fields.addView(region);
+        String[] ipSources = {"profile", "comment", "post"};
+        int[] ipSource = {0}; for (int i = 0; i < ipSources.length; i++) if (ipSources[i].equals(filters.optString("ipSource", "profile"))) ipSource[0] = i;
+        fields.addView(segmented(new String[]{"主页 IP", "评论 IP", "最新帖子"}, ipSource[0], index -> ipSource[0] = index));
+        fields.addView(muted("按哪个 IP 判断地区，默认主页 IP；所选 IP 取不到时按主页 IP 判断，最新帖子地址在抖音可精确到市", 12));
         int[] relation = {"or".equals(filters.optString("relation")) ? 1 : 0};
-        fields.addView(segmented(new String[]{"关键词与地区同时满足", "满足任一项"}, relation[0], index -> relation[0] = index));
+        fields.addView(segmented(new String[]{"同时满足", "满足其一"}, relation[0], index -> relation[0] = index));
+        fields.addView(muted("评论关键词和地区：「同时满足」两个条件都要符合；「满足其一」符合任意一个就算", 12));
         section(fields, "用户");
-        String[] genderKeys = {"all", "female", "male", "unknown", "female-or-unknown"};
-        int[] genderIndex = {0}; for (int i = 0; i < genderKeys.length; i++) if (genderKeys[i].equals(filters.optString("gender", "all"))) genderIndex[0] = i;
-        fields.addView(segmented(new String[]{"全部", "女", "男", "未知", "女或未知"}, genderIndex[0], index -> genderIndex[0] = index));
+        String[] genderKeys = {"female", "male", "unknown"};
+        boolean[] genderOn = new boolean[3];
+        String savedGender = filters.optString("gender", "all");
+        if ("female-or-unknown".equals(savedGender)) savedGender = "female,unknown";
+        for (int i = 0; i < 3; i++) genderOn[i] = ("," + savedGender + ",").contains("," + genderKeys[i] + ",");
+        fields.addView(multiChips(new String[]{"女", "男", "未知"}, genderOn));
+        fields.addView(muted("可多选；都不选表示不限性别", 12));
         LinearLayout ages = horizontal();
         EditText min = input("年龄下限", filters.has("minAge") ? filters.optString("minAge") : "", true);
         EditText max = input("年龄上限", filters.has("maxAge") ? filters.optString("maxAge") : "", true);
@@ -864,8 +974,8 @@ public final class CollectorPanel {
                 try {
                     JSONObject next = new JSONObject()
                         .put("keyword", keyword.getText().toString().trim()).put("excludeKeyword", exclude.getText().toString().trim())
-                        .put("ipRegion", region.getText().toString().trim()).put("relation", relation[0] == 1 ? "or" : "and")
-                        .put("gender", genderKeys[genderIndex[0]]).put("sort", sortKeys[sorts.getSelectedItemPosition()])
+                        .put("ipRegion", region.getText().toString().trim()).put("ipSource", ipSources[ipSource[0]]).put("relation", relation[0] == 1 ? "or" : "and")
+                        .put("gender", genderValue(genderKeys, genderOn)).put("sort", sortKeys[sorts.getSelectedItemPosition()])
                         .put("pagingMode", pagingKeys[pagingIndex[0]]);
                     putNumber(next, "minAge", min); putNumber(next, "maxAge", max);
                     putNumber(next, "recentDays", days); putNumber(next, "targetCount", target); putNumber(next, "maxPages", pages);
@@ -890,7 +1000,7 @@ public final class CollectorPanel {
         try {
             JSONObject params = new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", enqueue);
             JSONObject result = api("start", params);
-            Toast.makeText(activity, result.optBoolean("duplicate") ? "该帖子已有任务 #" + result.optLong("taskId") : "已开始采集，返回快手继续", Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, result.optBoolean("duplicate") ? "该帖子已有任务 #" + result.optLong("taskId") : "已开始采集，返回" + hostName() + "继续", Toast.LENGTH_SHORT).show();
             closePanel.run();
         } catch (Exception error) { error(error); }
     }
@@ -900,7 +1010,7 @@ public final class CollectorPanel {
     /** Paste several links or IDs (one per line or space-separated) to queue them with the current conditions. */
     private void batchDialog() {
         LinearLayout fields = vertical(); fields.setPadding(dp(20), 0, dp(20), 0);
-        TextView note = muted("每行一个快手帖子链接或作品 ID；会按当前采集条件依次排队。", 12); note.setPadding(0, 0, 0, dp(8)); fields.addView(note);
+        TextView note = muted("每行一个" + hostName() + "帖子链接或作品 ID；会按当前采集条件依次排队。", 12); note.setPadding(0, 0, 0, dp(8)); fields.addView(note);
         EditText links = input("粘贴链接或 ID", "", false); links.setSingleLine(false); links.setMinLines(4); links.setMaxLines(8); links.setGravity(Gravity.TOP);
         links.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         try {
@@ -913,7 +1023,7 @@ public final class CollectorPanel {
         fields.addView(links);
         alert().setTitle("批量添加帖子").setView(fields).setNegativeButton("取消", null).setPositiveButton("加入队列", (dialog, which) -> {
             List<String> ids = parseIds(links.getText().toString());
-            if (ids.isEmpty()) { error(new IllegalStateException("没有识别到帖子 ID。短链接请先在快手打开后复制完整链接。")); return; }
+            if (ids.isEmpty()) { error(new IllegalStateException("没有识别到帖子 ID。短链接请先在" + hostName() + "打开后复制完整链接。")); return; }
             batchStart(ids);
         }).show();
     }
@@ -1010,7 +1120,7 @@ public final class CollectorPanel {
             catch (Exception error) { error(error); }
         });
         ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
-        alert().setTitle("共享账户").setView(scroll).setNegativeButton("关闭", (dialog, which) -> render()).show();
+        alert().setTitle("登录账户").setView(scroll).setNegativeButton("关闭", (dialog, which) -> render()).show();
     }
     private String syncStateText(JSONObject config) {
         long last = config.optLong("lastSyncAt"); String error = config.optString("lastSyncError");
@@ -1085,7 +1195,7 @@ public final class CollectorPanel {
     private void copyDiagnostics(long id) {
         try {
             JSONObject report = new JSONObject().put("moduleBuild", BuildInfo.ID).put("android", android.os.Build.VERSION.RELEASE)
-                .put("appVersion", activity.getPackageManager().getPackageInfo("com.smile.gifmaker", 0).versionName)
+                .put("appVersion", activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionName)
                 .put("runtime", api("runtime", new JSONObject()))
                 .put("task", api("status", new JSONObject().put("taskId", id)))
                 .put("events", api("events", new JSONObject().put("taskId", id)).getJSONArray("items"));
@@ -1096,10 +1206,18 @@ public final class CollectorPanel {
 
     // ---------------------------------------------------------------- navigation helpers
 
-    private void openPost(String id) { if (!id.isEmpty()) launch("kwai://work/" + Uri.encode(id)); }
-    private void openProfile(String id) { if (!id.isEmpty() && !"null".equals(id)) launch("kwai://profile/" + Uri.encode(id)); }
+    private void openPost(String id) {
+        if (id.isEmpty()) return;
+        String scheme = switch (hostPlatform()) { case "douyin" -> "snssdk1128://aweme/detail/"; case "xhs" -> "xhsdiscover://item/"; default -> "kwai://work/"; };
+        launch(scheme + Uri.encode(id));
+    }
+    private void openProfile(String id) {
+        if (id.isEmpty() || "null".equals(id)) return;
+        String scheme = switch (hostPlatform()) { case "douyin" -> "snssdk1128://user/profile/"; case "xhs" -> "xhsdiscover://user/"; default -> "kwai://profile/"; };
+        launch(scheme + Uri.encode(id));
+    }
     private void launch(String url) {
-        try { if (showing()) open.get().dismiss(); activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage("com.smile.gifmaker")); }
+        try { if (showing()) open.get().dismiss(); activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(activity.getPackageName())); }
         catch (Exception error) { error(error); }
     }
     /** Relaunches the collector process via its invisible WakeActivity, then reloads the panel. */
@@ -1127,8 +1245,8 @@ public final class CollectorPanel {
                     return;
                 }
                 try {
-                    JSONObject counts = api("summary", new JSONObject()), task = api("status", new JSONObject());
-                    String summaryText = "快手 · 帖子 " + counts.optInt("posts") + " · 评论 " + counts.optInt("comments") + " · 用户 " + counts.optInt("users")
+                    JSONObject counts = api("summary", new JSONObject().put("platform", hostPlatform())), task = api("status", new JSONObject());
+                    String summaryText = hostName() + " · 帖子 " + counts.optInt("posts") + " · 评论 " + counts.optInt("comments") + " · 用户 " + counts.optInt("users")
                         + (cloudStatusHint.isEmpty() ? "" : " · " + cloudStatusHint);
                     if (!summaryText.contentEquals(summary.getText())) summary.setText(summaryText);
                     maybeAutoSync(task);
@@ -1172,12 +1290,11 @@ public final class CollectorPanel {
         if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_NO) return false;
         return systemConfigured == Configuration.UI_MODE_NIGHT_YES || configured == Configuration.UI_MODE_NIGHT_YES;
     }
-    private android.app.AlertDialog.Builder alert() { return new android.app.AlertDialog.Builder(activity, dark(activity) ? android.R.style.Theme_Material_Dialog_Alert : android.R.style.Theme_Material_Light_Dialog_Alert); }
+    private android.app.AlertDialog.Builder alert() { return new android.app.AlertDialog.Builder(activity, dark(activity) ? android.R.style.Theme_DeviceDefault_Dialog_Alert : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert); }
     private LinearLayout vertical() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.VERTICAL); return view; }
     private LinearLayout horizontal() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.HORIZONTAL); view.setGravity(Gravity.CENTER_VERTICAL); return view; }
     private TextView text(String value, int size, boolean bold) {
-        TextView view = new TextView(activity); view.setText(value); view.setTextSize(size); view.setTextColor(foreground); view.setLineSpacing(0, 1.15f);
-        if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return view;
+        TextView view = new TextView(activity); view.setText(value); M3.type(view, size, bold, foreground); return view;
     }
     private TextView muted(String value, int size) { TextView view = text(value, size, false); view.setTextColor(secondary); return view; }
     private TextView empty(String value) { TextView view = muted(value, 14); view.setGravity(Gravity.CENTER); view.setPadding(0, dp(40), 0, dp(40)); return view; }
@@ -1188,58 +1305,60 @@ public final class CollectorPanel {
     private void sectionTitle(LinearLayout parent, String title) {
         TextView label = text(title, 15, true); label.setPadding(dp(4), dp(14), 0, dp(6)); parent.addView(label);
     }
-    private ImageButton icon(int drawable, String label, Runnable action) {
-        ImageButton button = new ImageButton(activity); button.setImageResource(drawable); button.setContentDescription(label);
-        button.setBackgroundColor(Color.TRANSPARENT); button.setImageTintList(ColorStateList.valueOf(foreground));
+    private ImageButton icon(M3.Icon glyph, String label, Runnable action) {
+        ImageButton button = new ImageButton(activity); button.setImageDrawable(new M3.IconDrawable(glyph, secondary)); button.setContentDescription(label);
+        button.setScaleType(ImageView.ScaleType.CENTER); button.setBackground(round(Color.TRANSPARENT, 24));
         button.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48))); button.setOnClickListener(view -> action.run()); Motion.press(button); return button;
     }
-    private Button button(String label, Runnable action) { return styledButton(label, action, surfaceVariant, foreground); }
-    private Button primary(String label, Runnable action) { return styledButton(label, action, primary, Color.WHITE); }
+    private Button button(String label, Runnable action) { return styledButton(label, action, sc.secondaryContainer, sc.onSecondaryContainer); }
+    private Button primary(String label, Runnable action) { return styledButton(label, action, primary, sc.onPrimary); }
     private Button styledButton(String label, Runnable action, int background, int textColor) {
-        Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(36)); button.setMinimumHeight(dp(36)); button.setMinWidth(0); button.setMinimumWidth(0);
-        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD); button.setTextColor(textColor); button.setBackground(round(background, 20));
-        button.setStateListAnimator(null); button.setPadding(dp(14), 0, dp(14), 0);
+        Button button = new Button(uiContext); button.setText(label); button.setTextSize(M3.LABEL_LARGE); button.setAllCaps(false); button.setMinHeight(dp(40)); button.setMinimumHeight(dp(40)); button.setMinWidth(0); button.setMinimumWidth(0);
+        button.setTypeface(M3.medium()); button.setTextColor(textColor); button.setBackground(round(background, 20)); button.setLetterSpacing(.01f);
+        button.setStateListAnimator(null); button.setPadding(dp(20), 0, dp(20), 0);
         button.setOnClickListener(view -> action.run()); Motion.press(button); return button;
     }
     private LinearLayout.LayoutParams weighted(int leftMargin) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(36)); params.leftMargin = dp(leftMargin); return params;
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(40)); params.leftMargin = dp(leftMargin); return params;
     }
     private LinearLayout card(LinearLayout parent) {
-        LinearLayout card = vertical(); card.setPadding(dp(16), dp(14), dp(16), dp(14)); card.setBackground(round(surfaceContainer, 16));
+        LinearLayout card = vertical(); card.setPadding(dp(16), dp(16), dp(16), dp(16)); card.setBackground(round(surfaceContainer, M3.SHAPE_LARGE));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(10)); parent.addView(card, params); return card;
     }
     /** Rounded pill; removable chips show "×" and clear on tap, action chips are outlined. */
     private TextView chip(String label, boolean removable, Runnable action) {
-        TextView chip = text(removable ? label + "  ×" : label, 12, !removable);
-        chip.setSingleLine(true); chip.setEllipsize(TextUtils.TruncateAt.END); chip.setMaxWidth(dp(220));
-        chip.setPadding(dp(12), dp(6), dp(12), dp(6));
-        GradientDrawable shape = round(removable ? surfaceVariant : Color.TRANSPARENT, 16);
-        if (!removable) { shape.setStroke(dp(1), primary); chip.setTextColor(primary); }
+        TextView chip = M3.type(new TextView(activity), M3.LABEL_LARGE, false, removable ? sc.onSecondaryContainer : foreground);
+        chip.setText(removable ? label + "  ✕" : label);
+        chip.setGravity(Gravity.CENTER_VERTICAL); chip.setMinHeight(dp(32)); chip.setSingleLine(true); chip.setEllipsize(TextUtils.TruncateAt.END); chip.setMaxWidth(dp(240));
+        chip.setPadding(dp(12), dp(4), dp(12), dp(4));
+        GradientDrawable shape = round(removable ? sc.secondaryContainer : Color.TRANSPARENT, M3.SHAPE_SMALL);
+        if (!removable) shape.setStroke(dp(1), sc.outline); else shape.setStroke(dp(1), sc.secondaryContainer);
         chip.setBackground(shape); chip.setOnClickListener(view -> action.run()); Motion.press(chip);
         return chip;
     }
-    /** Segmented control: equal-width options, the selected one filled. */
+    /** M3 segmented button: outlined pill, the selected segment filled with the secondary container. */
     private View segmented(String[] options, int selected, Consumer<Integer> onSelect) {
-        LinearLayout row = horizontal(); row.setBackground(round(surfaceVariant, 12)); row.setPadding(dp(3), dp(3), dp(3), dp(3));
+        LinearLayout row = horizontal();
+        GradientDrawable frame = round(Color.TRANSPARENT, 20); frame.setStroke(dp(1), sc.outline); row.setBackground(frame); row.setClipToOutline(true);
         TextView[] items = new TextView[options.length];
         for (int i = 0; i < options.length; i++) {
             final int index = i;
-            TextView item = text(options[i], 13, false); item.setGravity(Gravity.CENTER); item.setSingleLine(true); item.setEllipsize(TextUtils.TruncateAt.END);
-            item.setPadding(dp(4), 0, dp(4), 0);
+            TextView item = M3.type(new TextView(activity), M3.LABEL_LARGE, true, secondary); item.setText(options[i]);
+            item.setGravity(Gravity.CENTER); item.setSingleLine(true); item.setEllipsize(TextUtils.TruncateAt.END); item.setPadding(dp(4), 0, dp(4), 0);
             item.setOnClickListener(view -> {
                 for (int j = 0; j < items.length; j++) styleSegment(items[j], j == index);
                 onSelect.accept(index);
             });
             styleSegment(item, i == selected); items[i] = item;
-            row.addView(item, new LinearLayout.LayoutParams(0, dp(34), 1));
+            row.addView(item, new LinearLayout.LayoutParams(0, dp(40), 1));
+            if (i < options.length - 1) { View divider = new View(activity); divider.setBackgroundColor(sc.outline); row.addView(divider, new LinearLayout.LayoutParams(dp(1), -1)); }
         }
         LinearLayout wrapper = vertical(); wrapper.setPadding(0, dp(4), 0, dp(4)); wrapper.addView(row, new LinearLayout.LayoutParams(-1, -2));
         return wrapper;
     }
     private void styleSegment(TextView item, boolean on) {
-        item.setBackground(on ? round(surfaceContainer, 10) : null);
-        item.setTextColor(on ? foreground : secondary); item.setTypeface(Typeface.DEFAULT, on ? Typeface.BOLD : Typeface.NORMAL);
-        if (on) item.setElevation(dp(1)); else item.setElevation(0);
+        item.setBackgroundColor(on ? sc.secondaryContainer : Color.TRANSPARENT);
+        item.setTextColor(on ? sc.onSecondaryContainer : foreground); item.setText(on ? "✓ " + item.getText().toString().replaceFirst("^✓ ", "") : item.getText().toString().replaceFirst("^✓ ", ""));
     }
     private CheckBox tint(CheckBox box) { box.setButtonTintList(ColorStateList.valueOf(primary)); return box; }
     private GradientDrawable round(int color, int radius) { GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape; }
@@ -1266,7 +1385,7 @@ public final class CollectorPanel {
     }
     private EditText input(String hint, String value, boolean numeric) {
         EditText view = new EditText(uiContext); view.setHint(hint); view.setText(value); view.setTextSize(14); view.setTextColor(foreground); view.setHintTextColor(secondary);
-        view.setSingleLine(true); view.setMinHeight(dp(48)); if (numeric) view.setInputType(InputType.TYPE_CLASS_NUMBER); return view;
+        view.setSingleLine(true); view.setMinHeight(dp(56)); view.setPadding(dp(16), dp(8), dp(16), dp(8)); GradientDrawable field = round(Color.TRANSPARENT, M3.SHAPE_EXTRA_SMALL); field.setStroke(dp(1), sc.outline); view.setBackground(field); if (numeric) view.setInputType(InputType.TYPE_CLASS_NUMBER); return view;
     }
 
     /** Minimal wrapping row for chips. */
@@ -1301,8 +1420,36 @@ public final class CollectorPanel {
         if (time <= 0) return "时间未知"; if (time < 100000000000L) time *= 1000;
         return new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(new Date(time));
     }
+    private static String genderValue(String[] keys, boolean[] on) {
+        StringBuilder out = new StringBuilder(); int count = 0;
+        for (int i = 0; i < keys.length; i++) if (on[i]) { out.append(count++ == 0 ? "" : ",").append(keys[i]); }
+        return count == 0 || count == keys.length ? "all" : out.toString();
+    }
+    /** Independent toggle chips (multi-select), each filled when selected. */
+    private View multiChips(String[] labels, boolean[] on) {
+        LinearLayout row = horizontal();
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            TextView item = M3.type(new TextView(activity), M3.LABEL_LARGE, true, secondary); item.setText(labels[i]);
+            item.setGravity(Gravity.CENTER); item.setMinHeight(dp(40)); item.setPadding(dp(16), 0, dp(16), 0);
+            Runnable paint = () -> {
+                GradientDrawable shape = round(on[index] ? sc.secondaryContainer : Color.TRANSPARENT, M3.SHAPE_SMALL);
+                shape.setStroke(dp(1), on[index] ? sc.secondaryContainer : sc.outline);
+                item.setBackground(shape); item.setTextColor(on[index] ? sc.onSecondaryContainer : secondary);
+                item.setText((on[index] ? "✓ " : "") + labels[index]);
+            };
+            paint.run();
+            item.setOnClickListener(view -> { on[index] = !on[index]; paint.run(); });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(40), 1);
+            if (i > 0) params.leftMargin = dp(8);
+            row.addView(item, params);
+        }
+        return row;
+    }
+    private static String ipSourceName(String source) { return "comment".equals(source) ? "评论IP" : "post".equals(source) ? "最新帖子" : "主页IP"; }
     private String gender(String gender) { return "female".equals(gender) ? "女" : "male".equals(gender) ? "男" : "未知"; }
     private String genderFilterName(String key) {
+        if (key.contains(",")) { StringBuilder names = new StringBuilder(); for (String part : key.split(",")) names.append(names.length() == 0 ? "" : "/").append(gender(part)); return names.toString(); }
         return switch (key) { case "female" -> "女"; case "male" -> "男"; case "unknown" -> "性别未知"; case "female-or-unknown" -> "女或未知"; default -> "全部性别"; };
     }
     private String sortName(String key) {
@@ -1323,13 +1470,13 @@ public final class CollectorPanel {
             case "opening_target_post" -> "正在打开目标作品";
             case "opening_comments" -> "正在打开评论面板";
             case "database_open" -> "正在查看数据库";
-            case "waiting_foreground" -> "等待返回快手";
+            case "waiting_foreground" -> "等待返回" + hostName();
             case "unsupported_native_version" -> "当前版本未适配原生加载";
             case "native_pending_root_unavailable" -> "未找到待补充回复的主评论";
             case "native_reply_signature_mismatch" -> "回复接口与适配版本不一致";
             case "ui_requested" -> "已选择页面加载";
             case "adapter_error" -> "加载器报错，请查看诊断";
-            case "" -> "尚未连接快手";
+            case "" -> "尚未连接" + hostName();
             default -> state(value);
         };
     }
@@ -1346,7 +1493,7 @@ public final class CollectorPanel {
             case "search_eof_confirmed" -> "搜索末页已确认";
             case "search_page_limit" -> "已达到搜索页数上限"; case "no_new_search_page" -> "搜索页面未继续加载";
             case "no_new_comment_page" -> "评论页面未继续加载"; case "profile_not_returned" -> "主页没有返回可用资料";
-            case "root_page_not_observed" -> "尚未读取主评论首页，请返回快手后继续";
+            case "root_page_not_observed" -> "尚未读取主评论首页，请返回" + hostName() + "后继续";
             case "native_page_timeout" -> "原生评论请求等待超时，可继续任务后重试";
             case "native_reply_unconfirmed" -> "回复分组尚未准备完成或无法确认末页，请查看诊断后继续";
             case "native_adapter_unavailable" -> "当前页面没有可用的原生分页器，请打开目标作品评论后继续";
