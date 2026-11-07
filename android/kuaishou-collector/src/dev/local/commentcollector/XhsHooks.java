@@ -222,9 +222,14 @@ final class XhsHooks {
         if (!isDetailActivity(host) || isCommentLayer(host, x, y)) return false;
         View view = deepestView(host.getWindow() == null ? null : host.getWindow().getDecorView(), x, y);
         if (view == null) return false;
-        String name = view.getClass().getName().toLowerCase(java.util.Locale.ROOT);
-        if (name.contains("video") || name.contains("surface") || name.contains("player")) return false;
-        return name.contains("image") || name.contains("photo") || view instanceof android.widget.ImageView;
+        for (View c = view; c != null; ) {
+            String name = c.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+            if (name.contains("video") || name.contains("surface") || name.contains("player")) return false;
+            if (name.contains("image") || name.contains("photo") || c instanceof android.widget.ImageView) return true;
+            Object parent = c.getParent();
+            c = parent instanceof View ? (View) parent : null;
+        }
+        return false;
     }
 
     private static boolean isCommentLayer(Activity host, float x, float y) {
