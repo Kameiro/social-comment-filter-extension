@@ -38,6 +38,17 @@ public final class MapperTest {
         public boolean mIsBlockedByOwner; public Meta getKUserProfileMeta() { return new Meta(); }
     }
     public static class UserProfileResponse { public Profile mUserProfile = new Profile(); }
+    public static class QPhoto {
+        public String mPhotoId = "post-location-1";
+        public CommonMeta mCommonMeta = new CommonMeta();
+        public Location mLocation = new Location();
+        public UserInfo mUser = new UserInfo();
+        public String getPhotoId() { return mPhotoId; }
+        public CommonMeta getCommonMeta() { return mCommonMeta; }
+        public UserInfo getUser() { return mUser; }
+    }
+    public static class CommonMeta { public String mCaption = "caption"; public Long mCreated = 1700000000L; }
+    public static class Location { public String mTitle = "大世界五金城"; public String mCity = "杭州"; }
     private static int assertions;
     private static void check(boolean condition, String name) { assertions++; if (!condition) throw new AssertionError(name); }
     public static void main(String[] args) throws Exception {
@@ -106,6 +117,9 @@ public final class MapperTest {
         profile.mUserProfile.mAgePrivacy = "hidden"; check(PublicMapper.profile(profile).isNull("age"), "Private age withheld");
         profile.mUserProfile.mProfile.mSex = "unknown"; check(PublicMapper.profile(profile).getString("gender").equals("unknown"), "Do not infer gender");
         profile.mUserProfile.mIsBlockedByOwner = true; check(PublicMapper.profile(profile) == null, "Blocked profile not bypassed");
+        QPhoto photo = new QPhoto();
+        JSONObject mappedPost = PublicMapper.post(photo);
+        check(mappedPost.getString("location").contains("大世界五金城") && mappedPost.getString("location").contains("杭州"), "Post publishing location mapped from POI");
         JSONObject analysis = Analysis.run(new JSONObject().put("excludePhrase", "exclude"), query -> {
             org.json.JSONArray items = new org.json.JSONArray();
             if (query.optInt("offset") == 0) {

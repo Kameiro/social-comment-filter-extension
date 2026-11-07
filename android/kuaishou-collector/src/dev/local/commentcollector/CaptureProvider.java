@@ -22,9 +22,11 @@ import org.json.JSONObject;
 
 public final class CaptureProvider extends ContentProvider {
     public static final Uri URI = Uri.parse("content://dev.local.commentcollector.capture");
+    private static volatile CaptureProvider instance;
     private SQLiteDatabase db;
 
     @Override public boolean onCreate() {
+        instance = this;
         db = getContext().openOrCreateDatabase("capture.db", 0, null);
         db.execSQL("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, photo TEXT, status TEXT, pages INTEGER DEFAULT 0, total INTEGER, root_eof INTEGER DEFAULT 0, auto INTEGER, updated INTEGER, issue TEXT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS comments (task INTEGER, id TEXT, root TEXT, replies INTEGER, data TEXT, PRIMARY KEY(task,id))");
@@ -78,11 +80,19 @@ public final class CaptureProvider extends ContentProvider {
         db.execSQL("ALTER TABLE tasks ADD COLUMN " + name + " " + declaration);
     }
 
-    private boolean owner() { return Binder.getCallingUid() == Process.myUid(); }
-    private void authorize() {
-        String[] packages = getContext().getPackageManager().getPackagesForUid(Binder.getCallingUid());
-        if (!owner() && (packages == null || !Arrays.asList(packages).contains("com.smile.gifmaker")))
+    private boolean owner(int uid) { return uid == Process.myUid(); }
+    private void authorize(int uid) {
+        String[] packages = getContext().getPackageManager().getPackagesForUid(uid);
+        if (!owner(uid) && (packages == null || !Arrays.asList(packages).contains("com.smile.gifmaker")))
             throw new SecurityException("Caller is not in the collector scope");
+    }
+    private void authorize() { authorize(Binder.getCallingUid()); }
+
+    static Bundle callFromService(String method, Bundle extras, int callingUid) {
+        CaptureProvider value = instance;
+        if (value == null || value.db == null) throw new IllegalStateException("采集服务尚未启动");
+        value.authorize(callingUid);
+        return value.callInternal(method, extras);
     }
     private long activeId() {
         try (Cursor cursor = db.rawQuery("SELECT id FROM tasks WHERE status IN ('running','running-replies','running-profiles','paused') ORDER BY id DESC LIMIT 1", null)) {
@@ -130,6 +140,10 @@ public final class CaptureProvider extends ContentProvider {
 
     @Override public synchronized Bundle call(String method, String arg, Bundle extras) {
         authorize();
+        return callInternal(method, extras);
+    }
+
+    private synchronized Bundle callInternal(String method, Bundle extras) {
         Bundle out = new Bundle();
         try {
             JSONObject input = extras != null && extras.containsKey("body") ? new JSONObject(extras.getString("body")) : new JSONObject();
@@ -169,7 +183,7 @@ public final class CaptureProvider extends ContentProvider {
                 if (requests.length() == 0 || requests.length() > 50) throw new IllegalArgumentException("批量任务需包含 1 至 50 个任务");
                 for (int i = 0; i < requests.length(); i++) {
                     JSONObject request = requests.getJSONObject(i).put("enqueue", true); Bundle payload = new Bundle(); payload.putString("body", request.toString());
-                    Bundle result = call("start", null, payload);
+                    Bundle result = callInternal("start", payload);
                     results.put(result.containsKey("error") ? new JSONObject().put("ok", false).put("error", result.getString("error")) :
                         new JSONObject().put("ok", true).put("task", new JSONObject(result.getString("json"))));
                 }

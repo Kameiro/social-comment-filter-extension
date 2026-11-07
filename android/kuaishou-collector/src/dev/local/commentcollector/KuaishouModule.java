@@ -6,7 +6,20 @@ import android.app.Dialog;
 import android.app.Instrumentation;
 import android.content.Context;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
+import android.view.MotionEvent;
+import android.view.SurfaceView;
+import android.view.TextureView;
+import android.view.View;
+import android.view.ViewGroup;
+import android.graphics.Rect;
+import android.graphics.Color;
+import android.view.Gravity;
+import android.widget.LinearLayout;
+import android.widget.TextView;
 import io.github.libxposed.api.XposedModule;
 import java.lang.reflect.Method;
 import java.lang.ref.WeakReference;
@@ -27,8 +40,19 @@ public final class KuaishouModule extends XposedModule {
         new ArrayBlockingQueue<>(64), runnable -> new Thread(runnable, "comment-capture"));
     private String process;
     private volatile Context context;
+    private volatile Activity activeActivity;
     private volatile String lastPhoto = "";
+    private volatile JSONObject lastPost;
     private String version = "";
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private long lastTapAt;
+    private float lastTapX, lastTapY;
+    private WeakReference<View> lastTapTarget = new WeakReference<>(null);
+    private WeakReference<View> downTarget = new WeakReference<>(null);
+    private boolean downOnMedia;
+    private boolean suppressSecondGesture;
+    private long downAt;
+    private float downX, downY;
     private AutoPager pager;
     private final CommentPageCache recentPages = new CommentPageCache();
     private final NativeCommentPager nativePager = new NativeCommentPager();
@@ -37,6 +61,8 @@ public final class KuaishouModule extends XposedModule {
     private final WeakIdentityMap<JSONObject> replyContext = new WeakIdentityMap<>();
     private final WeakIdentityMap<String> commentSeen = new WeakIdentityMap<>();
     private final java.util.Set<String> commentSchemas = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private final java.util.Set<String> touchHooks = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+    private long lastTouchLogAt;
 
     @Override public void onModuleLoaded(ModuleLoadedParam param) {
         process = param.getProcessName();
@@ -72,6 +98,8 @@ public final class KuaishouModule extends XposedModule {
                 if (pager != null) pager.dialog = new WeakReference<>((Dialog) chain.getThisObject());
                 return result;
             });
+        } catch (Exception error) { log(Log.ERROR, TAG, "lifecycle_hook_failed", error); }
+        try {
             Method windowAdd = Class.forName("android.view.WindowManagerImpl")
                 .getDeclaredMethod("addView", android.view.View.class, android.view.ViewGroup.LayoutParams.class);
             hook(windowAdd).intercept(chain -> {
@@ -79,9 +107,11 @@ public final class KuaishouModule extends XposedModule {
                 if (pager != null) pager.trackWindow((android.view.View) chain.getArg(0));
                 return result;
             });
-        } catch (Exception error) { log(Log.ERROR, TAG, "lifecycle_hook_failed", error); }
+        } catch (Exception error) { log(Log.WARN, TAG, "window_hook_unavailable", error); }
+        installTouchHooks(loader);
         installRequests(loader);
         installNativePaging(loader);
+        installNativeSettings(loader);
         installConverter(loader, "retrofit2.converter.gson.GsonResponseBodyConverter");
         installConverter(loader, "com.kwai.feature.api.corona.api.fast.CoronaProxyGsonResponseBodyConverter");
         try {
@@ -109,19 +139,239 @@ public final class KuaishouModule extends XposedModule {
         try {
             Method getter = loader.loadClass("com.kwai.framework.model.user.UserProfile").getDeclaredMethod("getKUserInfo");
             hook(getter).intercept(chain -> { Object result = chain.proceed(); capture(chain.getThisObject()); return result; });
-            Method caption = loader.loadClass("com.yxcorp.gifshow.entity.QPhoto").getDeclaredMethod("getCaption");
+            Class<?> qPhoto = loader.loadClass("com.yxcorp.gifshow.entity.QPhoto");
+            // Keep this on the caption getter only. The other QPhoto getters are hot render-path methods;
+            // reflecting on them causes measurable feed stalls on newer Kuaishou builds.
+            Method caption = qPhoto.getDeclaredMethod("getCaption");
             hook(caption).intercept(chain -> {
-                Object result = chain.proceed(); Object value = chain.getThisObject();
-                try { if (context != null) synchronized (processed) {
-                    if (!processed.containsKey(value)) {
-                        processed.put(value, Boolean.TRUE); JSONObject post = PublicMapper.post(value);
-                        if (post != null) writer.execute(() -> { try { CollectorClient.call(context, "record_post", new JSONObject().put("post", post)); } catch (Exception ignored) {} });
-                    }
-                } } catch (Exception ignored) { Log.w(TAG, "post_observation_failed"); }
+                Object result = chain.proceed();
+                rememberPost(chain.getThisObject());
                 return result;
             });
         } catch (Exception error) { log(Log.WARN, TAG, "public_model_hook_unavailable"); }
         log(Log.INFO, TAG, "hooks_installed");
+    }
+
+    private void rememberPost(Object value) {
+        try { if (context != null && value != null) synchronized (processed) {
+            if (processed.containsKey(value)) return;
+            JSONObject post = PublicMapper.post(value);
+            if (post == null) return;
+            lastPost = post;
+            processed.put(value, Boolean.TRUE);
+            writer.execute(() -> { try { CollectorClient.call(context, "record_post", new JSONObject().put("post", post)); } catch (Exception ignored) {} });
+        } } catch (Exception ignored) { Log.w(TAG, "post_observation_failed"); }
+    }
+
+    private boolean observeDoubleTap(Activity activity, MotionEvent event) {
+        if (event == null) return false;
+        String name = activity.getClass().getName();
+        if (!isFeedActivity(name) || CollectorPanel.showing() || (pager != null && pager.dialog.get() != null && pager.dialog.get().isShowing())) {
+            resetTap(); return false;
+        }
+        long now = SystemClock.uptimeMillis();
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            View target = mediaViewAt(activity, event.getRawX(), event.getRawY());
+            if (now - lastTouchLogAt > 800L) {
+                lastTouchLogAt = now;
+                Log.i(TAG, "double_tap_down activity=" + name + " post=" + (lastPost == null ? "" : lastPost.optString("postId"))
+                    + " target=" + (target == null ? "null" : target.getClass().getName())
+                    + " x=" + event.getRawX() + " y=" + event.getRawY());
+            }
+            boolean secondDown = hasUsablePost() && target != null && isSameTarget(lastTapTarget.get(), target)
+                && lastTapAt > 0L && now - lastTapAt <= 360L
+                && Math.abs(event.getRawX() - lastTapX) + Math.abs(event.getRawY() - lastTapY)
+                    <= activity.getResources().getDisplayMetrics().density * 72f;
+            downTarget = new WeakReference<>(target);
+            downOnMedia = target != null && hasUsablePost();
+            downAt = now;
+            downX = event.getRawX();
+            downY = event.getRawY();
+            if (!downOnMedia) lastTapAt = 0;
+            if (secondDown && downOnMedia) {
+                suppressSecondGesture = true;
+                return true;
+            }
+            return false;
+        }
+        if (action == MotionEvent.ACTION_CANCEL) {
+            boolean consume = suppressSecondGesture;
+            resetTap();
+            return consume;
+        }
+        if (suppressSecondGesture) {
+            if (action == MotionEvent.ACTION_UP) {
+                View target = mediaViewAt(activity, event.getRawX(), event.getRawY());
+                boolean sameMedia = downOnMedia && target != null && isSameTarget(downTarget.get(), target)
+                    && now - downAt <= 500L;
+                suppressSecondGesture = false;
+                downOnMedia = false;
+                JSONObject post = lastPost;
+                if (sameMedia && post != null && !post.optString("postId").isEmpty()) {
+                    Log.i(TAG, "post_info_triggered target=" + target.getClass().getName() + " post=" + post.optString("postId"));
+                    lastTapAt = 0L;
+                    new Thread(() -> {
+                        JSONObject settings = VideoInfoSettings.load(activity);
+                        mainHandler.post(() -> PostInfoPanel.show(activity, post, settings));
+                    }, "post-info-settings").start();
+                } else {
+                    lastTapAt = 0L;
+                }
+            }
+            return true;
+        }
+        if (action != MotionEvent.ACTION_UP) return false;
+        View down = downTarget.get();
+        View up = mediaViewAt(activity, event.getRawX(), event.getRawY());
+        boolean sameMedia = downOnMedia && down != null && up != null && (down == up || isAncestor(down, up) || isAncestor(up, down));
+        float move = Math.abs(event.getRawX() - downX) + Math.abs(event.getRawY() - downY);
+        if (!sameMedia || now - downAt > 500L || move > activity.getResources().getDisplayMetrics().density * 72f) {
+            resetTap();
+            return false;
+        }
+        lastTapAt = now;
+        lastTapX = event.getRawX();
+        lastTapY = event.getRawY();
+        lastTapTarget = new WeakReference<>(up);
+        downOnMedia = false;
+        return false;
+    }
+
+    private boolean hasUsablePost() {
+        JSONObject post = lastPost;
+        long capturedAt = post == null ? 0L : post.optLong("snapshotAt", 0L);
+        return post != null && !post.optString("postId").isEmpty() && capturedAt > 0L && System.currentTimeMillis() - capturedAt < 300000L;
+    }
+
+    private void resetTap() {
+        lastTapAt = 0;
+        downAt = 0;
+        downX = downY = 0f;
+        downOnMedia = false;
+        suppressSecondGesture = false;
+        downTarget = new WeakReference<>(null);
+        lastTapTarget = new WeakReference<>(null);
+    }
+
+    private static boolean isSameTarget(View first, View second) {
+        return first != null && second != null && (first == second || isAncestor(first, second) || isAncestor(second, first));
+    }
+
+    private static boolean isAncestor(View possibleParent, View child) {
+        View current = child;
+        while (current != null) {
+            if (current == possibleParent) return true;
+            if (!(current.getParent() instanceof View)) break;
+            current = (View) current.getParent();
+        }
+        return false;
+    }
+
+    private static View mediaViewAt(Activity activity, float rawX, float rawY) {
+        if (activity == null || activity.getWindow() == null) return null;
+        View root = activity.getWindow().getDecorView();
+        int[] origin = new int[2];
+        root.getLocationOnScreen(origin);
+        View target = findViewAt(root, rawX, rawY);
+        int height = root.getHeight();
+        int width = root.getWidth();
+        float y = rawY - origin[1];
+        float x = rawX - origin[0];
+        // Keep the gesture on the post body. Caption, action rail, tabs and system bars are excluded.
+        if (height <= 0 || width <= 0 || y < height * .12f || y > height * .72f || x < width * .08f || x > width * .92f) return null;
+        if (target == null) {
+            Log.i(TAG, "double_tap_media_fallback x=" + rawX + " y=" + rawY);
+            return root;
+        }
+        if (blockedTapView(target) && !isMediaView(target)) return null;
+        if (isMediaView(target)) return target;
+        // Newer Kuaishou builds render the video into a generic container without a
+        // player/texture class name. The central body region is still the post surface.
+        View current = target;
+        for (int i = 0; current != null && i < 8; i++) {
+            if (isMediaContainer(current)) return current;
+            if (!(current.getParent() instanceof View)) break;
+            current = (View) current.getParent();
+        }
+        return target;
+    }
+
+    private static boolean isMediaContainer(View view) {
+        String name = view.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+        if (name.contains("viewpager") || name.contains("recycler") || name.contains("feedpager") || name.contains("photopager")) return true;
+        try {
+            int id = view.getId();
+            if (id != View.NO_ID) {
+                String resource = view.getResources().getResourceEntryName(id).toLowerCase(java.util.Locale.ROOT);
+                return resource.contains("feed") || resource.contains("photo") || resource.contains("pager") || resource.contains("play");
+            }
+        } catch (RuntimeException ignored) {}
+        return false;
+    }
+
+    private static boolean blockedTapView(View view) {
+        View current = view;
+        for (int i = 0; current != null && i < 6; i++) {
+            String name = current.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+            if (name.contains("button") || name.contains("comment") || name.contains("share") || name.contains("like") ||
+                name.contains("digg") || name.contains("collect") || name.contains("favorite") || name.contains("avatar") ||
+                name.contains("caption") || name.contains("actionbar") || name.contains("tab")) return true;
+            try {
+                int id = current.getId();
+                if (id != View.NO_ID) {
+                    String resource = current.getResources().getResourceEntryName(id).toLowerCase(java.util.Locale.ROOT);
+                    if (resource.contains("comment") || resource.contains("share") || resource.contains("like") || resource.contains("digg") ||
+                        resource.contains("collect") || resource.contains("favorite") || resource.contains("action") || resource.contains("caption")) return true;
+                }
+            } catch (RuntimeException ignored) {}
+            if (!(current.getParent() instanceof View)) break;
+            current = (View) current.getParent();
+        }
+        return false;
+    }
+
+    private static View findViewAt(View view, float rawX, float rawY) {
+        if (view.getVisibility() != View.VISIBLE || view.getAlpha() <= 0.01f) return null;
+        Rect bounds = new Rect();
+        view.getGlobalVisibleRect(bounds);
+        if (!bounds.contains(Math.round(rawX), Math.round(rawY))) return null;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = group.getChildCount() - 1; i >= 0; i--) {
+                View child = group.getChildAt(i);
+                View hit = findViewAt(child, rawX, rawY);
+                if (hit != null) return hit;
+            }
+        }
+        return view;
+    }
+
+    private static boolean isMediaView(View view) {
+        View current = view;
+        int hops = 0;
+        while (current != null && hops++ < 12) {
+            if (current instanceof SurfaceView || current instanceof TextureView) return true;
+            String name = current.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+            if (name.contains("player") || name.contains("video") || name.contains("surface") || name.contains("texture") ||
+                name.contains("render") || name.contains("feedpager") || name.contains("photopager") || name.contains("media")) return true;
+            try {
+                int id = current.getId();
+                if (id != View.NO_ID) {
+                    String resource = current.getResources().getResourceEntryName(id).toLowerCase(java.util.Locale.ROOT);
+                    if (resource.contains("player") || resource.contains("texture_view") || resource.equals("poster") ||
+                        resource.contains("slide_play") || resource.contains("nasa_groot")) return true;
+                }
+            } catch (RuntimeException ignored) {}
+            if (!(current.getParent() instanceof View)) break;
+            current = (View) current.getParent();
+        }
+        return false;
+    }
+
+    private static boolean isFeedActivity(String name) {
+        return name.endsWith("HomeActivity") || name.contains("PhotoDetailActivity") || name.contains("FeedActivity") ||
+            name.endsWith("KwaiRnActivity");
     }
 
     private void attach(Application app) {
@@ -138,6 +388,21 @@ public final class KuaishouModule extends XposedModule {
         });
         pager = new AutoPager(app, () -> lastPhoto, this::replayCached, nativePager);
         app.registerActivityLifecycleCallbacks(pager);
+        app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
+            @Override public void onActivityResumed(Activity value) {
+                activeActivity = value;
+                if (isFeedActivity(value.getClass().getName())) {
+                    resetTap();
+                    Log.i(TAG, "current_post_reset activity=" + value.getClass().getName());
+                }
+            }
+            @Override public void onActivityCreated(Activity value, Bundle state) {}
+            @Override public void onActivityStarted(Activity value) {}
+            @Override public void onActivityPaused(Activity value) {}
+            @Override public void onActivityStopped(Activity value) {}
+            @Override public void onActivitySaveInstanceState(Activity value, Bundle state) {}
+            @Override public void onActivityDestroyed(Activity value) {}
+        });
         pager.start();
         log(Log.INFO, TAG, "application_attached version=" + version);
     }
@@ -157,6 +422,107 @@ public final class KuaishouModule extends XposedModule {
                 return chain.proceed();
             });
         } catch (Exception error) { Log.i(TAG, "native_kmp_probe_unavailable"); }
+    }
+
+    private void installTouchHooks(ClassLoader loader) {
+        String[] names = {
+            "android.app.Activity",
+            "com.yxcorp.gifshow.HomeActivity",
+            "com.yxcorp.gifshow.KwaiRnActivity",
+            "com.yxcorp.gifshow.detail.KwaiRnActivity",
+            "com.yxcorp.gifshow.detail.PhotoDetailActivity"
+        };
+        for (String name : names) {
+            try {
+                Class<?> type = name.startsWith("android.") ? Activity.class : loader.loadClass(name);
+                Method method;
+                try { method = type.getDeclaredMethod("dispatchTouchEvent", MotionEvent.class); }
+                catch (NoSuchMethodException ignored) { method = type.getMethod("dispatchTouchEvent", MotionEvent.class); }
+                String key = method.getDeclaringClass().getName() + "#" + method.getName();
+                if (!touchHooks.add(key)) continue;
+                hook(method).intercept(chain -> {
+                    boolean consume = false;
+                    try {
+                        Object receiver = chain.getThisObject();
+                        Activity activity = receiver instanceof Activity ? (Activity) receiver : activeActivity;
+                        if (receiver instanceof Activity || (receiver instanceof View && activity != null &&
+                            ((View) receiver) == activity.getWindow().getDecorView()) ||
+                            (receiver instanceof View && activity != null &&
+                            ((View) receiver) == findViewAt(activity.getWindow().getDecorView(),
+                                ((MotionEvent) chain.getArg(0)).getRawX(), ((MotionEvent) chain.getArg(0)).getRawY()))) {
+                            consume = observeDoubleTap(activity, (MotionEvent) chain.getArg(0));
+                        }
+                    }
+                    catch (Exception ignored) { Log.w(TAG, "double_tap_observer_failed"); }
+                    return consume ? true : chain.proceed();
+                });
+                Log.i(TAG, "double_tap_hook_installed method=" + key);
+            } catch (Exception error) { log(Log.WARN, TAG, "double_tap_hook_unavailable", error); }
+        }
+    }
+
+    private void installNativeSettings(ClassLoader loader) {
+        try {
+            Class<?> type = loader.loadClass("com.yxcorp.gifshow.settings.holder.EntryListFragment");
+            Method onResume = type.getDeclaredMethod("onResume");
+            hook(onResume).intercept(chain -> {
+                Object result = chain.proceed();
+                mainHandler.post(() -> addNativeSettingsEntry(chain.getThisObject()));
+                return result;
+            });
+            Log.i(TAG, "native_settings_hook_installed");
+        } catch (Exception error) { log(Log.WARN, TAG, "native_settings_hook_unavailable", error); }
+        try {
+            Class<?> settingsActivity = loader.loadClass("com.yxcorp.plugin.setting.activity.SettingsActivity");
+            Method onResume = settingsActivity.getDeclaredMethod("onResume");
+            hook(onResume).intercept(chain -> {
+                Object result = chain.proceed();
+                mainHandler.post(() -> addSettingsActivityEntry((Activity) chain.getThisObject()));
+                return result;
+            });
+            Log.i(TAG, "settings_activity_hook_installed");
+        } catch (Exception error) { log(Log.WARN, TAG, "settings_activity_hook_unavailable", error); }
+    }
+
+    private void addSettingsActivityEntry(Activity activity) {
+        try {
+            if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+            View list = activity.findViewById(activity.getResources().getIdentifier("item_list", "id", TARGET));
+            if (list == null || !(list.getParent() instanceof ViewGroup)) return;
+            ViewGroup parent = (ViewGroup) list.getParent();
+            if (parent.findViewWithTag("comment_collector_native_settings_activity") != null) return;
+            TextView entry = new TextView(activity);
+            entry.setTag("comment_collector_native_settings_activity");
+            entry.setText("视频信息设置"); entry.setTextSize(16); entry.setTextColor(Color.WHITE);
+            entry.setGravity(Gravity.CENTER_VERTICAL); entry.setMinHeight(Math.round(56 * activity.getResources().getDisplayMetrics().density));
+            int padding = Math.round(20 * activity.getResources().getDisplayMetrics().density);
+            entry.setPadding(padding, 0, padding, 0);
+            entry.setBackgroundResource(android.R.drawable.list_selector_background);
+            entry.setOnClickListener(view -> CollectorPanel.showVideoInfoSettings(activity));
+            parent.addView(entry, 0, new ViewGroup.LayoutParams(-1, -2));
+            Log.i(TAG, "settings_activity_entry_added");
+        } catch (Exception error) { Log.w(TAG, "settings_activity_entry_failed", error); }
+    }
+
+    private void addNativeSettingsEntry(Object fragment) {
+        try {
+            Object value = SnapshotMapper.field(fragment, "f189091e");
+            if (!(value instanceof LinearLayout)) return;
+            LinearLayout list = (LinearLayout) value;
+            if (list.findViewWithTag("comment_collector_native_settings") != null) return;
+            Activity activity = (Activity) SnapshotMapper.invoke(fragment, "getActivity", new Class<?>[0]);
+            if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+            TextView entry = new TextView(activity);
+            entry.setTag("comment_collector_native_settings");
+            entry.setText("视频信息设置"); entry.setTextSize(16); entry.setTextColor(Color.WHITE);
+            entry.setGravity(Gravity.CENTER_VERTICAL); entry.setMinHeight(Math.round(56 * activity.getResources().getDisplayMetrics().density));
+            int padding = Math.round(20 * activity.getResources().getDisplayMetrics().density);
+            entry.setPadding(padding, 0, padding, 0);
+            entry.setBackgroundResource(android.R.drawable.list_selector_background);
+            entry.setOnClickListener(view -> CollectorPanel.showVideoInfoSettings(activity));
+            list.addView(entry, new LinearLayout.LayoutParams(-1, -2));
+            Log.i(TAG, "native_settings_entry_added");
+        } catch (Exception error) { Log.w(TAG, "native_settings_entry_failed", error); }
     }
 
     private void installRequests(ClassLoader loader) {
@@ -323,7 +689,9 @@ public final class KuaishouModule extends XposedModule {
         writer.execute(() -> {
             try {
                 Bundle args = new Bundle(); args.putString("page", payload); args.putLong("taskId", taskId); args.putLong("generation", generation);
-                Bundle result = context.getContentResolver().call(CaptureProvider.URI, "append", null, args);
+                Bundle result;
+                try { result = context.getContentResolver().call(CaptureProvider.URI, "append", null, args); }
+                catch (Exception providerError) { result = CaptureBridge.call(context, "append", args); }
                 if (result != null && result.containsKey("error")) Log.w(TAG, "page_storage_failed");
             } catch (Exception error) { Log.w(TAG, "storage_unavailable"); }
         });
@@ -332,7 +700,8 @@ public final class KuaishouModule extends XposedModule {
         if (context == null) return;
         try {
             Bundle args = new Bundle(); args.putString("code", code);
-            context.getContentResolver().call(CaptureProvider.URI, "pause", null, args);
+            try { context.getContentResolver().call(CaptureProvider.URI, "pause", null, args); }
+            catch (Exception providerError) { CaptureBridge.call(context, "pause", args); }
         } catch (Exception ignored) {}
     }
 }

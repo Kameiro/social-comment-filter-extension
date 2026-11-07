@@ -2,6 +2,8 @@
     package="dev.local.commentcollector" android:versionCode="4" android:versionName="0.1.3">
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <queries>
         <package android:name="com.smile.gifmaker" />
         <provider android:authorities="dev.local.commentcollector.capture" />
@@ -15,6 +17,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service android:name=".CaptureService" android:exported="true" android:stopWithTask="false" android:foregroundServiceType="dataSync" />
+        <receiver android:name=".BridgeReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="dev.local.commentcollector.BRIDGE" />
+            </intent-filter>
+        </receiver>
         <provider android:name=".CaptureProvider" android:authorities="dev.local.commentcollector.capture"
             android:exported="true" android:grantUriPermissions="false" />
     </application>

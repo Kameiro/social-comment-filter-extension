@@ -34,6 +34,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.Spinner;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.lang.ref.WeakReference;
@@ -95,7 +96,8 @@ public final class CollectorPanel {
             float startX, startY; int left, top; boolean moving;
             @Override public boolean onTouch(View view, MotionEvent event) {
                 if (event.getAction() == MotionEvent.ACTION_DOWN) {
-                    startX = event.getRawX(); startY = event.getRawY(); left = params.leftMargin; top = params.topMargin; moving = false; return true;
+                    startX = event.getRawX(); startY = event.getRawY(); left = params.leftMargin; top = params.topMargin;
+                    moving = false; return true;
                 }
                 if (event.getAction() == MotionEvent.ACTION_MOVE) {
                     float x = event.getRawX() - startX, y = event.getRawY() - startY;
@@ -107,11 +109,19 @@ public final class CollectorPanel {
                     }
                     return true;
                 }
-                if (event.getAction() == MotionEvent.ACTION_UP) { if (!moving) button.performClick(); return true; }
+                if (event.getAction() == MotionEvent.ACTION_UP) {
+                    if (!moving) button.performClick();
+                    return true;
+                }
                 return event.getAction() == MotionEvent.ACTION_CANCEL;
             }
         });
         ((FrameLayout) decor).addView(button, params);
+    }
+    public static void showVideoInfoSettings(Activity activity) {
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        CollectorPanel panel = new CollectorPanel(activity, () -> "", () -> {});
+        panel.videoInfoSettings();
     }
     public static void show(Activity activity, Supplier<String> currentPhoto) {
         if (showing()) return;
@@ -154,6 +164,7 @@ public final class CollectorPanel {
         LinearLayout bar = horizontal(); bar.setPadding(dp(20), dp(4), dp(8), 0);
         TextView title = text("评论数据库", 20, true); bar.addView(title, new LinearLayout.LayoutParams(0, dp(52), 1));
         bar.addView(icon(android.R.drawable.ic_menu_myplaces, "共享账号", this::accountSettings));
+        bar.addView(icon(android.R.drawable.ic_menu_info_details, "视频信息设置", this::videoInfoSettings));
         bar.addView(icon(android.R.drawable.ic_menu_preferences, "本机接口", this::apiSettings));
         bar.addView(icon(android.R.drawable.ic_menu_close_clear_cancel, "关闭评论数据库", close)); root.addView(bar);
         LinearLayout tabs = horizontal(); tabs.setPadding(dp(8), 0, dp(8), 0);
@@ -524,6 +535,43 @@ public final class CollectorPanel {
         if (!error.isEmpty()) return "上次同步失败：" + error;
         return last > 0 ? "上次同步：" + date(last) : "尚未同步本机数据";
     }
+
+    private void videoInfoSettings() {
+        JSONObject saved = VideoInfoSettings.load(activity);
+        LinearLayout fields = vertical(); fields.setPadding(dp(20), 0, dp(20), dp(12));
+        TextView note = text("控制帖子正文界面双击后弹出的作品信息。发布地址来自快手作品的 POI；作品没有 POI 时不会伪造地点。", 13, false);
+        note.setTextColor(secondary); note.setPadding(0, 0, 0, dp(10)); fields.addView(note);
+
+        String[] keys = {"location", "publish_time", "duration", "statistics", "video", "cover", "current_image", "music", "description", "copy_description"};
+        String[] labels = {"发布地址", "发布时间", "视频时长", "点赞 / 评论 / 收藏 / 分享", "保存作品信息", "封面图片", "当前图片（暂未支持）", "音乐信息", "视频文案", "复制文案按钮"};
+        Switch[] switches = new Switch[keys.length];
+        for (int i = 0; i < keys.length; i++) {
+            Switch toggle = new Switch(uiContext); toggle.setText(labels[i]); toggle.setTextSize(15); toggle.setTextColor(foreground);
+            toggle.setMinHeight(dp(48)); toggle.setChecked(saved.optBoolean(keys[i], !"current_image".equals(keys[i])));
+            if ("current_image".equals(keys[i])) toggle.setEnabled(false);
+            fields.addView(toggle); switches[i] = toggle;
+        }
+
+        TextView modeLabel = text("弹窗位置", 14, true); modeLabel.setPadding(0, dp(12), 0, 0); fields.addView(modeLabel);
+        Spinner mode = new Spinner(uiContext);
+        mode.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item, new String[]{"底部抽屉", "居中对话框"}));
+        mode.setMinimumHeight(dp(48)); mode.setSelection(VideoInfoSettings.centered(saved) ? 1 : 0); fields.addView(mode);
+        EditText timeFormat = input("时间格式，例如 yyyy-MM-dd HH:mm:ss", saved.optString("time_format", "yyyy-MM-dd HH:mm:ss"), false);
+        fields.addView(timeFormat);
+        ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
+        alert().setTitle("视频信息设置").setView(scroll).setNegativeButton("取消", null).setPositiveButton("保存", (dialog, which) -> {
+            try {
+                JSONObject value = VideoInfoSettings.defaults();
+                for (int i = 0; i < keys.length; i++) value.put(keys[i], switches[i].isChecked());
+                value.put("presentation", mode.getSelectedItemPosition() == 1 ? "center" : "bottom");
+                String format = timeFormat.getText().toString().trim();
+                if (!format.isEmpty()) value.put("time_format", format);
+                VideoInfoSettings.save(activity, value);
+                Toast.makeText(activity, "视频信息设置已保存", Toast.LENGTH_SHORT).show();
+            } catch (Exception error) { error(error); }
+        }).show();
+    }
+
     private void apiSettings() {
         LinearLayout settings = vertical(); settings.setPadding(dp(20), 0, dp(20), dp(12));
         boolean enabled; try { enabled = api("api_control", new JSONObject()).optBoolean("running"); } catch (Exception error) { error(error); return; }

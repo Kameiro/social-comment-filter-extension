@@ -4,12 +4,22 @@
 交付形式为 Vector 模块 APK，不重打包快手，不修改登录、平台请求、签名或返回值。
 当前模块版本为 `0.1.3`（versionCode 4），为开发版本，尚未在一加 13T / ReSukiSU 真机验收。
 
+## 2026-11-07 更新
+
+- 设置已嵌入快手原生 `com.yxcorp.plugin.setting.activity.SettingsActivity`，进入快手“设置”即可看到“视频信息设置”，不再额外显示设置悬浮按钮。
+- 新增作品信息设置项：发布地点、发布时间、时长、互动统计、作品信息、封面、音乐、文案、复制文案、底部/居中展示和时间格式。发布地点只使用快手作品公开 POI/地点字段，没有地点时显示“未提供”。
+- Android 16/ColorOS 的 Provider 可见性问题增加了前台桥接服务和显式广播回退；升级后打开一次“快手评论采集”应用，再结束并重新打开快手进程即可加载新模块。
+- 当前双击作品信息面板仍在真机验收中；双击入口只允许在快手内容页中处理，触摸钩子不能影响视频播放和点赞手势。
+- 本次修改已通过 `45` 项映射/分析、`12` 项恢复/地区、`16` 项原生分页门控断言，并完成 Debug APK 构建。
+
 ## 使用
 
 快手中显示可拖动的“评论数据库”浮动入口。评论、帖子、用户、分析、任务都在原生 App 内管理。
 单独的“快手评论采集”应用也可打开同一数据库；上级 `collector.command` 是 Mac 开发入口。
 
 - 评论保存一级/二级、父 ID、作者、时间、真实点赞/回复、手机版公开的 IP 地区。昵称打开主页，评论数量打开用户评论历史。
+- 在快手内容页连续双击屏幕，会弹出当前作品信息面板，显示账号、发布时间、时长、点赞/评论/收藏/分享、封面、音乐和文案；可复制文案、保存作品信息及保存封面。面板只读取当前页面已经加载的公开作品字段，不从历史帖子记录推断当前作品。
+- 评论数据库顶部的“视频信息设置”可以控制发布地址、发布时间、时长、统计数据、作品信息、封面、音乐、文案和复制文案按钮，并可切换底部抽屉/居中对话框及时间格式；“当前图片”开关暂时保留为不可用状态，待图集模型接入后启用。
 - 结果可按地区、公开性别、年龄、关键词和时间筛选排序；地区填写“北京、河北”表示任一地区。未知资料不从昵称、头像或评论猜测。
 - 新建评论任务先确认作品 ID，再显示条件；帖子可选择后批量入队。同一作品不会同时创建重复活跃任务。
 - 资料补充和发现为独立任务，提供目标进度、暂停、继续、停止及运行记录。
@@ -18,6 +28,7 @@
 - 本机 HTTP 接口与界面共用数据和任务服务，详见 [API.md](API.md)；Node 客户端为 `client.mjs`。
 - 顶部“共享账户”使用电脑端相同的云端账户。登录后本地数据仍先保存，再通过 HTTPS 自动同步到 `/v1/sync/snapshot`；账户面板可手动重试。密码不落库，令牌不显示在界面或诊断中。
 - 云端同步失败不会删除本机数据；任务列表和账户面板会显示待同步或失败状态。
+- Android 16/ColorOS 如果拦截快手进程解析本地 Provider，模块会回退到显式桥接通道。安装或升级后先打开一次“快手评论采集”应用，让前台桥接服务启动；之后快手进程可继续访问任务和数据库，服务不会依赖快手后台启动权限。
 
 ## 完整性
 
@@ -36,9 +47,9 @@
 ## 构建
 
 ```bash
-node outputs/android-lab/kuaishou-collector/test.mjs
-node outputs/android-lab/kuaishou-collector/build.mjs
-node outputs/android-lab/lab.mjs adb install -r outputs/android-lab/runtime/collector/kuaishou-collector-debug.apk
+node android/kuaishou-collector/test.mjs
+node android/kuaishou-collector/build.mjs
+adb install -r android/runtime/collector/kuaishou-collector-debug.apk
 ```
 
 使用 Java 21 和 Android SDK 36 的 javac、D8、aapt2、zipalign、apksigner，无需 Gradle。
