@@ -482,7 +482,7 @@ public final class CollectorPanel {
             name.setMaxLines(2); name.setEllipsize(TextUtils.TruncateAt.END); postCard.addView(name);
             String author = post == null ? "" : post.optString("authorName");
             postCard.addView(muted((author.isEmpty() || "null".equals(author) ? "" : author + " · ") + "ID " + current
-                + (post != null && !post.isNull("commentTotal") ? " · 平台评论 " + post.optString("commentTotal") : ""), 12));
+                + (post != null && !post.isNull("commentTotal") ? " · 共 " + post.optString("commentTotal") + " 条评论" : ""), 12));
         }
         TextView conditionsLabel = muted("采集条件", 12); conditionsLabel.setPadding(0, dp(12), 0, dp(4)); postCard.addView(conditionsLabel);
         postCard.addView(conditionChips(true));
@@ -528,22 +528,30 @@ public final class CollectorPanel {
         badge.setTextColor("paused".equals(state) || "stopped".equals(state) ? errorColor : "complete".equals(state) ? primary : secondary);
         badge.setBackground(round(surfaceVariant, 10)); line.addView(badge);
         row.addView(line);
-        row.addView(muted(taskSummary(task), 12));
+        TextView summaryView = muted(taskSummary(task), 12);
+        row.addView(summaryView);
         LinearLayout details = vertical(); details.setVisibility(View.GONE); row.addView(details);
         row.setOnClickListener(view -> {
             if (details.getVisibility() == View.GONE) {
                 if (details.getChildCount() == 0) { try { taskDetails(details, task, false); } catch (Exception error) { details.addView(muted(String.valueOf(error.getMessage()), 12)); } }
+                summaryView.setVisibility(View.GONE);
                 details.setVisibility(View.VISIBLE); Motion.fadeIn(details, 200);
-            } else details.setVisibility(View.GONE);
+            } else {
+                details.setVisibility(View.GONE);
+                summaryView.setVisibility(View.VISIBLE);
+            }
         });
     }
 
     private String taskSummary(JSONObject task) {
         String kind = task.optString("kind");
-        if ("profile".equals(kind)) return "资料 " + task.optInt("profilesDone") + "/" + task.optInt("profilesTotal") + " · " + date(task.optLong("updated"));
-        if ("discovery".equals(kind)) return task.optJSONObject("params") == null ? "" : task.optJSONObject("params").optString("keyword") + " · 已发现 " + task.optInt("discoveredPosts");
+        if ("profile".equals(kind)) return "已采集资料 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位";
+        if ("discovery".equals(kind)) return task.optJSONObject("params") == null ? "" : "关键词「" + task.optJSONObject("params").optString("keyword") + "」· 已找到 " + task.optInt("discoveredPosts") + " 条帖子";
         String issue = task.optString("issue");
-        return "已读 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : " / 平台 " + task.optLong("total")) + (issue.isEmpty() ? "" : " · " + issue(issue));
+        String title = task.optString("postTitle").replace('\n', ' ').trim();
+        if (title.length() > 14) title = title.substring(0, 14) + "…";
+        String prefix = title.isEmpty() ? "" : title + " · ";
+        return prefix + "已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（帖子显示共 " + task.optLong("total") + " 条）") + (issue.isEmpty() ? "" : " · " + issue(issue));
     }
 
     private void taskCard(LinearLayout parent, JSONObject task, boolean live) throws Exception {
@@ -561,15 +569,17 @@ public final class CollectorPanel {
     }
 
     private String readLine(JSONObject task) {
-        return "作品 " + task.optString("photoId") + " · 已读 " + task.optInt("comments") + " 条 / 平台 " + number(task, "total") + " 条";
+        String title = task.optString("postTitle").replace('\n', ' ').trim();
+        if (title.length() > 22) title = title.substring(0, 22) + "…";
+        String head = title.isEmpty() ? "帖子 ID " + task.optString("photoId") : title;
+        return head + "\n已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（帖子显示共 " + number(task, "total") + " 条）");
     }
     private String repliesLine(JSONObject task) {
-        return "主评论 " + task.optInt("rootComments") + " · 回复 " + task.optInt("replyComments") + " · 主评论末页 " + (task.optBoolean("rootComplete") ? "已确认" : "未确认")
-            + " · 回复组 " + task.optInt("replyGroupsComplete") + "/" + task.optInt("replyGroups");
+        return "含一级评论 " + task.optInt("rootComments") + " 条、回复 " + task.optInt("replyComments") + " 条 · "
+            + (task.optBoolean("rootComplete") ? "已滑到底部" : "尚未滑到底部");
     }
     private String driverLine(JSONObject task) {
-        return "意图 " + taskPagingMode(task) + " · 实际 " + (task.optString("pagingDriver").startsWith("native-") ? "原生接口" : "页面加载")
-            + " · 原生 " + task.optInt("nativeLoads") + " 次 · 滑动 " + task.optInt("uiScrolls") + " 次";
+        return "采集方式：" + (task.optString("pagingDriver").startsWith("native-") ? "接口直连加载" : "自动滑动页面");
     }
     private static void setIfChanged(TextView view, String value) { if (!value.contentEquals(view.getText())) view.setText(value); }
     /** Task JSON with every number removed except ids, so only real state changes (status, buttons, issues) count as structural. */
@@ -604,26 +614,20 @@ public final class CollectorPanel {
         if (total > 0) progress.setProgress(Math.min("complete".equals(state) ? 100 : 99, (int) (100 * read / total)));
         LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, dp(10)); barParams.setMargins(0, dp(8), 0, dp(6));
         card.addView(progress, barParams);
-        TextView repliesView = null, gapView = null, driverView = null;
+        TextView repliesView = null, driverView = null;
         if ("comment".equals(kind)) {
             repliesView = muted(repliesLine(task), 12); card.addView(repliesView);
-            if (task.optLong("platformCountGap") > 0) { gapView = muted("与平台数量相差 " + task.optLong("platformCountGap") + " 条", 12); card.addView(gapView); }
             driverView = muted(driverLine(task), 12); card.addView(driverView);
             JSONObject params = task.optJSONObject("params");
-            if (params != null) { String conditions = describe(params, true); if (!conditions.isEmpty()) card.addView(muted("条件 " + conditions, 12)); }
+            if (params != null) { String conditions = describe(params, true); if (!conditions.isEmpty()) card.addView(muted("筛选条件：" + conditions, 12)); }
         }
         if (live && (state.startsWith("running") || "paused".equals(state))) {
-            try { JSONObject runtime = api("runtime", new JSONObject());
-                card.addView(muted("模块 " + runtime.optString("installedVersion") + " · " + runtimeStage(runtime.optString("stage")) + " · " + runtimeStage(runtime.optString("nativeState")), 12)); }
-            catch (Exception ignored) {}
-        }
-        if (live && (state.startsWith("running") || "paused".equals(state))) {
-            Switch auto = new Switch(uiContext); auto.setText("自动加载"); auto.setTextColor(foreground); auto.setTextSize(13); auto.setChecked(task.optBoolean("auto"));
+            Switch auto = new Switch(uiContext); auto.setText("自动翻页加载"); auto.setTextColor(foreground); auto.setTextSize(13); auto.setChecked(task.optBoolean("auto"));
             auto.setOnCheckedChangeListener((view, enabled) -> { try { api("auto", new JSONObject().put("taskId", id).put("enabled", enabled)); } catch (Exception error) { error(error); } });
             card.addView(auto);
         }
         if (live) {
-            final TextView fRead = readView, fReplies = repliesView, fGap = gapView, fDriver = driverView;
+            final TextView fRead = readView, fReplies = repliesView, fDriver = driverView;
             liveUpdate = fresh -> {
                 String freshKind = fresh.optString("kind"), freshState = fresh.optString("status");
                 long freshTotal = "profile".equals(freshKind) ? fresh.optLong("profilesTotal") : "discovery".equals(freshKind) ? (fresh.optJSONObject("params") == null ? 20 : fresh.optJSONObject("params").optLong("target", 20)) : fresh.optLong("total");
@@ -633,7 +637,6 @@ public final class CollectorPanel {
                 else setIfChanged(fRead, readLine(fresh));
                 if (freshTotal > 0) progress.setProgress(Math.min("complete".equals(freshState) ? 100 : 99, (int) (100 * freshRead / freshTotal)));
                 if (fReplies != null) setIfChanged(fReplies, repliesLine(fresh));
-                if (fGap != null) setIfChanged(fGap, "与平台数量相差 " + fresh.optLong("platformCountGap") + " 条");
                 if (fDriver != null) setIfChanged(fDriver, driverLine(fresh));
             };
         }

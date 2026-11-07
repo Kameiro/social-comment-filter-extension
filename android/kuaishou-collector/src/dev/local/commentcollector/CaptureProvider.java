@@ -135,6 +135,17 @@ public final class CaptureProvider extends ContentProvider {
         out.put("pagingDriver", scalar("SELECT paging_driver FROM tasks WHERE id=?", String.valueOf(id)));
         out.put("nativeLoads", Integer.parseInt(scalar("SELECT native_loads FROM tasks WHERE id=?", String.valueOf(id))));
         out.put("uiScrolls", Integer.parseInt(scalar("SELECT ui_scrolls FROM tasks WHERE id=?", String.valueOf(id))));
+        String postId = out.optString("photoId");
+        if (!postId.isEmpty()) {
+            String postData = scalar("SELECT data FROM posts WHERE id=?", postId);
+            if (!postData.isEmpty()) {
+                try {
+                    JSONObject post = new JSONObject(postData);
+                    String postTitle = post.optString("title");
+                    if (!postTitle.isEmpty() && !"null".equals(postTitle)) out.put("postTitle", postTitle);
+                } catch (Exception ignored) {}
+            }
+        }
         return out;
     }
 
