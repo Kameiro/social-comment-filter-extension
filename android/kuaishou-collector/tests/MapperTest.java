@@ -47,7 +47,7 @@ public final class MapperTest {
         public CommonMeta getCommonMeta() { return mCommonMeta; }
         public UserInfo getUser() { return mUser; }
     }
-    public static class CommonMeta { public String mCaption = "caption"; public Long mCreated = 1700000000L; }
+    public static class CommonMeta { public String mCaption = "caption"; public Long mCreated = 1700000000L; public String mCaptionIpLocation = "IP属地：广东"; }
     public static class Location { public String mTitle = "大世界五金城"; public String mCity = "杭州"; }
     private static int assertions;
     private static void check(boolean condition, String name) { assertions++; if (!condition) throw new AssertionError(name); }
@@ -120,6 +120,9 @@ public final class MapperTest {
         QPhoto photo = new QPhoto();
         JSONObject mappedPost = PublicMapper.post(photo);
         check(mappedPost.getString("location").contains("大世界五金城") && mappedPost.getString("location").contains("杭州"), "Post publishing location mapped from POI");
+        photo.mLocation = null;
+        mappedPost = PublicMapper.post(photo);
+        check(mappedPost.getString("location").equals("IP属地：广东") && mappedPost.getString("ipRegion").equals("广东"), "Posts without POI fall back to caption IP region");
         JSONObject analysis = Analysis.run(new JSONObject().put("excludePhrase", "exclude"), query -> {
             org.json.JSONArray items = new org.json.JSONArray();
             if (query.optInt("offset") == 0) {

@@ -11,8 +11,6 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.MotionEvent;
-import android.view.SurfaceView;
-import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.graphics.Rect;
@@ -186,8 +184,8 @@ public final class KuaishouModule extends XposedModule {
                     + " target=" + (target == null ? "null" : target.getClass().getName())
                     + " x=" + event.getRawX() + " y=" + event.getRawY());
             }
-            boolean secondDown = target != null && isSameTarget(lastTapTarget.get(), target)
-                && lastTapAt > 0L && now - lastTapAt <= 360L
+            // Overlays (pause icon, like heart) appear between taps, so compare position, not view identity.
+            boolean secondDown = target != null && lastTapAt > 0L && now - lastTapAt <= 360L
                 && Math.abs(event.getRawX() - lastTapX) + Math.abs(event.getRawY() - lastTapY)
                     <= activity.getResources().getDisplayMetrics().density * 72f;
             downTarget = new WeakReference<>(target);
@@ -196,6 +194,8 @@ public final class KuaishouModule extends XposedModule {
             downX = event.getRawX();
             downY = event.getRawY();
             if (!downOnMedia) lastTapAt = 0;
+            if (target == null && lastTapAt > 0L && now - lastTapAt <= 360L)
+                Log.i(TAG, "double_tap_second_rejected reason=" + lastRejectReason + " x=" + event.getRawX() + " y=" + event.getRawY());
             if (secondDown) {
                 // Resolve only on a real double tap so single taps and scrolling stay untouched.
                 JSONObject post = postUnder(activity, event.getRawX(), event.getRawY(), target);
@@ -217,14 +217,15 @@ public final class KuaishouModule extends XposedModule {
         if (suppressSecondGesture) {
             if (action == MotionEvent.ACTION_UP) {
                 View target = mediaViewAt(activity, event.getRawX(), event.getRawY());
-                boolean sameMedia = downOnMedia && target != null && isSameTarget(downTarget.get(), target)
-                    && now - downAt <= 500L;
+                float drift = Math.abs(event.getRawX() - downX) + Math.abs(event.getRawY() - downY);
+                boolean sameMedia = downOnMedia && now - downAt <= 500L
+                    && drift <= activity.getResources().getDisplayMetrics().density * 72f;
                 suppressSecondGesture = false;
                 downOnMedia = false;
                 JSONObject post = pendingPost;
                 pendingPost = null;
                 if (sameMedia && post != null && !post.optString("postId").isEmpty()) {
-                    Log.i(TAG, "post_info_triggered target=" + target.getClass().getName() + " post=" + post.optString("postId"));
+                    Log.i(TAG, "post_info_triggered post=" + post.optString("postId"));
                     lastTapAt = 0L;
                     new Thread(() -> {
                         JSONObject settings = VideoInfoSettings.load(activity);
@@ -239,7 +240,7 @@ public final class KuaishouModule extends XposedModule {
         if (action != MotionEvent.ACTION_UP) return false;
         View down = downTarget.get();
         View up = mediaViewAt(activity, event.getRawX(), event.getRawY());
-        boolean sameMedia = downOnMedia && down != null && up != null && (down == up || isAncestor(down, up) || isAncestor(up, down));
+        boolean sameMedia = downOnMedia && down != null && up != null;
         float move = Math.abs(event.getRawX() - downX) + Math.abs(event.getRawY() - downY);
         if (!sameMedia || now - downAt > 500L || move > activity.getResources().getDisplayMetrics().density * 72f) {
             resetTap();
@@ -298,81 +299,44 @@ public final class KuaishouModule extends XposedModule {
         lastTapTarget = new WeakReference<>(null);
     }
 
-    private static boolean isSameTarget(View first, View second) {
-        return first != null && second != null && (first == second || isAncestor(first, second) || isAncestor(second, first));
-    }
 
-    private static boolean isAncestor(View possibleParent, View child) {
-        View current = child;
-        while (current != null) {
-            if (current == possibleParent) return true;
-            if (!(current.getParent() instanceof View)) break;
-            current = (View) current.getParent();
-        }
-        return false;
-    }
 
+    private static volatile String lastRejectReason = "";
+
+    /**
+     * Returns the view under the finger when the touch is on the post body, or null for controls.
+     * Uses geometry instead of class-name keywords: Kuaishou's full-screen player containers carry
+     * names like "...Tab..." or "...Action..." that the old keyword filter wrongly rejected.
+     */
     private static View mediaViewAt(Activity activity, float rawX, float rawY) {
         if (activity == null || activity.getWindow() == null) return null;
         View root = activity.getWindow().getDecorView();
         int[] origin = new int[2];
         root.getLocationOnScreen(origin);
-        View target = findViewAt(root, rawX, rawY);
         int height = root.getHeight();
         int width = root.getWidth();
         float y = rawY - origin[1];
         float x = rawX - origin[0];
-        // Keep the gesture on the post body. Caption, action rail, tabs and system bars are excluded.
-        if (height <= 0 || width <= 0 || y < height * .12f || y > height * .72f || x < width * .08f || x > width * .92f) return null;
-        if (target == null) {
-            Log.i(TAG, "double_tap_media_fallback x=" + rawX + " y=" + rawY);
-            return root;
+        // Post body only: top bar/tabs, the right action rail, caption and bottom navigation are excluded.
+        if (height <= 0 || width <= 0 || y < height * .12f || y > height * .74f || x < width * .04f || x > width * .82f) {
+            lastRejectReason = "region"; return null;
         }
-        if (blockedTapView(target) && !isMediaView(target)) return null;
-        if (isMediaView(target)) return target;
-        // Newer Kuaishou builds render the video into a generic container without a
-        // player/texture class name. The central body region is still the post surface.
+        View target = findViewAt(root, rawX, rawY);
+        if (target == null) return root;
+        long screen = (long) width * height;
         View current = target;
-        for (int i = 0; current != null && i < 8; i++) {
-            if (isMediaContainer(current)) return current;
+        for (int i = 0; current != null && i < 10; i++) {
+            long area = (long) current.getWidth() * current.getHeight();
+            // A small clickable view (button, avatar, link, follow chip) is a control, not the post body.
+            if ((current.isClickable() || current.isLongClickable()) && area > 0 && area < screen / 6) {
+                lastRejectReason = "control:" + current.getClass().getName() + " " + current.getWidth() + "x" + current.getHeight();
+                return null;
+            }
+            if (area >= screen / 2) break;
             if (!(current.getParent() instanceof View)) break;
             current = (View) current.getParent();
         }
         return target;
-    }
-
-    private static boolean isMediaContainer(View view) {
-        String name = view.getClass().getName().toLowerCase(java.util.Locale.ROOT);
-        if (name.contains("viewpager") || name.contains("recycler") || name.contains("feedpager") || name.contains("photopager")) return true;
-        try {
-            int id = view.getId();
-            if (id != View.NO_ID) {
-                String resource = view.getResources().getResourceEntryName(id).toLowerCase(java.util.Locale.ROOT);
-                return resource.contains("feed") || resource.contains("photo") || resource.contains("pager") || resource.contains("play");
-            }
-        } catch (RuntimeException ignored) {}
-        return false;
-    }
-
-    private static boolean blockedTapView(View view) {
-        View current = view;
-        for (int i = 0; current != null && i < 6; i++) {
-            String name = current.getClass().getName().toLowerCase(java.util.Locale.ROOT);
-            if (name.contains("button") || name.contains("comment") || name.contains("share") || name.contains("like") ||
-                name.contains("digg") || name.contains("collect") || name.contains("favorite") || name.contains("avatar") ||
-                name.contains("caption") || name.contains("actionbar") || name.contains("tab")) return true;
-            try {
-                int id = current.getId();
-                if (id != View.NO_ID) {
-                    String resource = current.getResources().getResourceEntryName(id).toLowerCase(java.util.Locale.ROOT);
-                    if (resource.contains("comment") || resource.contains("share") || resource.contains("like") || resource.contains("digg") ||
-                        resource.contains("collect") || resource.contains("favorite") || resource.contains("action") || resource.contains("caption")) return true;
-                }
-            } catch (RuntimeException ignored) {}
-            if (!(current.getParent() instanceof View)) break;
-            current = (View) current.getParent();
-        }
-        return false;
     }
 
     private static View findViewAt(View view, float rawX, float rawY) {
@@ -391,27 +355,6 @@ public final class KuaishouModule extends XposedModule {
         return view;
     }
 
-    private static boolean isMediaView(View view) {
-        View current = view;
-        int hops = 0;
-        while (current != null && hops++ < 12) {
-            if (current instanceof SurfaceView || current instanceof TextureView) return true;
-            String name = current.getClass().getName().toLowerCase(java.util.Locale.ROOT);
-            if (name.contains("player") || name.contains("video") || name.contains("surface") || name.contains("texture") ||
-                name.contains("render") || name.contains("feedpager") || name.contains("photopager") || name.contains("media")) return true;
-            try {
-                int id = current.getId();
-                if (id != View.NO_ID) {
-                    String resource = current.getResources().getResourceEntryName(id).toLowerCase(java.util.Locale.ROOT);
-                    if (resource.contains("player") || resource.contains("texture_view") || resource.equals("poster") ||
-                        resource.contains("slide_play") || resource.contains("nasa_groot")) return true;
-                }
-            } catch (RuntimeException ignored) {}
-            if (!(current.getParent() instanceof View)) break;
-            current = (View) current.getParent();
-        }
-        return false;
-    }
 
     private static boolean isFeedActivity(String name) {
         return name.endsWith("HomeActivity") || name.contains("PhotoDetailActivity") || name.contains("FeedActivity") ||

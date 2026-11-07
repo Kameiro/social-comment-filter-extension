@@ -131,6 +131,9 @@ public final class CollectorPanel {
         CollectorPanel panel = new CollectorPanel(activity, currentPhoto, dialog::dismiss);
         dialog.setContentView(panel.root); dialog.setOnDismissListener(value -> { panel.handler.removeCallbacksAndMessages(null); if (open.get() == dialog) open.clear(); });
         dialog.show(); dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        dialog.getWindow().setWindowAnimations(0);
+        panel.root.setAlpha(0f); panel.root.setTranslationY(dp(activity, 40));
+        panel.root.animate().alpha(1f).translationY(0f).setDuration(300).setInterpolator(Motion.ENTER).start();
         open = new WeakReference<>(dialog); panel.poll();
     }
     public static View standalone(Activity activity, String probe) {
@@ -206,7 +209,7 @@ public final class CollectorPanel {
     private ImageButton icon(int drawable, String label, Runnable action) {
         ImageButton button = new ImageButton(activity); button.setImageResource(drawable); button.setContentDescription(label);
         button.setBackgroundColor(Color.TRANSPARENT); button.setImageTintList(ColorStateList.valueOf(foreground));
-        button.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48))); button.setOnClickListener(view -> action.run()); return button;
+        button.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48))); button.setOnClickListener(view -> action.run()); Motion.press(button); return button;
     }
     private Button button(String label, Runnable action) { return styledButton(label, action, surfaceVariant, foreground); }
     private Button primary(String label, Runnable action) { return styledButton(label, action, primary, Color.WHITE); }
@@ -215,7 +218,7 @@ public final class CollectorPanel {
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD); button.setTextColor(textColor); button.setBackground(round(background, 20));
         button.setStateListAnimator(null); button.setPadding(dp(14), 0, dp(14), 0);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(32)); params.setMargins(0, 0, dp(8), 0); button.setLayoutParams(params);
-        button.setOnClickListener(view -> action.run()); return button;
+        button.setOnClickListener(view -> action.run()); Motion.press(button); return button;
     }
     private LinearLayout card(LinearLayout parent) {
         LinearLayout card = vertical(); card.setPadding(dp(16), dp(14), dp(16), dp(14)); card.setBackground(round(surfaceContainer, 16));
@@ -231,7 +234,23 @@ public final class CollectorPanel {
     }
     private JSONObject api(String operation, JSONObject params) throws Exception { return CollectorClient.call(activity, operation, params); }
     private void error(Exception error) { alert().setMessage(error.getMessage()).setPositiveButton("确定", null).show(); }
-    private void select(int index) { tab = index; offset = 0; userFilter = ""; currentScroll = null; render(); }
+    /** Relaunches the collector process via its invisible WakeActivity, then reloads the panel. */
+    private void wakeCollector() {
+        try {
+            activity.startActivity(new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION));
+            Toast.makeText(activity, "正在唤醒采集服务…", Toast.LENGTH_SHORT).show();
+        } catch (Exception error) {
+            Toast.makeText(activity, "唤醒失败：" + error.getMessage(), Toast.LENGTH_LONG).show(); return;
+        }
+        handler.postDelayed(this::render, 1200);
+        handler.postDelayed(this::render, 3000);
+    }
+    private void select(int index) {
+        int previous = tab;
+        tab = index; offset = 0; userFilter = ""; currentScroll = null; render();
+        if (previous != index) { Motion.tabContent(body, index - previous); Motion.indicator(navBars.get(index)); }
+    }
     private void render() {
         for (int i = 0; i < navTabs.size(); i++) {
             boolean on = i == tab;
@@ -244,7 +263,15 @@ public final class CollectorPanel {
             switch (tab) {
                 case 0 -> comments(); case 1 -> posts(); case 2 -> users(); case 3 -> analysis(); case 4 -> tasks();
             }
-        } catch (Exception error) { body.addView(text("读取失败：" + error.getMessage(), 14, false)); }
+        } catch (Exception error) {
+            TextView failed = text("读取失败：" + error.getMessage(), 14, false); failed.setPadding(dp(16), dp(12), dp(16), dp(8));
+            body.addView(failed);
+            TextView hint = text("采集服务可能被系统在后台结束了。点下方按钮唤醒；若经常出现，请在系统设置中为“快手评论采集”开启自启动、关联启动并允许后台运行。", 13, false);
+            hint.setPadding(dp(16), 0, dp(16), dp(12)); body.addView(hint);
+            Button wake = primary("唤醒采集服务", this::wakeCollector);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(44)); params.setMargins(dp(16), 0, dp(16), 0);
+            body.addView(wake, params);
+        }
         if (currentScroll != null && scrollY > 0) currentScroll.post(() -> currentScroll.scrollTo(0, scrollY));
     }
     private LinearLayout scrolling() {

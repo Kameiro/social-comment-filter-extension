@@ -96,6 +96,22 @@ public final class PublicMapper {
         }
         return "";
     }
+    /** Joins an atlas CDN host ({@code mCdnList[0].mCdn} or {@code mCdn[0]}) with a relative path. */
+    private static String cdnJoin(Object atlas, String listField, String path) {
+        if (path == null || path.isEmpty()) return "";
+        if (path.startsWith("http")) return path;
+        String host = "";
+        Object list = first(atlas, listField);
+        if (list != null && list.getClass().isArray() && java.lang.reflect.Array.getLength(list) > 0)
+            host = nonEmpty(first(java.lang.reflect.Array.get(list, 0), "mCdn"));
+        if (host.isEmpty()) {
+            Object hosts = first(atlas, "mCdn");
+            if (hosts instanceof String[] && ((String[]) hosts).length > 0) host = nonEmpty(((String[]) hosts)[0]);
+        }
+        if (host.isEmpty()) return "";
+        if (!host.startsWith("http")) host = "https://" + host;
+        return host.replaceAll("/+$", "") + (path.startsWith("/") ? path : "/" + path);
+    }
     public static String gender(Object value) {
         return "F".equals(value) ? "female" : "M".equals(value) ? "male" : "unknown";
     }
@@ -143,7 +159,12 @@ public final class PublicMapper {
         Object created = SnapshotMapper.field(common, "mCreated");
         put(out, "title", SnapshotMapper.field(common, "mCaption")); put(out, "created", created); put(out, "publishedAt", created);
         String location = publishLocation(photo, common, entity);
+        // Most posts carry no POI; Kuaishou then only shows the caption IP region ("IP属地").
+        String ipRegion = nonEmpty(SnapshotMapper.field(common, "mCaptionIpLocation"));
+        ipRegion = ipRegion.replaceFirst("^\\s*IP\\s*属地\\s*[:：]?\\s*", "").trim();
+        if (!ipRegion.isEmpty()) out.put("ipRegion", ipRegion);
         if (!location.isEmpty()) out.put("location", location).put("locationSource", "kuaishou_android.QPhoto.location");
+        else if (!ipRegion.isEmpty()) out.put("location", "IP属地：" + ipRegion).put("locationSource", "kuaishou_android.CommonMeta.captionIpLocation");
         put(out, "authorId", SnapshotMapper.field(user, "mId")); put(out, "authorName", SnapshotMapper.field(user, "mName"));
         put(out, "likes", SnapshotMapper.field(metrics, "mLikeCount")); put(out, "commentTotal", SnapshotMapper.field(metrics, "mCommentCount"));
         put(out, "shares", SnapshotMapper.field(metrics, "mShareCount")); put(out, "favorites", SnapshotMapper.field(metrics, "mCollectCount"));
@@ -151,22 +172,38 @@ public final class PublicMapper {
         if (duration == null) duration = first(common, "mDuration", "mDurationMs", "getDuration", "getDurationMs");
         if (duration == null) duration = first(videoMeta, "mDuration", "getDuration", "getDurationMs");
         put(out, "duration", duration);
-        Object cover = first(photo, "mCoverUrl", "mCoverImageUrl", "mCover", "getCoverUrl", "getCover");
-        if (cover == null) cover = first(videoMeta, "mCoverUrl", "mCoverImageUrl", "mCover", "getCoverUrl", "getCover");
-        if (cover == null) cover = first(imageMeta, "mCoverUrl", "mCoverImageUrl", "mCover", "getCoverUrl", "getCover");
-        String coverUrl = mediaText(cover, "mUrl", "mUrlString", "url", "getUrl", "getUrlString");
-        if (!coverUrl.startsWith("http")) coverUrl = urlText(cover);
+        // Cover: CoverMeta.mCoverUrls (CDNUrl[]) is the real source on 14.8; older fields are fallbacks.
+        Object coverMeta = meta(entity, photo, "com.kuaishou.android.model.mix.CoverMeta");
+        String coverUrl = urlText(first(coverMeta, "mCoverUrls", "mCoverUrl", "mCoverThumbnailUrls", "mCoverThumbnailUrl"));
+        if (coverUrl.isEmpty()) {
+            Object cover = first(photo, "mCoverUrl", "mCoverImageUrl", "mCover", "getCoverUrl", "getCover");
+            if (cover == null) cover = first(videoMeta, "mCoverUrl", "mCoverImageUrl", "mCover", "getCoverUrl", "getCover");
+            coverUrl = mediaText(cover, "mUrl", "mUrlString", "url", "getUrl", "getUrlString");
+            if (!coverUrl.startsWith("http")) coverUrl = urlText(cover);
+        }
         if (!coverUrl.isEmpty()) out.put("coverUrl", coverUrl);
-        Object music = first(photo, "mMusic", "mSound", "mMusicInfo", "getMusic", "getMusicInfo");
-        if (music == null) music = first(videoMeta, "mMusic", "mMusicInfo", "getMusic", "getMusicInfo");
-        String musicName = mediaText(music, "mName", "mTitle", "name", "title", "getName", "getTitle");
-        if (musicName.isEmpty()) musicName = nonEmpty(first(videoMeta, "mMusicFeedName", "getMusicFeedName"));
+        // Music lives on PhotoMeta (mMusic, or mSoundTrack for original sound).
+        Object music = first(metrics, "mMusic", "mSoundTrack");
+        if (music == null) music = first(photo, "mMusic", "getMusic");
+        String musicName = nonEmpty(first(music, "mName", "mPureName"));
+        if (musicName.isEmpty()) musicName = nonEmpty(first(videoMeta, "mMusicFeedName"));
         if (!musicName.isEmpty()) out.put("musicName", musicName);
-        String videoUrl = urlText(first(videoMeta, "mVideoUrl", "mLocalUrl", "getVideoUrl", "getLocalUrl", "mVideoUrls", "mSdUrls", "mH265Urls"));
-        if (!videoUrl.isEmpty()) out.put("videoUrl", videoUrl);
-        String musicUrl = urlText(first(videoMeta, "mMusicUrl", "mMusicCdn", "mMusicCdnList", "getMusicUrl"));
-        if (musicUrl.isEmpty()) musicUrl = urlText(first(imageMeta, "mMusicUrl", "mMusicCdn", "mMusicCdnList", "getMusicUrl"));
+        String artist = nonEmpty(first(music, "mArtistName", "mArtist"));
+        if (!artist.isEmpty()) out.put("musicArtist", artist);
+        String musicUrl = urlText(first(music, "mUrls", "mUrl", "mSnippetUrls", "mAuditionUrls", "mAuditionUrl"));
+        Object atlas = first(imageMeta, "mAtlas", "mSinglePicture");
+        if (musicUrl.isEmpty() && atlas != null) musicUrl = cdnJoin(atlas, "mMusicCdnList", nonEmpty(first(atlas, "mMusic")));
         if (!musicUrl.isEmpty()) out.put("musicUrl", musicUrl);
+        // Video: prefer H.264 (mVideoUrls) for compatibility; H.265 only as a fallback.
+        String videoUrl = urlText(first(videoMeta, "mVideoUrls", "mVideoUrl", "mH265Urls", "mSdUrls"));
+        if (!videoUrl.isEmpty()) out.put("videoUrl", videoUrl);
+        // Image posts (atlas / single picture): CDN host + relative paths.
+        if (atlas != null) {
+            Object list = first(atlas, "mList");
+            JSONArray images = new JSONArray();
+            if (list instanceof String[]) for (String path : (String[]) list) { String url = cdnJoin(atlas, "mCdnList", path); if (!url.isEmpty()) images.put(url); }
+            if (images.length() > 0) out.put("imageUrls", images);
+        }
         return out;
     }
     public static JSONObject search(Object response, JSONObject request) throws Exception {

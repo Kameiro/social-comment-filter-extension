@@ -366,6 +366,13 @@ public final class CaptureProvider extends ContentProvider {
                 String duplicate = "comment".equals(kind) ? scalar("SELECT id FROM tasks WHERE photo=? AND kind=? AND status IN ('queued','running','running-replies','running-profiles','paused') LIMIT 1", photo, kind) :
                     scalar("SELECT id FROM tasks WHERE params=? AND status IN ('queued','running','running-replies','running-profiles','paused') LIMIT 1", fingerprint);
                 if (!duplicate.isEmpty()) { out.putString("json", status(Long.parseLong(duplicate)).put("duplicate", true).toString()); return out; }
+                // A paused task (stalled paging, verification, etc.) must not hold a new task in the queue
+                // forever. Park it as stopped — it stays resumable via "续跑" — and run the new task now.
+                if (id != 0 && "paused".equals(status(id).optString("status"))) {
+                    db.execSQL("UPDATE tasks SET status='stopped',generation=generation+1,updated=? WHERE id=?", new Object[]{System.currentTimeMillis(), id});
+                    event(id, "superseded_by_new_task");
+                    id = 0;
+                }
                 if (id != 0 && !input.optBoolean("enqueue")) throw new IllegalStateException("已有任务，请继续或加入队列");
                 ContentValues values = new ContentValues();
                 values.put("photo", photo); values.put("status", id != 0 || !scalar("SELECT data FROM settings WHERE name='platform_block'").isEmpty() ? "queued" : "running");

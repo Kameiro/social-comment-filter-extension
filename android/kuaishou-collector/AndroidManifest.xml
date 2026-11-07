@@ -17,6 +17,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".WakeActivity" android:exported="true" android:excludeFromRecents="true"
+            android:noHistory="true" android:taskAffinity="dev.local.commentcollector.wake"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <service android:name=".CaptureService" android:exported="true" android:stopWithTask="false" android:foregroundServiceType="dataSync" />
         <receiver android:name=".BridgeReceiver" android:exported="true">
             <intent-filter>
