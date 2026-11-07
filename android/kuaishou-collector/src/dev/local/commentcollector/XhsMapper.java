@@ -35,7 +35,9 @@ final class XhsMapper {
         // Location: the author's tagged POI / user-set location first, else the note's IP属地 (province level).
         Object poi = ModelReader.get(note, "poi");
         String place = ModelReader.text(poi, "name", "poiName", "title");
-        if (place.isEmpty()) place = ModelReader.text(note, "userSetLocation");
+        Object userSetLocation = ModelReader.get(note, "userSetLocation");
+        if (place.isEmpty()) place = ModelReader.text(userSetLocation, "name", "title", "location");
+        if (place.isEmpty() && userSetLocation instanceof CharSequence) place = userSetLocation.toString().trim();
         String ip = ModelReader.text(note, "ipLocation").replaceFirst("^\\s*(IP\\s*)?属地\\s*[:：]?\\s*", "").trim();
         if (!ip.isEmpty()) out.put("ipRegion", ip);
         if (!place.isEmpty()) out.put("location", place).put("locationSource", "xhs_android.NoteFeed.poi");

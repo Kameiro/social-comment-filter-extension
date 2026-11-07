@@ -31,6 +31,7 @@ final class XhsHooks {
     private final WeakIdentityMap<Boolean> recorded = new WeakIdentityMap<>();
     private final CurrentPostResolver resolver = new CurrentPostResolver();
     private DoubleTapDetector detector;
+    private XhsComments comments;
 
     XhsHooks(XposedInterface xposed) { this.xposed = xposed; }
 
@@ -43,19 +44,18 @@ final class XhsHooks {
         } catch (Throwable error) { Log.w(TAG, "xhs_lifecycle_hook_failed", error); }
         try {
             Class<?> note = loader.loadClass(XhsMapper.NOTE_CLASS);
-            // NoteFeed's id is a public field in 9.51, so hook whichever String getters exist (no-arg, instance).
+            // 9.51 uses obfuscated Kotlin accessors; F0() is NoteFeed.id in this build.
             int hooked = 0;
-            for (Method method : note.getDeclaredMethods()) {
-                if (hooked >= 6 || method.getParameterCount() != 0 || method.getReturnType() != String.class
-                    || java.lang.reflect.Modifier.isStatic(method.getModifiers()) || !method.getName().startsWith("get")) continue;
-                xposed.hook(method).intercept(chain -> {
+            try {
+                Method id = note.getDeclaredMethod("F0");
+                xposed.hook(id).intercept(chain -> {
                     Object result = chain.proceed();
                     Object self = chain.getThisObject();
                     if (self != null) { lastNote = new WeakReference<>(self); lastNoteAt = System.currentTimeMillis(); remember(self); }
                     return result;
                 });
                 hooked++;
-            }
+            } catch (NoSuchMethodException ignored) {}
             Log.i(TAG, "xhs_note_getters_hooked=" + hooked);
         } catch (Throwable error) { Log.w(TAG, "xhs_note_hook_unavailable", error); }
         detector = new DoubleTapDetector(xposed, new DoubleTapDetector.Handler() {
@@ -63,7 +63,18 @@ final class XhsHooks {
             @Override public boolean onDoubleTap(Activity host, float x, float y) { return showPost(host, x, y); }
         });
         detector.install();
+        comments = new XhsComments(xposed, loader, () -> context, this::currentPostId);
+        comments.install();
         Log.i(TAG, "xhs_hooks_installed");
+    }
+
+    private String currentPostId() {
+        try {
+            WeakReference<Object> ref = lastNote;
+            Object note = ref == null || System.currentTimeMillis() - lastNoteAt > 60_000 ? null : ref.get();
+            JSONObject post = XhsMapper.post(note);
+            return post == null ? "" : post.optString("postId");
+        } catch (Throwable ignored) { return ""; }
     }
 
     private boolean showPost(Activity host, float x, float y) {
