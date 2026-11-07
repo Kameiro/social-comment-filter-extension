@@ -78,7 +78,7 @@ public final class KuaishouModule extends XposedModule {
         if (!param.isFirstPackage() || !param.getPackageName().equals(process)) return;
         ClassLoader loader = param.getClassLoader();
         if (Platforms.DOUYIN.equals(process)) { new DouyinHooks(this).install(loader); return; }
-        if (Platforms.XHS.equals(process)) { Log.i(TAG, "xhs_hooks_pending"); return; }
+        if (Platforms.XHS.equals(process)) { new XhsHooks(this).install(loader); return; }
         if ("dev.local.commentcollector".equals(process)) {
             try {
                 Method probe = loader.loadClass("dev.local.commentcollector.MainActivity").getDeclaredMethod("hookProbe");

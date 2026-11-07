@@ -37,8 +37,10 @@ final class CurrentPostResolver {
     private volatile Class<?> photoType;
     private volatile Class<?> fragmentType;
 
-    void bind(ClassLoader loader) {
-        try { photoType = loader.loadClass("com.yxcorp.gifshow.entity.QPhoto"); } catch (Exception ignored) {}
+    void bind(ClassLoader loader) { bind(loader, "com.yxcorp.gifshow.entity.QPhoto"); }
+
+    void bind(ClassLoader loader, String postClass) {
+        try { photoType = loader.loadClass(postClass); } catch (Exception ignored) {}
         try { fragmentType = loader.loadClass("androidx.fragment.app.Fragment"); } catch (Exception ignored) {}
     }
 

@@ -72,6 +72,23 @@ final class DouyinHooks {
             } catch (Throwable error) { Log.w(TAG, "douyin_touch_hook_failed " + signature, error); }
         }
         Log.i(TAG, "douyin_hooks_installed doubleTapHandlers=" + doubleTapHooks);
+        // Capture the live panel instance from any of its methods, so we can ask it for the current Aweme later.
+        int tracked = 0;
+        for (Method method : panel.getDeclaredMethods()) {
+            if (java.lang.reflect.Modifier.isStatic(method.getModifiers()) || method.isBridge() || method.isSynthetic()) continue;
+            if (method.getName().equals("getCurrentAweme")) continue;
+            try {
+                xposed.hook(method).intercept(chain -> {
+                    Object self = chain.getThisObject();
+                    if (self != null) { Object old = livePanel == null ? null : livePanel.get(); if (old != self) { livePanel = new java.lang.ref.WeakReference<>(self); } }
+                    return chain.proceed();
+                });
+                tracked++;
+            } catch (Throwable ignored) {}
+        }
+        Log.i(TAG, "douyin_panel_methods_tracked=" + tracked);
+
+        installDoubleTap();
 
         // Record every post that becomes current, so browsed posts show up in the database like on Kuaishou.
         try {
@@ -84,8 +101,33 @@ final class DouyinHooks {
         } catch (Throwable error) { Log.w(TAG, "douyin_current_aweme_hook_failed", error); }
     }
 
+    private static volatile java.lang.ref.WeakReference<Object> livePanel;
+
+    private DoubleTapDetector detector;
+
+    private void installDoubleTap() {
+        detector = new DoubleTapDetector(xposed, new DoubleTapDetector.Handler() {
+            @Override public Activity activity() { return activity; }
+            @Override public boolean onDoubleTap(Activity host, float x, float y) {
+                Object aweme = currentAweme();
+                Log.i(TAG, "douyin_double_tap aweme=" + (aweme != null));
+                return aweme != null && showPost(aweme);
+            }
+        });
+        detector.install();
+    }
+
+    private static Object currentAweme() {
+        try {
+            Object panel = livePanel == null ? null : livePanel.get();
+            if (panel == null) return null;
+            Method m = panel.getClass().getMethod("getCurrentAweme");
+            return m.invoke(panel);
+        } catch (Throwable error) { Log.w(TAG, "douyin_current_aweme_failed", error); return null; }
+    }
+
     /** Set to true once the double-tap candidate is confirmed in testing; until then only logs. */
-    static volatile boolean interceptDoubleTap = false;
+    static volatile boolean interceptDoubleTap = true;
 
     private boolean showPost(Object aweme) {
         if (!interceptDoubleTap) return false;
@@ -121,7 +163,7 @@ final class DouyinHooks {
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
             @Override public void onActivityResumed(Activity value) { activity = value; }
             @Override public void onActivityPaused(Activity value) { if (activity == value) activity = null; }
-            @Override public void onActivityCreated(Activity value, Bundle state) {}
+            @Override public void onActivityCreated(Activity value, Bundle state) { if (detector != null) detector.hook(value.getClass()); }
             @Override public void onActivityStarted(Activity value) {}
             @Override public void onActivityStopped(Activity value) {}
             @Override public void onActivitySaveInstanceState(Activity value, Bundle state) {}
