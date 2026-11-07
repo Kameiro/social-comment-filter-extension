@@ -190,6 +190,11 @@ public final class CaptureProvider extends ContentProvider {
                 out.putString("data", new JSONObject().put("items", results).toString()); return out;
             }
             if ("users".equals(method)) { out.putString("data", users(input).toString()); return out; }
+            if ("summary".equals(method)) {
+                out.putString("data", new JSONObject().put("posts", Integer.parseInt(scalar("SELECT count(*) FROM posts")))
+                    .put("comments", Integer.parseInt(scalar("SELECT count(DISTINCT id) FROM comments"))).put("users", Integer.parseInt(scalar("SELECT count(*) FROM users"))).toString());
+                return out;
+            }
             if ("posts".equals(method)) { out.putString("data", records("posts", input).toString()); return out; }
             if ("cloud_snapshot".equals(method)) { out.putString("data", cloudSnapshot().toString()); return out; }
             if ("record_profile".equals(method)) {
@@ -494,7 +499,30 @@ public final class CaptureProvider extends ContentProvider {
             event(id, page.optBoolean("fromNativeCache") ? "cached_root_page_saved" : newPage ? "page_saved" : "page_refreshed");
             db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
+        enforceLimits(id);
         if ("complete".equals(status(id).optString("status"))) advance();
+    }
+    /**
+     * Optional stop conditions from the task's own conditions: targetCount (matching comments) and
+     * maxPages (root pages). Reaching them stops the task with an explicit reason; it is never reported
+     * as a confirmed end of the comment list.
+     */
+    private void enforceLimits(long id) throws Exception {
+        JSONObject task = status(id);
+        if (!"comment".equals(task.optString("kind")) || !task.optString("status").startsWith("running")) return;
+        JSONObject params = task.optJSONObject("params"); if (params == null) return;
+        String reason = null;
+        int maxPages = params.optInt("maxPages");
+        if (maxPages > 0 && task.optInt("pages") >= maxPages) reason = "page_limit_reached";
+        int target = params.optInt("targetCount");
+        if (reason == null && target > 0) {
+            JSONObject query = new JSONObject(params.toString()).put("taskId", id).put("limit", 1); query.remove("photoId");
+            if (comments(query).optInt("total") >= target) reason = "target_reached";
+        }
+        if (reason == null) return;
+        db.execSQL("UPDATE tasks SET status='stopped',issue=?,generation=generation+1,updated=? WHERE id=?", new Object[]{reason, System.currentTimeMillis(), id});
+        event(id, reason);
+        advance();
     }
     private void advance() throws Exception {
         if (activeId() != 0 || !scalar("SELECT data FROM settings WHERE name='platform_block'").isEmpty()) return;
@@ -526,8 +554,28 @@ public final class CaptureProvider extends ContentProvider {
         if (query.has("taskId")) { where = new StringBuilder("c.task=?"); args.add(String.valueOf(query.getLong("taskId"))); }
         match(where, args, query, "photoId", "json_extract(c.data,'$.photoId')", false);
         match(where, args, query, "userId", "json_extract(c.data,'$.userId')", false);
-        RegionFilter.append(where, args, query, "ipRegion", "ipRegions", "json_extract(c.data,'$.ipRegion')");
-        match(where, args, query, "keyword", "json_extract(c.data,'$.text')", true);
+        // Keyword and region combine with AND (default) or OR, like the desktop "条件关系".
+        StringBuilder regionClause = new StringBuilder(); List<String> regionArgs = new ArrayList<>();
+        RegionFilter.append(regionClause, regionArgs, query, "ipRegion", "ipRegions", "json_extract(c.data,'$.ipRegion')");
+        StringBuilder keywordClause = new StringBuilder(); List<String> keywordArgs = new ArrayList<>();
+        keywordTerms(keywordClause, keywordArgs, query.optString("keyword"), "json_extract(c.data,'$.text')");
+        if ("or".equals(query.optString("relation")) && regionClause.length() > 0 && keywordClause.length() > 0) {
+            where.append(" AND (").append(regionClause.substring(5)).append(" OR ").append(keywordClause.substring(5)).append(')');
+            args.addAll(regionArgs); args.addAll(keywordArgs);
+        } else { where.append(regionClause).append(keywordClause); args.addAll(regionArgs); args.addAll(keywordArgs); }
+        for (String term : terms(query.optString("excludeKeyword"))) {
+            where.append(" AND coalesce(json_extract(c.data,'$.text'),'') NOT LIKE ? ESCAPE '\\'"); args.add("%" + like(term) + "%");
+        }
+        if (query.optInt("recentDays") > 0) {
+            // created may be seconds or milliseconds depending on the source.
+            where.append(" AND (CASE WHEN CAST(json_extract(c.data,'$.created') AS INTEGER) < 100000000000 THEN CAST(json_extract(c.data,'$.created') AS INTEGER)*1000 ELSE CAST(json_extract(c.data,'$.created') AS INTEGER) END) >= ?");
+            args.add(String.valueOf(System.currentTimeMillis() - query.optInt("recentDays") * 86400000L));
+        }
+        String search = query.optString("search").trim();
+        if (!search.isEmpty()) {
+            where.append(" AND (coalesce(json_extract(c.data,'$.text'),'') LIKE ? ESCAPE '\\' OR coalesce(json_extract(c.data,'$.nickname'),'') LIKE ? ESCAPE '\\' OR json_extract(c.data,'$.userId')=?)");
+            args.add("%" + like(search) + "%"); args.add("%" + like(search) + "%"); args.add(search);
+        }
         String gender = query.optString("gender", "all");
         if (!"all".equals(gender)) {
             String expression = "coalesce(json_extract(u.data,'$.gender'),'unknown')";
@@ -559,6 +607,24 @@ public final class CaptureProvider extends ContentProvider {
         }
         return new JSONObject().put("items", items).put("total", total).put("limit", limit).put("offset", offset);
     }
+    /** Splits "a, b；c" style input into terms. */
+    private static List<String> terms(String value) {
+        List<String> out = new ArrayList<>();
+        if (value == null) return out;
+        for (String term : value.split("[,，、;；|]+")) { term = term.trim(); if (!term.isEmpty() && out.size() < 20) out.add(term.length() > 50 ? term.substring(0, 50) : term); }
+        return out;
+    }
+    private static String like(String value) { return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"); }
+    /** Keyword terms match if any term appears (desktop behaviour). Appends " AND (...)" or nothing. */
+    private static void keywordTerms(StringBuilder where, List<String> args, String value, String expression) {
+        List<String> list = terms(value); if (list.isEmpty()) return;
+        where.append(" AND (");
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) where.append(" OR ");
+            where.append("coalesce(").append(expression).append(",'') LIKE ? ESCAPE '\\'"); args.add("%" + like(list.get(i)) + "%");
+        }
+        where.append(')');
+    }
     private void match(StringBuilder where, List<String> args, JSONObject query, String key, String expression, boolean partial) {
         String value = query.optString(key).trim(); if (value.isEmpty()) return;
         where.append(" AND ").append(expression).append(partial ? " LIKE ?" : "=?"); args.add(partial ? "%" + value + "%" : value);
@@ -568,6 +634,8 @@ public final class CaptureProvider extends ContentProvider {
         match(where, args, query, "keyword", "json_extract(data,'$.nickname')", true);
         RegionFilter.append(where, args, query, "ipRegion", "ipRegions", "json_extract(data,'$.lastCommentIpRegion')");
         match(where, args, query, "profileIpRegion", "json_extract(data,'$.profileIpRegion')", true);
+        String userSearch = query.optString("search").trim();
+        if (!userSearch.isEmpty()) { where.append(" AND (coalesce(json_extract(data,'$.nickname'),'') LIKE ? ESCAPE '\\' OR id=?)"); args.add("%" + like(userSearch) + "%"); args.add(userSearch); }
         String gender = query.optString("gender", "all");
         if ("female-or-unknown".equals(gender)) where.append(" AND coalesce(json_extract(data,'$.gender'),'unknown') IN ('female','unknown')");
         else if (!"all".equals(gender)) { if (!Arrays.asList("male", "female", "unknown").contains(gender)) throw new IllegalArgumentException("性别条件无效");
@@ -601,6 +669,9 @@ public final class CaptureProvider extends ContentProvider {
         }
         match(where, args, query, "keyword", "json_extract(data,'$.title')", true);
         match(where, args, query, "searchKeyword", "json_extract(data,'$.searchKeyword')", false);
+        String postSearch = query.optString("search").trim();
+        if (!postSearch.isEmpty()) { where.append(" AND (coalesce(json_extract(data,'$.title'),'') LIKE ? ESCAPE '\\' OR coalesce(json_extract(data,'$.authorName'),'') LIKE ? ESCAPE '\\' OR id=?)");
+            args.add("%" + like(postSearch) + "%"); args.add("%" + like(postSearch) + "%"); args.add(postSearch); }
         JSONArray items = new JSONArray();
         try (Cursor cursor = db.rawQuery("SELECT data FROM " + table + " WHERE " + where + " ORDER BY updated DESC,id LIMIT " + limit + " OFFSET " + offset, args.toArray(new String[0]))) {
             while (cursor.moveToNext()) items.put(new JSONObject(cursor.getString(0)));

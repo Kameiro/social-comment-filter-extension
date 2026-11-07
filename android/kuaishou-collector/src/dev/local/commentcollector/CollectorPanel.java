@@ -5,31 +5,35 @@ import android.app.Dialog;
 import android.app.UiModeManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
-import android.content.Intent;
 import android.content.Context;
+import android.content.Intent;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Color;
+import android.graphics.PixelFormat;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.text.TextUtils;
+import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.view.WindowInsets;
-import android.view.ContextThemeWrapper;
+import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.GridLayout;
 import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
@@ -39,17 +43,30 @@ import android.widget.TextView;
 import android.widget.Toast;
 import java.lang.ref.WeakReference;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
-import java.util.Locale;
-import java.util.function.Supplier;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+/**
+ * Phone UI for the collector: a bottom sheet over Kuaishou with four sections in a bottom bar
+ * (采集 / 数据 / 分析 / 我的), chip-based filters and a floating progress pill while a task runs.
+ */
 public final class CollectorPanel {
     private static WeakReference<Dialog> open = new WeakReference<>(null);
     private static final String FLOATING_TAG = "comment_collector_fab";
+    private static final String PILL_TAG = "comment_collector_pill";
+    private static final int PAGE_COLLECT = 0, PAGE_DATA = 1, PAGE_ANALYSIS = 2, PAGE_ME = 3;
+    private static final int DATA_COMMENTS = 0, DATA_POSTS = 1, DATA_USERS = 2;
+
     private final Activity activity;
     private final Context uiContext;
     private final Supplier<String> photo;
@@ -59,17 +76,20 @@ public final class CollectorPanel {
     private final boolean darkModeAtCreate;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private JSONObject filters = new JSONObject();
-    private int tab, offset;
-    private String userFilter = "";
+    private int page = PAGE_COLLECT, dataKind = DATA_COMMENTS, offset;
+    private String userFilter = "", userFilterName = "", postFilter = "", search = "";
+    private boolean allTasks;
     private ScrollView currentScroll;
     private String lastTaskSnapshot = "";
     private long lastAutoSyncTaskId;
     private boolean autoSyncRunning;
     private volatile String cloudStatusHint = "";
     private final Set<String> selectedPosts = new LinkedHashSet<>(), selectedUsers = new LinkedHashSet<>();
-    private final java.util.List<TextView> navTabs = new java.util.ArrayList<>();
-    private final java.util.List<View> navBars = new java.util.ArrayList<>();
+    private final List<TextView> navLabels = new ArrayList<>();
+    private final List<ImageView> navIcons = new ArrayList<>();
     private final int surface, surfaceContainer, surfaceVariant, foreground, secondary, link, primary, onPrimaryContainer, errorColor;
+
+    // ---------------------------------------------------------------- entry points
 
     public static boolean showing() {
         Dialog value = open.get();
@@ -80,24 +100,37 @@ public final class CollectorPanel {
         Dialog value = open.get();
         if (value != null && value.getOwnerActivity() == activity) { value.dismiss(); open.clear(); }
     }
+
+    /** Adds the draggable green button plus the progress pill that appears beside it while a task runs. */
     public static void attach(Activity activity, Supplier<String> currentPhoto) {
         if (activity.isFinishing() || activity.getClass().getName().contains(".login.")) return;
         View decor = activity.getWindow().getDecorView();
         if (!(decor instanceof FrameLayout) || decor.findViewWithTag(FLOATING_TAG) != null) return;
         ImageButton button = new ImageButton(activity); button.setTag(FLOATING_TAG);
-        button.setContentDescription("打开评论数据库"); button.setImageResource(android.R.drawable.ic_menu_agenda);
+        button.setContentDescription("打开评论采集"); button.setImageResource(android.R.drawable.ic_menu_agenda);
         button.setImageTintList(ColorStateList.valueOf(Color.WHITE));
         GradientDrawable background = new GradientDrawable(); background.setShape(GradientDrawable.OVAL); background.setColor(Color.rgb(11, 124, 89));
         button.setBackground(background); button.setElevation(dp(activity, 6));
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(activity, 52), dp(activity, 52), Gravity.TOP | Gravity.START);
         params.leftMargin = dp(activity, 8); params.topMargin = dp(activity, 110);
+
+        TextView pill = new TextView(activity); pill.setTag(PILL_TAG);
+        pill.setTextColor(Color.WHITE); pill.setTextSize(12); pill.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        pill.setGravity(Gravity.CENTER_VERTICAL); pill.setPadding(dp(activity, 30), 0, dp(activity, 14), 0);
+        GradientDrawable pillBackground = new GradientDrawable(); pillBackground.setCornerRadius(dp(activity, 20)); pillBackground.setColor(Color.argb(225, 11, 124, 89));
+        pill.setBackground(pillBackground); pill.setElevation(dp(activity, 5)); pill.setVisibility(View.GONE);
+        FrameLayout.LayoutParams pillParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(activity, 36), Gravity.TOP | Gravity.START);
+        Runnable placePill = () -> { pillParams.leftMargin = params.leftMargin + dp(activity, 30); pillParams.topMargin = params.topMargin + dp(activity, 8); pill.setLayoutParams(pillParams); };
+        placePill.run();
+        pill.setOnClickListener(view -> show(activity, currentPhoto));
+
         button.setOnClickListener(view -> show(activity, currentPhoto));
         button.setOnTouchListener(new View.OnTouchListener() {
             float startX, startY; int left, top; boolean moving;
             @Override public boolean onTouch(View view, MotionEvent event) {
                 if (event.getAction() == MotionEvent.ACTION_DOWN) {
                     startX = event.getRawX(); startY = event.getRawY(); left = params.leftMargin; top = params.topMargin;
-                    moving = false; return true;
+                    moving = false; view.animate().scaleX(.92f).scaleY(.92f).setDuration(90).start(); return true;
                 }
                 if (event.getAction() == MotionEvent.ACTION_MOVE) {
                     float x = event.getRawX() - startX, y = event.getRawY() - startY;
@@ -105,41 +138,133 @@ public final class CollectorPanel {
                     if (moving) {
                         params.leftMargin = Math.max(0, Math.min(decor.getWidth() - params.width, left + (int) x));
                         params.topMargin = Math.max(dp(activity, 30), Math.min(decor.getHeight() - params.height - dp(activity, 40), top + (int) y));
-                        button.setLayoutParams(params);
+                        button.setLayoutParams(params); placePill.run();
                     }
                     return true;
                 }
-                if (event.getAction() == MotionEvent.ACTION_UP) {
-                    if (!moving) button.performClick();
+                if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_CANCEL) {
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(200).setInterpolator(new android.view.animation.OvershootInterpolator(2f)).start();
+                    if (event.getAction() == MotionEvent.ACTION_UP && !moving) button.performClick();
                     return true;
                 }
-                return event.getAction() == MotionEvent.ACTION_CANCEL;
+                return false;
             }
         });
+        ((FrameLayout) decor).addView(pill, pillParams);
         ((FrameLayout) decor).addView(button, params);
+        startPillUpdates(activity, pill);
     }
+
+    /** Polls task status off the main thread and shows "采集中 120/450" next to the button while a task is active. */
+    private static void startPillUpdates(Activity activity, TextView pill) {
+        Handler main = new Handler(Looper.getMainLooper());
+        java.util.concurrent.atomic.AtomicBoolean busy = new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable tick = new Runnable() {
+            @Override public void run() {
+                if (activity.isDestroyed() || !pill.isAttachedToWindow() && pill.getParent() == null) return;
+                if (activity.hasWindowFocus() || showing()) {
+                    if (busy.compareAndSet(false, true)) new Thread(() -> {
+                        String label = null;
+                        try {
+                            JSONObject task = CollectorClient.call(activity, "status", new JSONObject());
+                            label = pillLabel(task);
+                        } catch (Exception ignored) {}
+                        String text = label;
+                        main.post(() -> {
+                            busy.set(false);
+                            boolean show = text != null && !showing();
+                            if (show) {
+                                if (!text.contentEquals(pill.getText())) pill.setText(text);
+                                if (pill.getVisibility() != View.VISIBLE) {
+                                    pill.setVisibility(View.VISIBLE); pill.setAlpha(0f); pill.setTranslationX(-dp(activity, 16));
+                                    pill.animate().alpha(1f).translationX(0f).setDuration(240).setInterpolator(Motion.ENTER).start();
+                                }
+                            } else if (pill.getVisibility() == View.VISIBLE) {
+                                pill.animate().alpha(0f).translationX(-dp(activity, 16)).setDuration(180).setInterpolator(Motion.EXIT)
+                                    .withEndAction(() -> pill.setVisibility(View.GONE)).start();
+                            }
+                        });
+                    }, "collector-pill").start();
+                }
+                main.postDelayed(this, 2000);
+            }
+        };
+        main.postDelayed(tick, 800);
+    }
+
+    private static String pillLabel(JSONObject task) {
+        String state = task.optString("status");
+        if (!(state.startsWith("running") || "paused".equals(state) || "queued".equals(state))) return null;
+        String kind = task.optString("kind");
+        if ("paused".equals(state)) return "已暂停 #" + task.optLong("taskId");
+        if ("queued".equals(state)) return "排队中 #" + task.optLong("taskId");
+        if ("profile".equals(kind)) return "补充资料 " + task.optInt("profilesDone") + "/" + task.optInt("profilesTotal");
+        if ("discovery".equals(kind)) return "发现帖子 " + task.optInt("discoveredPosts");
+        long total = task.isNull("total") ? 0 : task.optLong("total");
+        return "采集中 " + task.optInt("comments") + (total > 0 ? "/" + total : "");
+    }
+
     public static void showVideoInfoSettings(Activity activity) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         CollectorPanel panel = new CollectorPanel(activity, () -> "", () -> {});
         panel.videoInfoSettings();
     }
+
+    /** Opens the panel as a bottom sheet over the current Kuaishou screen. */
     public static void show(Activity activity, Supplier<String> currentPhoto) {
         if (showing()) return;
         Dialog stale = open.get(); if (stale != null) stale.dismiss(); open.clear();
-        Dialog dialog = new Dialog(activity, dark(activity) ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar);
+        FrameLayout frame = new FrameLayout(activity);
+        View scrim = new View(activity); scrim.setBackgroundColor(Color.BLACK); scrim.setAlpha(0f);
+        float dim = .4f;
+        View[] sheetRef = new View[1];
+        Dialog dialog = new Dialog(activity, dark(activity) ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar) {
+            private boolean closing;
+            @Override public void dismiss() {
+                View sheet = sheetRef[0];
+                if (closing || !isShowing() || sheet == null || sheet.getWindowToken() == null) { super.dismiss(); return; }
+                closing = true;
+                Motion.exit(sheet, scrim, false, dim, () -> { try { super.dismiss(); } catch (RuntimeException ignored) {} });
+            }
+        };
         dialog.setOwnerActivity(activity);
         CollectorPanel panel = new CollectorPanel(activity, currentPhoto, dialog::dismiss);
-        dialog.setContentView(panel.root); dialog.setOnDismissListener(value -> { panel.handler.removeCallbacksAndMessages(null); if (open.get() == dialog) open.clear(); });
-        dialog.show(); dialog.getWindow().setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        dialog.getWindow().setWindowAnimations(0);
-        panel.root.setAlpha(0f); panel.root.setTranslationY(dp(activity, 40));
-        panel.root.animate().alpha(1f).translationY(0f).setDuration(300).setInterpolator(Motion.ENTER).start();
-        open = new WeakReference<>(dialog); panel.poll();
+        sheetRef[0] = panel.root;
+        int height = (int) (activity.getResources().getDisplayMetrics().heightPixels * .9f);
+        panel.root.setBackground(panel.topRounded(panel.surface, 22));
+        panel.root.setClipToOutline(true);
+        scrim.setOnClickListener(view -> dialog.dismiss());
+        frame.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
+        frame.addView(panel.root, new FrameLayout.LayoutParams(-1, height, Gravity.BOTTOM));
+        dialog.setContentView(frame);
+        dialog.setOnDismissListener(value -> { panel.handler.removeCallbacksAndMessages(null); if (open.get() == dialog) open.clear(); });
+        Window window = dialog.getWindow();
+        if (window != null) {
+            window.setFormat(PixelFormat.TRANSLUCENT); // see PostInfoPanel: an opaque full-screen surface ghosts on close
+            window.setBackgroundDrawableResource(android.R.color.transparent);
+            window.setWindowAnimations(0);
+            window.setDecorFitsSystemWindows(false);
+            window.setStatusBarColor(Color.TRANSPARENT); window.setNavigationBarColor(Color.TRANSPARENT);
+            window.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            Motion.highRefreshRate(activity, window);
+        }
+        panel.grip.setVisibility(View.VISIBLE);
+        Motion.dragToDismiss(panel.grip, panel.root, scrim, dim, dialog::dismiss);
+        dialog.show();
+        open = new WeakReference<>(dialog);
+        Motion.enter(panel.root, scrim, false, dim);
+        panel.poll();
     }
+
+    /** Full-screen variant used by the collector app's own launcher activity. */
     public static View standalone(Activity activity, String probe) {
         CollectorPanel panel = new CollectorPanel(activity, () -> "", activity::finish);
         panel.summary.setContentDescription("Vector Hook " + probe); panel.poll(); return panel.root;
     }
+
+    // ---------------------------------------------------------------- construction
+
+    private View grip;
 
     private CollectorPanel(Activity activity, Supplier<String> photo, Runnable close) {
         this.activity = activity; this.photo = photo; this.closePanel = close;
@@ -148,9 +273,9 @@ public final class CollectorPanel {
         uiContext = new ContextThemeWrapper(activity, dark ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar);
         surface = dark ? Color.rgb(18, 18, 20) : Color.rgb(245, 245, 247);
         surfaceContainer = dark ? Color.rgb(30, 30, 34) : Color.WHITE;
-        surfaceVariant = dark ? Color.rgb(44, 44, 50) : Color.rgb(240, 240, 243);
+        surfaceVariant = dark ? Color.rgb(44, 44, 50) : Color.rgb(236, 236, 240);
         foreground = dark ? Color.rgb(242, 242, 244) : Color.rgb(26, 26, 28);
-        secondary = dark ? Color.rgb(150, 150, 160) : Color.rgb(125, 125, 135);
+        secondary = dark ? Color.rgb(150, 150, 160) : Color.rgb(120, 120, 130);
         primary = dark ? Color.rgb(255, 90, 31) : Color.rgb(255, 73, 6);
         onPrimaryContainer = Color.WHITE;
         link = foreground;
@@ -161,277 +286,666 @@ public final class CollectorPanel {
             @Override public void onViewDetachedFromWindow(View view) { handler.removeCallbacksAndMessages(null); }
         });
         root.setOnApplyWindowInsetsListener((view, insets) -> {
-            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
-            view.setPadding(bars.left, bars.top, bars.right, bars.bottom); return insets;
+            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.ime());
+            // As a bottom sheet the top inset does not apply; standalone it does.
+            boolean sheet = grip != null && grip.getVisibility() == View.VISIBLE;
+            view.setPadding(bars.left, sheet ? 0 : bars.top, bars.right, bars.bottom); return insets;
         });
-        LinearLayout bar = horizontal(); bar.setPadding(dp(20), dp(4), dp(8), 0);
-        TextView title = text("评论数据库", 20, true); bar.addView(title, new LinearLayout.LayoutParams(0, dp(52), 1));
-        bar.addView(icon(android.R.drawable.ic_menu_myplaces, "共享账号", this::accountSettings));
-        bar.addView(icon(android.R.drawable.ic_menu_info_details, "视频信息设置", this::videoInfoSettings));
-        bar.addView(icon(android.R.drawable.ic_menu_preferences, "本机接口", this::apiSettings));
-        bar.addView(icon(android.R.drawable.ic_menu_close_clear_cancel, "关闭评论数据库", close)); root.addView(bar);
-        LinearLayout tabs = horizontal(); tabs.setPadding(dp(8), 0, dp(8), 0);
-        String[] names = {"评论", "帖子", "用户", "分析", "任务"};
-        for (int i = 0; i < names.length; i++) {
-            final int index = i; LinearLayout item = vertical(); item.setGravity(Gravity.CENTER_HORIZONTAL);
-            TextView name = text(names[i], 15, false); name.setGravity(Gravity.CENTER); name.setMinHeight(dp(44)); item.addView(name, new LinearLayout.LayoutParams(-2, -2));
-            View indicator = new View(activity); item.addView(indicator, new LinearLayout.LayoutParams(dp(20), dp(3)));
-            item.setOnClickListener(view -> select(index)); navTabs.add(name); navBars.add(indicator);
-            tabs.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
-        }
-        root.addView(tabs);
-        summary = text("", 12, false); summary.setPadding(dp(16), dp(10), dp(16), dp(8)); summary.setTextColor(secondary); root.addView(summary);
+
+        FrameLayout gripFrame = new FrameLayout(activity);
+        View handle = new View(activity); handle.setBackground(round(Color.argb(90, 127, 127, 127), 3));
+        gripFrame.addView(handle, new FrameLayout.LayoutParams(dp(36), dp(5), Gravity.CENTER));
+        gripFrame.setVisibility(View.GONE); grip = gripFrame;
+        root.addView(gripFrame, new LinearLayout.LayoutParams(-1, dp(22)));
+
+        LinearLayout header = horizontal(); header.setPadding(dp(20), dp(4), dp(8), dp(4));
+        LinearLayout titles = vertical();
+        titles.addView(text("评论采集", 20, true));
+        summary = text("快手 · 正在读取…", 12, false); summary.setTextColor(secondary); summary.setSingleLine(true); summary.setEllipsize(TextUtils.TruncateAt.END);
+        titles.addView(summary);
+        header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
+        header.addView(icon(android.R.drawable.ic_menu_close_clear_cancel, "关闭", close));
+        root.addView(header);
+
         body = vertical(); root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
+        root.addView(bottomNav());
         try { filters = api("settings_get", new JSONObject().put("name", "filters")); } catch (Exception ignored) {}
         render();
     }
-    private int dp(int value) { return dp(activity, value); }
-    private static boolean dark(Activity activity) {
-        UiModeManager mode = activity.getSystemService(UiModeManager.class);
-        if (mode != null) {
-            try { return (Boolean) UiModeManager.class.getMethod("isNightModeActive").invoke(mode); }
-            catch (Throwable ignored) { }
+
+    private View bottomNav() {
+        LinearLayout nav = horizontal(); nav.setBackgroundColor(surfaceContainer); nav.setPadding(0, dp(6), 0, dp(6));
+        String[] labels = {"采集", "数据", "分析", "我的"};
+        int[] icons = {android.R.drawable.ic_menu_add, android.R.drawable.ic_menu_agenda, android.R.drawable.ic_menu_sort_by_size, android.R.drawable.ic_menu_myplaces};
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            LinearLayout item = vertical(); item.setGravity(Gravity.CENTER); item.setMinimumHeight(dp(52));
+            ImageView image = new ImageView(activity); image.setImageResource(icons[i]);
+            item.addView(image, new LinearLayout.LayoutParams(dp(24), dp(24)));
+            TextView label = text(labels[i], 11, false); label.setGravity(Gravity.CENTER); item.addView(label);
+            item.setOnClickListener(view -> go(index)); Motion.press(item);
+            item.setContentDescription(labels[i]);
+            navLabels.add(label); navIcons.add(image);
+            nav.addView(item, new LinearLayout.LayoutParams(0, -2, 1));
         }
-        int systemConfigured = Resources.getSystem().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        int configured = activity.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
-        if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_YES) return true;
-        if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_NO) return false;
-        return systemConfigured == Configuration.UI_MODE_NIGHT_YES || configured == Configuration.UI_MODE_NIGHT_YES;
+        return nav;
     }
-    private android.app.AlertDialog.Builder alert() { return new android.app.AlertDialog.Builder(activity, dark(activity) ? android.R.style.Theme_Material_Dialog_Alert : android.R.style.Theme_Material_Light_Dialog_Alert); }
-    private static int dp(Activity activity, int value) { return Math.round(value * activity.getResources().getDisplayMetrics().density); }
-    private LinearLayout vertical() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.VERTICAL); return view; }
-    private LinearLayout horizontal() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.HORIZONTAL); view.setGravity(Gravity.CENTER_VERTICAL); return view; }
-    private TextView text(String value, int size, boolean bold) {
-        TextView view = new TextView(activity); view.setText(value); view.setTextSize(size); view.setTextColor(size <= 13 && !bold ? secondary : foreground); view.setGravity(Gravity.CENTER_VERTICAL); view.setLineSpacing(0, 1.15f);
-        if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return view;
+
+    private void go(int target) {
+        int previous = page;
+        page = target; offset = 0; currentScroll = null; allTasks = false;
+        render();
+        if (previous != target) Motion.tabContent(body, target - previous);
     }
-    private ImageButton icon(int drawable, String label, Runnable action) {
-        ImageButton button = new ImageButton(activity); button.setImageResource(drawable); button.setContentDescription(label);
-        button.setBackgroundColor(Color.TRANSPARENT); button.setImageTintList(ColorStateList.valueOf(foreground));
-        button.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48))); button.setOnClickListener(view -> action.run()); Motion.press(button); return button;
-    }
-    private Button button(String label, Runnable action) { return styledButton(label, action, surfaceVariant, foreground); }
-    private Button primary(String label, Runnable action) { return styledButton(label, action, primary, Color.WHITE); }
-    private Button styledButton(String label, Runnable action, int background, int textColor) {
-        Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(32)); button.setMinimumHeight(dp(32)); button.setMinWidth(0); button.setMinimumWidth(0);
-        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD); button.setTextColor(textColor); button.setBackground(round(background, 20));
-        button.setStateListAnimator(null); button.setPadding(dp(14), 0, dp(14), 0);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(32)); params.setMargins(0, 0, dp(8), 0); button.setLayoutParams(params);
-        button.setOnClickListener(view -> action.run()); Motion.press(button); return button;
-    }
-    private LinearLayout card(LinearLayout parent) {
-        LinearLayout card = vertical(); card.setPadding(dp(16), dp(14), dp(16), dp(14)); card.setBackground(round(surfaceContainer, 16));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(10)); parent.addView(card, params); return card;
-    }
-    private CheckBox tint(CheckBox box) { box.setButtonTintList(ColorStateList.valueOf(primary)); return box; }
-    private void divider(LinearLayout parent) { View line = new View(activity); line.setBackgroundColor(Color.argb(45, 127, 127, 127)); parent.addView(line, new LinearLayout.LayoutParams(-1, dp(1))); }
-    private GradientDrawable round(int color, int radius) { GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape; }
-    private int dynamicColor(String name, int fallback) {
-        int id = activity.getResources().getIdentifier(name, "color", "android");
-        if (id == 0) id = Resources.getSystem().getIdentifier(name, "color", "android");
-        try { return id == 0 ? fallback : activity.getColor(id); } catch (Exception ignored) { return fallback; }
-    }
-    private JSONObject api(String operation, JSONObject params) throws Exception { return CollectorClient.call(activity, operation, params); }
-    private void error(Exception error) { alert().setMessage(error.getMessage()).setPositiveButton("确定", null).show(); }
-    /** Relaunches the collector process via its invisible WakeActivity, then reloads the panel. */
-    private void wakeCollector() {
-        try {
-            activity.startActivity(new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION));
-            Toast.makeText(activity, "正在唤醒采集服务…", Toast.LENGTH_SHORT).show();
-        } catch (Exception error) {
-            Toast.makeText(activity, "唤醒失败：" + error.getMessage(), Toast.LENGTH_LONG).show(); return;
-        }
-        handler.postDelayed(this::render, 1200);
-        handler.postDelayed(this::render, 3000);
-    }
-    private void select(int index) {
-        int previous = tab;
-        tab = index; offset = 0; userFilter = ""; currentScroll = null; render();
-        if (previous != index) { Motion.tabContent(body, index - previous); Motion.indicator(navBars.get(index)); }
-    }
+
+    // ---------------------------------------------------------------- rendering
+
     private void render() {
-        for (int i = 0; i < navTabs.size(); i++) {
-            boolean on = i == tab;
-            navTabs.get(i).setTextColor(on ? foreground : secondary); navTabs.get(i).setTypeface(Typeface.DEFAULT, on ? Typeface.BOLD : Typeface.NORMAL);
-            navBars.get(i).setBackground(on ? round(primary, 2) : null);
+        for (int i = 0; i < navLabels.size(); i++) {
+            boolean on = i == page;
+            navLabels.get(i).setTextColor(on ? primary : secondary);
+            navLabels.get(i).setTypeface(Typeface.DEFAULT, on ? Typeface.BOLD : Typeface.NORMAL);
+            navIcons.get(i).setImageTintList(ColorStateList.valueOf(on ? primary : secondary));
         }
         int scrollY = currentScroll == null ? 0 : currentScroll.getScrollY(); currentScroll = null;
         body.removeAllViews();
         try {
-            switch (tab) {
-                case 0 -> comments(); case 1 -> posts(); case 2 -> users(); case 3 -> analysis(); case 4 -> tasks();
+            switch (page) {
+                case PAGE_COLLECT -> collectPage();
+                case PAGE_DATA -> dataPage();
+                case PAGE_ANALYSIS -> analysisPage();
+                default -> mePage();
             }
-        } catch (Exception error) {
-            TextView failed = text("读取失败：" + error.getMessage(), 14, false); failed.setPadding(dp(16), dp(12), dp(16), dp(8));
-            body.addView(failed);
-            TextView hint = text("采集服务可能被系统在后台结束了。点下方按钮唤醒；若经常出现，请在系统设置中为“快手评论采集”开启自启动、关联启动并允许后台运行。", 13, false);
-            hint.setPadding(dp(16), 0, dp(16), dp(12)); body.addView(hint);
-            Button wake = primary("唤醒采集服务", this::wakeCollector);
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(44)); params.setMargins(dp(16), 0, dp(16), 0);
-            body.addView(wake, params);
-        }
+        } catch (Exception error) { failure(error); }
         if (currentScroll != null && scrollY > 0) currentScroll.post(() -> currentScroll.scrollTo(0, scrollY));
     }
-    private LinearLayout scrolling() {
-        ScrollView scroll = new ScrollView(activity); currentScroll = scroll; LinearLayout list = vertical(); list.setPadding(dp(12), dp(4), dp(12), dp(16)); scroll.addView(list);
-        body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1)); return list;
+
+    private void failure(Exception error) {
+        body.removeAllViews();
+        LinearLayout list = scrolling();
+        LinearLayout card = card(list);
+        TextView failed = text("读取失败", 16, true); failed.setTextColor(errorColor); card.addView(failed);
+        card.addView(muted(String.valueOf(error.getMessage()), 12));
+        TextView hint = text("采集服务可能被系统在后台结束了。点下方按钮唤醒；若经常出现，请在系统设置中为“快手评论采集”开启自启动、关联启动并允许后台运行。", 13, false);
+        hint.setPadding(0, dp(8), 0, dp(12)); card.addView(hint);
+        card.addView(primary("唤醒采集服务", this::wakeCollector), new LinearLayout.LayoutParams(-1, dp(44)));
     }
-    private void commands(Runnable refresh) {
-        LinearLayout bar = horizontal(); bar.setPadding(dp(12), dp(4), dp(8), dp(8));
-        bar.addView(primary("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(40), 1));
-        bar.addView(icon(android.R.drawable.ic_menu_search, "筛选评论", this::filterDialog));
-        bar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新结果", refresh)); body.addView(bar);
+
+    // ---- 采集
+
+    private void collectPage() throws Exception {
+        LinearLayout list = scrolling();
+        String current = photo.get() == null ? "" : photo.get();
+
+        LinearLayout postCard = card(list);
+        postCard.addView(muted("当前帖子", 12));
+        if (current.isEmpty()) {
+            postCard.addView(text("还没有识别到帖子", 16, true));
+            postCard.addView(muted("在快手打开一个帖子的评论区，再回到这里即可一键采集；也可以批量添加帖子链接。", 12));
+        } else {
+            JSONObject post = null;
+            try { JSONArray found = api("posts", new JSONObject().put("search", current).put("limit", 1)).optJSONArray("items"); if (found != null && found.length() > 0) post = found.getJSONObject(0); }
+            catch (Exception ignored) {}
+            String title = post == null ? "" : post.optString("title");
+            TextView name = text(title.isEmpty() || "null".equals(title) ? "作品 " + current : title, 16, true);
+            name.setMaxLines(2); name.setEllipsize(TextUtils.TruncateAt.END); postCard.addView(name);
+            String author = post == null ? "" : post.optString("authorName");
+            postCard.addView(muted((author.isEmpty() || "null".equals(author) ? "" : author + " · ") + "ID " + current
+                + (post != null && !post.isNull("commentTotal") ? " · 平台评论 " + post.optString("commentTotal") : ""), 12));
+        }
+        TextView conditionsLabel = muted("采集条件", 12); conditionsLabel.setPadding(0, dp(12), 0, dp(4)); postCard.addView(conditionsLabel);
+        postCard.addView(conditionChips(true));
+        Button collect = primary("采集本帖评论", () -> collectNow(current, true));
+        collect.setEnabled(!current.isEmpty()); collect.setAlpha(current.isEmpty() ? .45f : 1f); collect.setTextSize(15);
+        LinearLayout.LayoutParams big = new LinearLayout.LayoutParams(-1, dp(48)); big.topMargin = dp(12);
+        postCard.addView(collect, big);
+        LinearLayout more = horizontal(); more.setPadding(0, dp(8), 0, 0);
+        more.addView(button("批量添加帖子", this::batchDialog), weighted(0));
+        more.addView(button("发现帖子", this::discoveryDialog), weighted(8));
+        postCard.addView(more);
+
+        JSONObject active = api("status", new JSONObject());
+        String state = active.optString("status");
+        if (active.optLong("taskId") > 0 && (state.startsWith("running") || "paused".equals(state) || "queued".equals(state))) {
+            sectionTitle(list, "进行中");
+            taskCard(list, active, true);
+        }
+
+        JSONArray items = api("tasks", new JSONObject()).getJSONArray("items");
+        LinearLayout heading = horizontal(); heading.setPadding(dp(4), dp(14), 0, dp(6));
+        heading.addView(text(allTasks ? "全部任务" : "最近任务", 15, true), new LinearLayout.LayoutParams(0, -2, 1));
+        if (items.length() > 4) { TextView toggle = text(allTasks ? "收起" : "全部 ›", 13, false); toggle.setTextColor(primary); toggle.setPadding(dp(12), dp(6), dp(4), dp(6));
+            toggle.setOnClickListener(view -> { allTasks = !allTasks; render(); }); heading.addView(toggle); }
+        list.addView(heading);
+        int shown = 0;
+        for (int i = 0; i < items.length() && (allTasks || shown < 4); i++) {
+            JSONObject task = items.getJSONObject(i);
+            if (task.optLong("taskId") == active.optLong("taskId") && (state.startsWith("running") || "paused".equals(state) || "queued".equals(state))) continue;
+            taskRow(list, task); shown++;
+        }
+        if (shown == 0) list.addView(muted("暂无其他任务", 13));
     }
+
+    /** Compact one-line task row; tap to expand into the full card. */
+    private void taskRow(LinearLayout parent, JSONObject task) {
+        LinearLayout row = card(parent); row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        LinearLayout line = horizontal();
+        String kind = task.optString("kind"), state = task.optString("status");
+        TextView title = text("#" + task.optLong("taskId") + " " + kindName(kind), 14, true);
+        line.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView badge = text(state(state), 12, true); badge.setPadding(dp(8), dp(2), dp(8), dp(2));
+        badge.setTextColor("complete".equals(state) ? Color.rgb(16, 150, 90) : "paused".equals(state) || "stopped".equals(state) ? errorColor : secondary);
+        badge.setBackground(round(surfaceVariant, 10)); line.addView(badge);
+        row.addView(line);
+        row.addView(muted(taskSummary(task), 12));
+        LinearLayout details = vertical(); details.setVisibility(View.GONE); row.addView(details);
+        row.setOnClickListener(view -> {
+            if (details.getVisibility() == View.GONE) {
+                if (details.getChildCount() == 0) { try { taskDetails(details, task, false); } catch (Exception error) { details.addView(muted(String.valueOf(error.getMessage()), 12)); } }
+                details.setVisibility(View.VISIBLE); Motion.fadeIn(details, 200);
+            } else details.setVisibility(View.GONE);
+        });
+    }
+
+    private String taskSummary(JSONObject task) {
+        String kind = task.optString("kind");
+        if ("profile".equals(kind)) return "资料 " + task.optInt("profilesDone") + "/" + task.optInt("profilesTotal") + " · " + date(task.optLong("updated"));
+        if ("discovery".equals(kind)) return task.optJSONObject("params") == null ? "" : task.optJSONObject("params").optString("keyword") + " · 已发现 " + task.optInt("discoveredPosts");
+        String issue = task.optString("issue");
+        return "已读 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : " / 平台 " + task.optLong("total")) + (issue.isEmpty() ? "" : " · " + issue(issue));
+    }
+
+    private void taskCard(LinearLayout parent, JSONObject task, boolean live) throws Exception {
+        LinearLayout card = card(parent);
+        String kind = task.optString("kind"), state = task.optString("status");
+        LinearLayout line = horizontal();
+        line.addView(text("#" + task.optLong("taskId") + " " + kindName(kind), 15, true), new LinearLayout.LayoutParams(0, -2, 1));
+        boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native-");
+        TextView badge = text(waitingForPage ? "等待返回快手" : state(state), 12, true); badge.setTextColor(primary); line.addView(badge);
+        card.addView(line);
+        taskDetails(card, task, live);
+    }
+
+    private void taskDetails(LinearLayout card, JSONObject task, boolean live) throws Exception {
+        long id = task.getLong("taskId"); String state = task.optString("status"), kind = task.optString("kind");
+        boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native-");
+        long total = "profile".equals(kind) ? task.optLong("profilesTotal") : "discovery".equals(kind) ? task.getJSONObject("params").optLong("target", 20) : task.optLong("total");
+        long read = "profile".equals(kind) ? task.optLong("profilesDone") : "discovery".equals(kind) ? task.optLong("discoveredPosts") : task.optLong("comments");
+        if ("profile".equals(kind)) card.addView(text("成功 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位 · 失败 " + task.optInt("profilesFailed") + " 位", 13, false));
+        else if ("discovery".equals(kind)) card.addView(text(task.getJSONObject("params").optString("keyword") + " · 已发现 " + task.optInt("discoveredPosts") + " 条", 13, false));
+        else card.addView(text("作品 " + task.optString("photoId") + " · 已读 " + task.optInt("comments") + " 条 / 平台 " + number(task, "total") + " 条", 13, false));
+        ProgressBar progress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(100); progress.setProgressTintList(ColorStateList.valueOf(primary)); progress.setIndeterminateTintList(ColorStateList.valueOf(primary));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(surfaceVariant));
+        progress.setIndeterminate(total <= 0 && state.startsWith("running") && !waitingForPage);
+        if (total > 0) progress.setProgress(Math.min("complete".equals(state) ? 100 : 99, (int) (100 * read / total)));
+        LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, dp(10)); barParams.setMargins(0, dp(8), 0, dp(6));
+        card.addView(progress, barParams);
+        if ("comment".equals(kind)) {
+            card.addView(muted("主评论 " + task.optInt("rootComments") + " · 回复 " + task.optInt("replyComments") + " · 主评论末页 " + (task.optBoolean("rootComplete") ? "已确认" : "未确认")
+                + " · 回复组 " + task.optInt("replyGroupsComplete") + "/" + task.optInt("replyGroups"), 12));
+            if (task.optLong("platformCountGap") > 0) card.addView(muted("与平台数量相差 " + task.optLong("platformCountGap") + " 条", 12));
+            card.addView(muted("意图 " + taskPagingMode(task) + " · 实际 " + (task.optString("pagingDriver").startsWith("native-") ? "原生接口" : "页面加载")
+                + " · 原生 " + task.optInt("nativeLoads") + " 次 · 滑动 " + task.optInt("uiScrolls") + " 次", 12));
+            JSONObject params = task.optJSONObject("params");
+            if (params != null) { String conditions = describe(params, true); if (!conditions.isEmpty()) card.addView(muted("条件 " + conditions, 12)); }
+        }
+        if (live && (state.startsWith("running") || "paused".equals(state))) {
+            try { JSONObject runtime = api("runtime", new JSONObject());
+                card.addView(muted("模块 " + runtime.optString("installedVersion") + " · " + runtimeStage(runtime.optString("stage")) + " · " + runtimeStage(runtime.optString("nativeState")), 12)); }
+            catch (Exception ignored) {}
+        }
+        if (live && (state.startsWith("running") || "paused".equals(state))) {
+            Switch auto = new Switch(uiContext); auto.setText("自动加载"); auto.setTextColor(foreground); auto.setTextSize(13); auto.setChecked(task.optBoolean("auto"));
+            auto.setOnCheckedChangeListener((view, enabled) -> { try { api("auto", new JSONObject().put("taskId", id).put("enabled", enabled)); } catch (Exception error) { error(error); } });
+            card.addView(auto);
+        }
+        String issue = task.optString("issue");
+        if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); card.addView(reason); }
+        LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
+        List<Button> buttons = new ArrayList<>();
+        if (waitingForPage) buttons.add(primary("返回快手继续", closePanel));
+        if ("paused".equals(state)) buttons.add(primary("继续", () -> taskAction("resume", id)));
+        if (state.startsWith("running") || "paused".equals(state) || "queued".equals(state)) buttons.add(button("停止", () -> taskAction("stop", id)));
+        if ("stopped".equals(state)) buttons.add(button("续跑", () -> taskAction("retry", id)));
+        if ("comment".equals(kind)) buttons.add(button("打开帖子", () -> openPost(task.optString("photoId"))));
+        buttons.add(button("记录", () -> events(id)));
+        buttons.add(button("诊断", () -> copyDiagnostics(id)));
+        for (int i = 0; i < buttons.size(); i++) actions.addView(buttons.get(i), weighted(i == 0 ? 0 : 6));
+        android.widget.HorizontalScrollView scroller = new android.widget.HorizontalScrollView(activity); scroller.setHorizontalScrollBarEnabled(false);
+        scroller.addView(actions); card.addView(scroller);
+    }
+
+    // ---- 数据
+
+    private void dataPage() throws Exception {
+        LinearLayout top = vertical(); top.setPadding(dp(12), dp(2), dp(12), dp(4));
+        top.addView(segmented(new String[]{"评论", "帖子", "用户"}, dataKind, index -> { dataKind = index; offset = 0; selectedPosts.clear(); selectedUsers.clear(); render(); }));
+        EditText box = input(dataKind == DATA_COMMENTS ? "搜索评论内容或昵称" : dataKind == DATA_POSTS ? "搜索帖子标题、作者或 ID" : "搜索昵称或用户 ID", search, false);
+        box.setImeOptions(EditorInfo.IME_ACTION_SEARCH); box.setBackground(round(surfaceContainer, 14)); box.setPadding(dp(14), 0, dp(14), 0);
+        box.setCompoundDrawablesRelativeWithIntrinsicBounds(android.R.drawable.ic_menu_search, 0, 0, 0); box.setCompoundDrawablePadding(dp(6));
+        box.setOnEditorActionListener((view, action, event) -> { search = view.getText().toString().trim(); offset = 0; render(); return true; });
+        LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(-1, dp(44)); boxParams.topMargin = dp(8); top.addView(box, boxParams);
+        View chips = dataKind == DATA_POSTS ? postChips() : conditionChips(false);
+        LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(-1, -2); chipParams.topMargin = dp(8); top.addView(chips, chipParams);
+        body.addView(top);
+        switch (dataKind) {
+            case DATA_POSTS -> posts();
+            case DATA_USERS -> users();
+            default -> comments();
+        }
+    }
+
+    private View postChips() {
+        Flow flow = new Flow(activity, dp(6));
+        if (!search.isEmpty()) flow.addView(chip("搜索：" + search, true, () -> { search = ""; render(); }));
+        flow.addView(chip(selectedPosts.isEmpty() ? "勾选帖子后可批量采集" : "采集选中 " + selectedPosts.size() + " 个", false, () -> {
+            if (selectedPosts.isEmpty()) return;
+            batchStart(new ArrayList<>(selectedPosts));
+        }));
+        return flow;
+    }
+
+    private void countLine(String label, JSONObject data) {
+        String unit = label.startsWith("用户") ? " 位" : " 条";
+        TextView count = text(label + " · " + data.optInt("total") + unit, 13, true);
+        count.setPadding(dp(16), dp(4), dp(16), dp(4)); count.setTextColor(secondary); body.addView(count);
+    }
+
     private void comments() throws Exception {
-        commands(this::render);
         JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 50);
         if (!userFilter.isEmpty()) query.put("userId", userFilter);
+        if (!postFilter.isEmpty()) query.put("photoId", postFilter);
+        if (!search.isEmpty()) query.put("search", search);
         JSONObject data = api("comments", query);
-        TextView count = text((userFilter.isEmpty() ? "已保存评论" : "用户评论") + " · " + data.getInt("total") + " 条", 14, true);
-        count.setPadding(dp(16), dp(2), dp(16), dp(8)); body.addView(count);
+        countLine(userFilter.isEmpty() ? "评论" : "该用户的评论", data);
         LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
-        if (items.length() == 0) page.addView(text("当前条件下暂无评论", 14, false));
+        if (items.length() == 0) page.addView(empty("当前条件下暂无评论"));
         for (int i = 0; i < items.length(); i++) {
-            LinearLayout list = card(page);
+            LinearLayout card = card(page);
             JSONObject row = items.getJSONObject(i), user = row.optJSONObject("user");
             String name = row.optString("nickname", row.optString("userId"));
-            TextView author = text(name, 15, true); author.setTextColor(link); author.setMinHeight(dp(32));
-            author.setOnClickListener(view -> openProfile(row.optString("userId"))); list.addView(author);
+            LinearLayout line = horizontal();
+            TextView author = text(name, 15, true); author.setOnClickListener(view -> userDetail(row.optString("userId"), name));
+            line.addView(author, new LinearLayout.LayoutParams(0, -2, 1));
+            String g = user == null ? "unknown" : user.optString("gender", "unknown");
+            if (!"unknown".equals(g)) { TextView tag = text(gender(g), 11, true); tag.setPadding(dp(6), dp(1), dp(6), dp(1)); tag.setBackground(round(surfaceVariant, 8)); line.addView(tag); }
+            card.addView(line);
             String region = row.optString("ipRegion"); if (region.isEmpty() || "null".equals(region)) region = "未知";
-            TextView meta = text((row.optInt("level") == 2 ? "二级评论" : "一级评论") + " · IP " + region + " · " + date(row.optLong("created")), 12, false);
-            meta.setTextColor(secondary); list.addView(meta);
-            TextView content = text(row.optString("text"), 15, false); content.setTextIsSelectable(true); content.setPadding(0, dp(8), 0, dp(8)); list.addView(content);
-            TextView metrics = text("赞 " + number(row, "likes") + " · 回复 " + number(row, "replies") + " · 任务 #" + row.optLong("taskId"), 12, false);
-            metrics.setTextColor(secondary); list.addView(metrics);
-            LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
-            actions.addView(button("打开帖子", () -> openPost(row.optString("photoId"))));
-            actions.addView(button("用户评论", () -> { userFilter = row.optString("userId"); offset = 0; render(); })); list.addView(actions);
+            card.addView(muted((row.optInt("level") == 2 ? "回复" : "评论") + " · IP " + region + " · " + date(row.optLong("created")), 12));
+            TextView content = text(row.optString("text"), 15, false); content.setTextIsSelectable(true); content.setPadding(0, dp(6), 0, dp(6)); card.addView(content);
+            LinearLayout foot = horizontal();
+            foot.addView(muted("赞 " + number(row, "likes") + " · 回复 " + number(row, "replies"), 12), new LinearLayout.LayoutParams(0, -2, 1));
+            foot.addView(linkText("帖子", () -> openPost(row.optString("photoId"))));
+            foot.addView(linkText("TA 的评论", () -> { userFilter = row.optString("userId"); userFilterName = name; offset = 0; render(); }));
+            card.addView(foot);
         }
         pageControls(data);
     }
+
     private void posts() throws Exception {
-        LinearLayout toolbar = horizontal(); toolbar.setPadding(dp(12), 0, dp(8), 0);
-        toolbar.addView(primary("发现帖子", this::discoveryDialog), new LinearLayout.LayoutParams(0, dp(40), 1));
-        toolbar.addView(icon(android.R.drawable.ic_menu_save, "抓取选中帖子", () -> {
-            if (selectedPosts.isEmpty()) { error(new IllegalStateException("请先选择帖子")); return; }
-            filterDialog(() -> { try { JSONArray tasks = new JSONArray(); for (String id : selectedPosts)
-                tasks.put(new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", true));
-                api("batch_start", new JSONObject().put("tasks", tasks)); closePanel.run(); } catch (Exception error) { error(error); } });
-        }));
-        toolbar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新帖子", this::render)); body.addView(toolbar);
-        JSONObject data = api("posts", new JSONObject().put("offset", offset).put("limit", 30));
-        LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
-        if (items.length() == 0) page.addView(text("暂无已保存作品", 14, false));
+        JSONObject query = new JSONObject().put("offset", offset).put("limit", 30);
+        if (!search.isEmpty()) query.put("search", search);
+        JSONObject data = api("posts", query);
+        JSONArray items = data.getJSONArray("items");
+        LinearLayout countRow = horizontal(); countRow.setPadding(dp(16), dp(4), dp(8), dp(4));
+        TextView count = text("帖子（刷到和发现的）· " + data.optInt("total") + " 个", 13, true); count.setTextColor(secondary);
+        countRow.addView(count, new LinearLayout.LayoutParams(0, -2, 1));
+        List<String> pageIds = new ArrayList<>();
+        for (int i = 0; i < items.length(); i++) pageIds.add(items.getJSONObject(i).optString("postId"));
+        boolean allSelected = !pageIds.isEmpty() && selectedPosts.containsAll(pageIds);
+        countRow.addView(linkText(allSelected ? "取消全选" : "全选本页", () -> { if (allSelected) selectedPosts.removeAll(pageIds); else selectedPosts.addAll(pageIds); render(); }));
+        body.addView(countRow);
+        LinearLayout page = scrolling();
+        if (items.length() == 0) page.addView(empty("暂无已保存作品"));
         for (int i = 0; i < items.length(); i++) {
-            LinearLayout list = card(page);
+            LinearLayout card = card(page);
             JSONObject row = items.getJSONObject(i); String id = row.optString("postId");
-            LinearLayout heading = horizontal(); CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择作品 " + id); select.setChecked(selectedPosts.contains(id));
-            select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedPosts.add(id); else selectedPosts.remove(id); }); heading.addView(select);
-            TextView title = text(row.optString("title", "作品 " + id), 16, true); title.setPadding(0, dp(16), 0, dp(8)); heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1)); list.addView(heading);
-            list.addView(text("赞 " + number(row, "likes") + " · 分享 " + number(row, "shares") + " · 收藏 " + number(row, "favorites"), 12, false));
-            list.addView(text("平台评论 " + number(row, "commentTotal") + " · 快照 " + date(row.optLong("snapshotAt")), 12, false));
-            LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0); actions.addView(button("打开帖子", () -> openPost(id)));
-            actions.addView(button("加入采集队列", () -> collect(id, true))); list.addView(actions);
+            LinearLayout heading = horizontal();
+            CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择作品 " + id); select.setChecked(selectedPosts.contains(id));
+            select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedPosts.add(id); else selectedPosts.remove(id); render(); });
+            heading.addView(select);
+            String rawTitle = row.optString("title");
+            TextView title = text(rawTitle.isEmpty() || "null".equals(rawTitle) ? "作品 " + id : rawTitle, 15, true); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
+            heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1)); card.addView(heading);
+            String author = row.optString("authorName");
+            card.addView(muted((author.isEmpty() || "null".equals(author) ? "" : author + " · ") + "赞 " + number(row, "likes") + " · 评论 " + number(row, "commentTotal") + " · 收藏 " + number(row, "favorites"), 12));
+            LinearLayout foot = horizontal(); foot.setPadding(0, dp(6), 0, 0);
+            foot.addView(muted("快照 " + date(row.optLong("snapshotAt")), 12), new LinearLayout.LayoutParams(0, -2, 1));
+            foot.addView(linkText("评论", () -> { postFilter = id; dataKind = DATA_COMMENTS; offset = 0; render(); }));
+            foot.addView(linkText("打开", () -> openPost(id)));
+            foot.addView(linkText("采集", () -> collectNow(id, true)));
+            card.addView(foot);
         }
         pageControls(data);
     }
+
     private void users() throws Exception {
-        JSONObject data = api("users", new JSONObject(filters.toString()).put("offset", offset).put("limit", 30));
-        LinearLayout toolbar = horizontal(); toolbar.setPadding(dp(12), 0, dp(8), 0);
-        toolbar.addView(text("用户 · " + data.getInt("total"), 16, true), new LinearLayout.LayoutParams(0, dp(40), 1));
-        toolbar.addView(icon(android.R.drawable.ic_menu_edit, "补充选中用户资料", () -> profileTask(new JSONArray(selectedUsers))));
-        toolbar.addView(icon(android.R.drawable.ic_menu_search, "筛选用户", this::filterDialog));
-        toolbar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新用户", this::render)); body.addView(toolbar);
+        JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 30);
+        query.remove("keyword"); // comment keyword does not apply to nicknames
+        if (!search.isEmpty()) query.put("search", search);
+        JSONObject data = api("users", query);
+        countLine("用户", data);
+        if (!selectedUsers.isEmpty()) {
+            Button fill = primary("补充选中 " + selectedUsers.size() + " 位用户的主页资料", () -> profileTask(new JSONArray(selectedUsers)));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(40)); params.setMargins(dp(12), 0, dp(12), dp(4)); body.addView(fill, params);
+        }
         LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
-        if (items.length() == 0) page.addView(text("暂无已保存用户", 14, false));
+        if (items.length() == 0) page.addView(empty("暂无已保存用户"));
         for (int i = 0; i < items.length(); i++) {
-            LinearLayout list = card(page);
+            LinearLayout card = card(page);
             JSONObject user = items.getJSONObject(i); String id = user.optString("userId");
-            LinearLayout heading = horizontal(); CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择用户 " + id); select.setChecked(selectedUsers.contains(id));
-            select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedUsers.add(id); else selectedUsers.remove(id); }); heading.addView(select);
-            TextView name = text(user.optString("nickname", id), 15, true); name.setTextColor(link); name.setMinHeight(dp(48));
-            name.setOnClickListener(view -> openProfile(id)); heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); list.addView(heading);
-            list.addView(text("快手 · 性别 " + gender(user.optString("gender")) + " · 年龄 " + number(user, "age"), 12, false));
-            list.addView(text("主页 IP " + number(user, "profileIpRegion") + " · 所在地 " + number(user, "location") + "\n评论 IP " + number(user, "lastCommentIpRegion"), 12, false));
-            LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
-            actions.addView(button("评论 " + user.optInt("commentCount") + " 条", () -> { tab = 0; userFilter = id; offset = 0; render(); }));
-            actions.addView(button("补充资料", () -> profileTask(new JSONArray().put(id)))); list.addView(actions);
+            LinearLayout heading = horizontal();
+            CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择用户 " + id); select.setChecked(selectedUsers.contains(id));
+            select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedUsers.add(id); else selectedUsers.remove(id); render(); });
+            heading.addView(select);
+            TextView name = text(user.optString("nickname", id), 15, true); name.setOnClickListener(view -> userDetail(id, user.optString("nickname", id)));
+            heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); card.addView(heading);
+            card.addView(muted("性别 " + gender(user.optString("gender")) + " · 年龄 " + number(user, "age") + " · 评论 IP " + number(user, "lastCommentIpRegion"), 12));
+            card.addView(muted("主页 IP " + number(user, "profileIpRegion") + " · 所在地 " + number(user, "location"), 12));
+            LinearLayout foot = horizontal(); foot.setPadding(0, dp(6), 0, 0);
+            foot.addView(muted("评论 " + user.optInt("commentCount") + " 条 · " + user.optInt("postCount") + " 个帖子", 12), new LinearLayout.LayoutParams(0, -2, 1));
+            foot.addView(linkText("详情", () -> userDetail(id, user.optString("nickname", id))));
+            foot.addView(linkText("补充资料", () -> profileTask(new JSONArray().put(id))));
+            card.addView(foot);
         }
         pageControls(data);
     }
-    private void tasks() throws Exception {
-        JSONObject data = api("tasks", new JSONObject()); LinearLayout bar = horizontal(); bar.setPadding(dp(12), dp(4), dp(8), dp(8));
-        bar.addView(primary("新建评论任务", this::commentDialog), new LinearLayout.LayoutParams(0, dp(40), 1));
-        bar.addView(icon(android.R.drawable.ic_menu_rotate, "刷新任务", this::render)); body.addView(bar);
-        LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
-        for (int i = 0; i < items.length(); i++) {
-            LinearLayout list = card(page);
-            JSONObject task = items.getJSONObject(i); long id = task.getLong("taskId"); String state = task.optString("status");
-            String kind = task.optString("kind"); boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native-");
-            list.addView(text("任务 #" + id + " · " + ("profile".equals(kind) ? "主页资料" : "discovery".equals(kind) ? "发现帖子" : "评论采集") + " · " + (waitingForPage ? "等待返回快手" : state(state)), 16, true));
-            if (state.startsWith("running") || "paused".equals(state)) {
-                CheckBox auto = tint(new CheckBox(uiContext)); auto.setText("自动加载"); auto.setTextColor(foreground); auto.setChecked(task.optBoolean("auto"));
-                auto.setOnCheckedChangeListener((view, enabled) -> { try { api("auto", new JSONObject().put("taskId", id).put("enabled", enabled)); } catch (Exception error) { error(error); } }); list.addView(auto);
-            }
-            if ("profile".equals(kind)) list.addView(text("成功 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位 · 失败 " + task.optInt("profilesFailed") + " 位", 13, false));
-            else if ("discovery".equals(kind)) list.addView(text(task.getJSONObject("params").optString("keyword") + " · 已发现 " + task.optInt("discoveredPosts") + " 条", 13, false));
-            else list.addView(text("作品 " + task.optString("photoId") + "\n已读 " + task.optInt("comments") + " 条 / 平台 " + number(task, "total") + " 条", 13, false));
-            ProgressBar progress = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
-            long total = "profile".equals(kind) ? task.optLong("profilesTotal") : "discovery".equals(kind) ? task.getJSONObject("params").optLong("target", 20) : task.optLong("total");
-            long read = "profile".equals(kind) ? task.optLong("profilesDone") : "discovery".equals(kind) ? task.optLong("discoveredPosts") : task.optLong("comments");
-            progress.setMax(100); progress.setProgressTintList(ColorStateList.valueOf(primary)); progress.setIndeterminateTintList(ColorStateList.valueOf(primary)); progress.setProgressBackgroundTintList(ColorStateList.valueOf(surfaceVariant)); progress.setIndeterminate(total <= 0 && state.startsWith("running") && !waitingForPage);
-            if (total > 0) progress.setProgress(Math.min("complete".equals(state) ? 100 : 99, (int) (100 * read / total)));
-            list.addView(progress, new LinearLayout.LayoutParams(-1, dp(12)));
-            if ("comment".equals(kind)) list.addView(text("主评论 " + task.optInt("rootComments") + " · 回复 " + task.optInt("replyComments") + "\n主评论末页 " + (task.optBoolean("rootComplete") ? "已确认" : "未确认") +
-                " · 回复组 " + task.optInt("replyGroupsComplete") + "/" + task.optInt("replyGroups"), 12, false));
-            if ("comment".equals(kind) && task.optLong("platformCountGap") > 0)
-                list.addView(text("与平台数量相差 " + task.optLong("platformCountGap") + " 条", 12, false));
-            if ("comment".equals(kind)) list.addView(text("意图 " + taskPagingMode(task) + " · 实际 " +
-                (task.optString("pagingDriver").startsWith("native-") ? "原生接口加载" : "页面加载") +
-                " · 原生调用 " + task.optInt("nativeLoads") + " 次 · 滑动 " + task.optInt("uiScrolls") + " 次", 12, false));
-            if (state.startsWith("running") || "paused".equals(state)) {
-                JSONObject runtime = api("runtime", new JSONObject());
-                list.addView(text("模块 " + runtime.optString("installedVersion") + " · " + runtimeStage(runtime.optString("stage")) +
-                    "\n" + runtimeStage(runtime.optString("nativeState")) + " · 分页器 " + runtime.optInt("boundPagers"), 12, false));
-            }
-            String issue = task.optString("issue"); if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); list.addView(reason); }
-            GridLayout actions = new GridLayout(activity); actions.setColumnCount(2); actions.setPadding(0, dp(10), 0, 0);
-            if (waitingForPage) action(actions, button("返回快手继续", closePanel));
-            if ("paused".equals(state)) action(actions, button("继续", () -> taskAction("resume", id)));
-            if (state.startsWith("running") || "paused".equals(state) || "queued".equals(state)) action(actions, button("停止", () -> taskAction("stop", id)));
-            if ("stopped".equals(state)) action(actions, button("重试", () -> taskAction("retry", id)));
-            action(actions, button("运行记录", () -> events(id))); if ("comment".equals(kind)) action(actions, button("打开帖子", () -> openPost(task.optString("photoId"))));
-            action(actions, button("复制诊断", () -> copyDiagnostics(id)));
-            list.addView(actions);
+
+    /**
+     * One user's public profile fields and every collected comment, grouped by the post it was left on,
+     * so the operator can judge context before contacting them manually in Kuaishou.
+     */
+    private void userDetail(String id, String name) {
+        if (id == null || id.isEmpty() || "null".equals(id)) return;
+        LinearLayout content = vertical(); content.setPadding(dp(20), dp(4), dp(20), dp(8));
+        TextView loading = muted("正在读取…", 13); content.addView(loading);
+        ScrollView scroll = new ScrollView(activity); scroll.addView(content);
+        int maxHeight = (int) (activity.getResources().getDisplayMetrics().heightPixels * .6f);
+        android.app.AlertDialog dialog = alert().setTitle(name == null || name.isEmpty() ? id : name).setView(scroll)
+            .setNeutralButton("复制昵称", (d, w) -> {
+                ((ClipboardManager) activity.getSystemService(Activity.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("昵称", name));
+                Toast.makeText(activity, "已复制昵称", Toast.LENGTH_SHORT).show();
+            })
+            .setNegativeButton("关闭", null)
+            .setPositiveButton("打开主页", (d, w) -> openProfile(id)).create();
+        dialog.show();
+        // Grow with the content, but never past ~60% of the screen.
+        content.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            int wanted = Math.min(b - t, Math.min(maxHeight, dp(560)));
+            ViewGroup.LayoutParams params = scroll.getLayoutParams();
+            if (params != null && params.height != wanted) { params.height = wanted; scroll.post(() -> scroll.setLayoutParams(params)); }
+        });
+        new Thread(() -> {
+            try {
+                JSONObject userData = api("users", new JSONObject().put("search", id).put("limit", 1));
+                JSONArray users = userData.optJSONArray("items");
+                JSONObject user = users != null && users.length() > 0 ? users.getJSONObject(0) : new JSONObject();
+                JSONArray comments = api("comments", new JSONObject().put("userId", id).put("sort", "created_desc").put("limit", 200)).optJSONArray("items");
+                java.util.LinkedHashMap<String, List<JSONObject>> byPost = new java.util.LinkedHashMap<>();
+                for (int i = 0; comments != null && i < comments.length(); i++) {
+                    JSONObject row = comments.getJSONObject(i);
+                    byPost.computeIfAbsent(row.optString("photoId"), key -> new ArrayList<>()).add(row);
+                }
+                java.util.Map<String, JSONObject> posts = new java.util.HashMap<>();
+                for (String postId : byPost.keySet()) {
+                    try { JSONArray found = api("posts", new JSONObject().put("search", postId).put("limit", 1)).optJSONArray("items");
+                        if (found != null && found.length() > 0) posts.put(postId, found.getJSONObject(0)); } catch (Exception ignored) {}
+                }
+                handler.post(() -> {
+                    content.removeAllViews();
+                    content.addView(muted("性别 " + gender(user.optString("gender")) + " · 年龄 " + number(user, "age")
+                        + "\n评论 IP " + number(user, "lastCommentIpRegion") + " · 主页 IP " + number(user, "profileIpRegion") + " · 所在地 " + number(user, "location"), 12));
+                    TextView total = text("在 " + byPost.size() + " 个帖子下发表了 " + (comments == null ? 0 : comments.length()) + " 条评论", 14, true);
+                    total.setPadding(0, dp(10), 0, dp(4)); content.addView(total);
+                    for (java.util.Map.Entry<String, List<JSONObject>> entry : byPost.entrySet()) {
+                        JSONObject post = posts.get(entry.getKey());
+                        String title = post == null ? "" : post.optString("title");
+                        LinearLayout block = vertical(); block.setPadding(dp(12), dp(10), dp(12), dp(10)); block.setBackground(round(surfaceVariant, 12));
+                        LinearLayout.LayoutParams blockParams = new LinearLayout.LayoutParams(-1, -2); blockParams.topMargin = dp(8);
+                        TextView postTitle = text(title.isEmpty() || "null".equals(title) ? "作品 " + entry.getKey() : title, 13, true);
+                        postTitle.setMaxLines(2); postTitle.setEllipsize(TextUtils.TruncateAt.END); postTitle.setTextColor(primary);
+                        postTitle.setOnClickListener(view -> { dialog.dismiss(); openPost(entry.getKey()); });
+                        block.addView(postTitle);
+                        for (JSONObject row : entry.getValue()) {
+                            TextView said = text(row.optString("text"), 14, false); said.setTextIsSelectable(true); said.setPadding(0, dp(6), 0, 0); block.addView(said);
+                            block.addView(muted(date(row.optLong("created")) + " · 赞 " + number(row, "likes") + (row.optInt("level") == 2 ? " · 回复" : ""), 11));
+                        }
+                        content.addView(block, blockParams);
+                    }
+                    Motion.stagger(content, 0);
+                });
+            } catch (Exception error) { handler.post(() -> loading.setText("读取失败：" + error.getMessage())); }
+        }, "collector-user-detail").start();
+    }
+
+    // ---- 分析
+
+    private void analysisPage() {
+        LinearLayout top = vertical(); top.setPadding(dp(12), dp(2), dp(12), dp(4));
+        top.addView(conditionChips(false)); body.addView(top);
+        LinearLayout list = scrolling(); TextView pending = muted("正在计算…", 14); list.addView(pending);
+        new Thread(() -> {
+            try { JSONObject data = api("analysis", new JSONObject(filters.toString())); handler.post(() -> {
+                if (page != PAGE_ANALYSIS || activity.isFinishing()) return; list.removeAllViews();
+                list.addView(text("已分析 " + data.optInt("commentsAnalyzed") + " 条公开评论" + (data.optBoolean("truncated") ? " · 部分结果" : ""), 14, true));
+                JSONArray items = data.optJSONArray("items");
+                if (items == null || items.length() == 0) list.addView(empty("当前条件下暂无结果"));
+                else for (int i = 0; i < items.length(); i++) {
+                    JSONObject user = items.optJSONObject(i); String uid = user.optString("userId"); LinearLayout card = card(list);
+                    LinearLayout line = horizontal();
+                    TextView rank = text(String.valueOf(i + 1), 13, true); rank.setTextColor(primary); rank.setMinWidth(dp(24)); line.addView(rank);
+                    TextView name = text(user.optString("nickname", uid), 15, true); name.setOnClickListener(view -> userDetail(uid, user.optString("nickname", uid)));
+                    line.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+                    line.addView(linkText("评论", () -> { page = PAGE_DATA; dataKind = DATA_COMMENTS; userFilter = uid; userFilterName = user.optString("nickname", uid); offset = 0; render(); }));
+                    card.addView(line);
+                    card.addView(muted("评论 " + user.optInt("commentCount") + " 条 · " + user.optInt("postCount") + " 个帖子 · 获赞 " + user.optLong("likesReceived") + " · 回复 " + user.optLong("replyCount"), 12));
+                    card.addView(muted(date(user.optLong("firstCommentAt")) + " 至 " + date(user.optLong("lastCommentAt")), 12));
+                }
+                Motion.stagger(list, 0);
+            }); } catch (Exception error) { handler.post(() -> pending.setText("计算失败：" + error.getMessage())); }
+        }, "collector-analysis").start();
+    }
+
+    // ---- 我的
+
+    private void mePage() throws Exception {
+        LinearLayout list = scrolling();
+        JSONObject config = new JSONObject();
+        try { config = CloudAccountClient.config(activity); } catch (Exception ignored) {}
+        boolean signedIn = !config.optString("accessToken").isEmpty();
+        LinearLayout group = card(list); group.setPadding(0, dp(4), 0, dp(4));
+        menuRow(group, android.R.drawable.ic_menu_myplaces, "共享账号", signedIn ? (config.optString("email") + " · " + syncStateText(config)) : "未登录 · 登录后与电脑端同步", this::accountSettings);
+        menuRow(group, android.R.drawable.ic_menu_info_details, "视频信息设置", "双击帖子弹出的信息与下载按钮", this::videoInfoSettings);
+        menuRow(group, android.R.drawable.ic_menu_preferences, "本机接口", "127.0.0.1:" + LocalApi.PORT + " · 接口密钥、导出任务", this::apiSettings);
+        LinearLayout group2 = card(list); group2.setPadding(0, dp(4), 0, dp(4));
+        menuRow(group2, android.R.drawable.ic_menu_recent_history, "全部任务", "查看、续跑或诊断所有任务", () -> { page = PAGE_COLLECT; allTasks = true; offset = 0; render(); });
+        menuRow(group2, android.R.drawable.ic_popup_sync, "唤醒采集服务", "数据库读取失败时使用", this::wakeCollector);
+        String runtimeText = "";
+        try { JSONObject runtime = api("runtime", new JSONObject()); runtimeText = "模块 " + runtime.optString("installedVersion") + " · 快手 " + runtime.optString("appVersion", ""); } catch (Exception ignored) {}
+        TextView about = muted((runtimeText.isEmpty() ? "" : runtimeText + "\n") + "构建 " + BuildInfo.ID, 11);
+        about.setPadding(dp(8), dp(12), dp(8), 0); list.addView(about);
+    }
+
+    private void menuRow(LinearLayout parent, int iconRes, String title, String subtitle, Runnable action) {
+        LinearLayout row = horizontal(); row.setPadding(dp(16), dp(12), dp(12), dp(12)); row.setMinimumHeight(dp(60));
+        ImageView image = new ImageView(activity); image.setImageResource(iconRes); image.setImageTintList(ColorStateList.valueOf(primary));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(24), dp(24)); iconParams.rightMargin = dp(14); row.addView(image, iconParams);
+        LinearLayout texts = vertical(); texts.addView(text(title, 15, true));
+        TextView sub = muted(subtitle, 12); sub.setSingleLine(true); sub.setEllipsize(TextUtils.TruncateAt.END); texts.addView(sub);
+        row.addView(texts, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView chevron = muted("›", 20); row.addView(chevron);
+        row.setOnClickListener(view -> action.run()); Motion.press(row);
+        parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    // ---------------------------------------------------------------- conditions
+
+    /** Chips summarising the active conditions; tap a chip's × to clear it, "条件" opens the editor. */
+    private View conditionChips(boolean forCollect) {
+        Flow flow = new Flow(activity, dp(6));
+        if (!forCollect) {
+            if (!userFilter.isEmpty()) flow.addView(chip("用户：" + (userFilterName.isEmpty() ? userFilter : userFilterName), true, () -> { userFilter = ""; userFilterName = ""; offset = 0; render(); }));
+            if (!postFilter.isEmpty()) flow.addView(chip("帖子：" + postFilter, true, () -> { postFilter = ""; offset = 0; render(); }));
+            if (!search.isEmpty()) flow.addView(chip("搜索：" + search, true, () -> { search = ""; offset = 0; render(); }));
         }
-        if (items.length() == 0) page.addView(text("暂无任务", 14, false));
+        String[][] parts = conditionParts(filters, forCollect);
+        for (String[] part : parts) flow.addView(chip(part[1], true, () -> { filters.remove(part[0]); if ("ipRegion".equals(part[0])) filters.remove("relation"); saveFilters(); render(); }));
+        flow.addView(chip(parts.length == 0 ? "+ 添加条件" : "编辑条件", false, () -> filterSheet(forCollect)));
+        return flow;
     }
-    private void action(GridLayout parent, Button button) {
-        GridLayout.LayoutParams params = new GridLayout.LayoutParams(); params.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f);
-        params.width = 0; params.height = dp(36); params.setMargins(dp(2), dp(2), dp(2), dp(2)); parent.addView(button, params);
+
+    /** [key, label] pairs for the non-default conditions. */
+    private String[][] conditionParts(JSONObject f, boolean forCollect) {
+        List<String[]> out = new ArrayList<>();
+        if (!f.optString("keyword").isEmpty()) out.add(new String[]{"keyword", "含 " + f.optString("keyword")});
+        if (!f.optString("excludeKeyword").isEmpty()) out.add(new String[]{"excludeKeyword", "排除 " + f.optString("excludeKeyword")});
+        if (!f.optString("ipRegion").isEmpty()) out.add(new String[]{"ipRegion", ("or".equals(f.optString("relation")) && !f.optString("keyword").isEmpty() ? "或 " : "") + "IP " + f.optString("ipRegion")});
+        String g = f.optString("gender", "all");
+        if (!"all".equals(g)) out.add(new String[]{"gender", genderFilterName(g)});
+        if (f.has("minAge") || f.has("maxAge")) out.add(new String[]{"minAge", (f.has("minAge") ? f.optString("minAge") : "") + "–" + (f.has("maxAge") ? f.optString("maxAge") : "") + " 岁"});
+        if (f.optInt("recentDays") > 0) out.add(new String[]{"recentDays", "近 " + f.optInt("recentDays") + " 天"});
+        if (forCollect) {
+            if (f.optInt("targetCount") > 0) out.add(new String[]{"targetCount", "目标 " + f.optInt("targetCount") + " 条"});
+            if (f.optInt("maxPages") > 0) out.add(new String[]{"maxPages", "最多 " + f.optInt("maxPages") + " 页"});
+            if (!"auto".equals(f.optString("pagingMode", "auto"))) out.add(new String[]{"pagingMode", pagingMode(f.optString("pagingMode"))});
+        } else if (!"captured_desc".equals(f.optString("sort", "captured_desc"))) out.add(new String[]{"sort", sortName(f.optString("sort"))});
+        return out.toArray(new String[0][]);
     }
-    private void taskAction(String operation, long id) {
-        try { api(operation, new JSONObject().put("taskId", id));
-            if (("resume".equals(operation) || "retry".equals(operation)) && showing()) open.get().dismiss(); else render(); }
+
+    private String describe(JSONObject f, boolean forCollect) {
+        StringBuilder out = new StringBuilder();
+        for (String[] part : conditionParts(f, forCollect)) { if (out.length() > 0) out.append(" · "); out.append(part[1]); }
+        return out.toString();
+    }
+
+    private void saveFilters() {
+        try { api("settings_save", new JSONObject().put("name", "filters").put("value", filters)); offset = 0; }
         catch (Exception error) { error(error); }
     }
-    private void collect(String id, boolean enqueue) {
-        if (id == null || id.isEmpty()) { error(new IllegalStateException("未读取当前作品评论")); return; }
-        filterDialog(() -> collectNow(id, enqueue));
+
+    /** Condition editor shared by data views and collection tasks (desktop field set). */
+    private void filterSheet(boolean forCollect) {
+        LinearLayout fields = vertical(); fields.setPadding(dp(20), dp(4), dp(20), dp(8));
+        section(fields, "评论内容");
+        EditText keyword = input("包含关键词，多个用逗号分隔", filters.optString("keyword"), false); fields.addView(keyword);
+        EditText exclude = input("排除关键词，多个用逗号分隔", filters.optString("excludeKeyword"), false); fields.addView(exclude);
+        section(fields, "地区");
+        EditText region = input("评论 IP 属地（北京、河北）", filters.optString("ipRegion"), false); fields.addView(region);
+        int[] relation = {"or".equals(filters.optString("relation")) ? 1 : 0};
+        fields.addView(segmented(new String[]{"关键词与地区同时满足", "满足任一项"}, relation[0], index -> relation[0] = index));
+        section(fields, "用户");
+        String[] genderKeys = {"all", "female", "male", "unknown", "female-or-unknown"};
+        int[] genderIndex = {0}; for (int i = 0; i < genderKeys.length; i++) if (genderKeys[i].equals(filters.optString("gender", "all"))) genderIndex[0] = i;
+        fields.addView(segmented(new String[]{"全部", "女", "男", "未知", "女或未知"}, genderIndex[0], index -> genderIndex[0] = index));
+        LinearLayout ages = horizontal();
+        EditText min = input("年龄下限", filters.has("minAge") ? filters.optString("minAge") : "", true);
+        EditText max = input("年龄上限", filters.has("maxAge") ? filters.optString("maxAge") : "", true);
+        ages.addView(min, new LinearLayout.LayoutParams(0, dp(52), 1)); ages.addView(max, new LinearLayout.LayoutParams(0, dp(52), 1)); fields.addView(ages);
+        section(fields, "时间");
+        EditText days = input("只看最近多少天内（空为不限）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
+        section(fields, "采集任务");
+        EditText target = input("目标评论数，达到后停止（空为全部）", filters.optInt("targetCount") > 0 ? String.valueOf(filters.optInt("targetCount")) : "", true); fields.addView(target);
+        EditText pages = input("最多读取页数（空为全部）", filters.optInt("maxPages") > 0 ? String.valueOf(filters.optInt("maxPages")) : "", true); fields.addView(pages);
+        String[] pagingKeys = {"auto", "native", "ui"};
+        int[] pagingIndex = {0}; for (int i = 0; i < pagingKeys.length; i++) if (pagingKeys[i].equals(filters.optString("pagingMode", "auto"))) pagingIndex[0] = i;
+        fields.addView(segmented(new String[]{"自动", "原生接口", "页面滚动"}, pagingIndex[0], index -> pagingIndex[0] = index));
+        section(fields, "排序（数据列表）");
+        String[] sortKeys = {"captured_desc", "created_desc", "created_asc", "likes_desc", "captured_asc"};
+        Spinner sorts = new Spinner(uiContext);
+        sorts.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item, new String[]{"最新抓取", "最新评论", "最早评论", "点赞最多", "最早抓取"}));
+        sorts.setMinimumHeight(dp(48)); fields.addView(sorts);
+        for (int i = 0; i < sortKeys.length; i++) if (sortKeys[i].equals(filters.optString("sort", "captured_desc"))) sorts.setSelection(i);
+        ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
+        alert().setTitle(forCollect ? "采集条件" : "筛选条件").setView(scroll)
+            .setNeutralButton("重置", (dialog, which) -> { filters = new JSONObject(); saveFilters(); render(); })
+            .setNegativeButton("取消", null)
+            .setPositiveButton("应用", (dialog, which) -> {
+                try {
+                    JSONObject next = new JSONObject()
+                        .put("keyword", keyword.getText().toString().trim()).put("excludeKeyword", exclude.getText().toString().trim())
+                        .put("ipRegion", region.getText().toString().trim()).put("relation", relation[0] == 1 ? "or" : "and")
+                        .put("gender", genderKeys[genderIndex[0]]).put("sort", sortKeys[sorts.getSelectedItemPosition()])
+                        .put("pagingMode", pagingKeys[pagingIndex[0]]);
+                    putNumber(next, "minAge", min); putNumber(next, "maxAge", max);
+                    putNumber(next, "recentDays", days); putNumber(next, "targetCount", target); putNumber(next, "maxPages", pages);
+                    filters = next; saveFilters(); render();
+                } catch (Exception error) { error(error); }
+            }).show();
     }
-    private void commentDialog() {
+
+    private static void putNumber(JSONObject target, String key, EditText field) throws Exception {
+        String value = field.getText().toString().trim();
+        if (!value.isEmpty()) { int number = Integer.parseInt(value); if (number > 0) target.put(key, number); }
+    }
+
+    private void section(LinearLayout parent, String title) {
+        TextView label = text(title, 13, true); label.setTextColor(primary); label.setPadding(0, dp(14), 0, dp(4)); parent.addView(label);
+    }
+
+    // ---------------------------------------------------------------- task creation
+
+    private void collectNow(String id, boolean enqueue) {
+        if (id == null || id.isEmpty()) { error(new IllegalStateException("还没有识别到当前帖子")); return; }
+        try {
+            JSONObject params = new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", enqueue);
+            JSONObject result = api("start", params);
+            Toast.makeText(activity, result.optBoolean("duplicate") ? "该帖子已有任务 #" + result.optLong("taskId") : "已开始采集，返回快手继续", Toast.LENGTH_SHORT).show();
+            closePanel.run();
+        } catch (Exception error) { error(error); }
+    }
+
+    private static final Pattern POST_ID = Pattern.compile("(?:short-video/|photo/|photoId=|work/)([A-Za-z0-9_-]{6,40})");
+
+    /** Paste several links or IDs (one per line or space-separated) to queue them with the current conditions. */
+    private void batchDialog() {
         LinearLayout fields = vertical(); fields.setPadding(dp(20), 0, dp(20), 0);
-        EditText id = input("作品 ID（上次读取）", photo.get(), false); fields.addView(id);
-        alert().setTitle("新建评论任务").setView(fields).setNegativeButton("取消", null)
-            .setPositiveButton("设置条件", (dialog, which) -> collect(id.getText().toString().trim(), true)).show();
+        TextView note = muted("每行一个快手帖子链接或作品 ID；会按当前采集条件依次排队。", 12); note.setPadding(0, 0, 0, dp(8)); fields.addView(note);
+        EditText links = input("粘贴链接或 ID", "", false); links.setSingleLine(false); links.setMinLines(4); links.setMaxLines(8); links.setGravity(Gravity.TOP);
+        links.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        try {
+            ClipboardManager clipboard = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (clipboard != null && clipboard.hasPrimaryClip() && clipboard.getPrimaryClip().getItemCount() > 0) {
+                CharSequence clip = clipboard.getPrimaryClip().getItemAt(0).getText();
+                if (clip != null && !parseIds(clip.toString()).isEmpty()) links.setText(clip);
+            }
+        } catch (RuntimeException ignored) {}
+        fields.addView(links);
+        alert().setTitle("批量添加帖子").setView(fields).setNegativeButton("取消", null).setPositiveButton("加入队列", (dialog, which) -> {
+            List<String> ids = parseIds(links.getText().toString());
+            if (ids.isEmpty()) { error(new IllegalStateException("没有识别到帖子 ID。短链接请先在快手打开后复制完整链接。")); return; }
+            batchStart(ids);
+        }).show();
     }
+
+    static List<String> parseIds(String text) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        for (String token : text.split("[\\s,，;；]+")) {
+            if (token.isEmpty()) continue;
+            Matcher matcher = POST_ID.matcher(token);
+            if (matcher.find()) ids.add(matcher.group(1));
+            else if (token.matches("[0-9]{8,25}")) ids.add(token);
+            if (ids.size() >= 100) break;
+        }
+        return new ArrayList<>(ids);
+    }
+
+    private void batchStart(List<String> ids) {
+        try {
+            JSONArray tasks = new JSONArray();
+            for (String id : ids) tasks.put(new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", true));
+            api("batch_start", new JSONObject().put("tasks", tasks));
+            Toast.makeText(activity, "已加入 " + ids.size() + " 个帖子", Toast.LENGTH_SHORT).show();
+            selectedPosts.clear(); page = PAGE_COLLECT; render();
+        } catch (Exception error) { error(error); }
+    }
+
     private void profileTask(JSONArray users) {
         if (users.length() == 0) { error(new IllegalStateException("请先选择用户")); return; }
         try { api("start", new JSONObject().put("kind", "profile").put("userIds", users).put("auto", true).put("enqueue", true)); closePanel.run(); }
         catch (Exception error) { error(error); }
     }
+
     private void discoveryDialog() {
         LinearLayout fields = vertical(); fields.setPadding(dp(20), 0, dp(20), 0);
         EditText keyword = input("搜索关键词", "", false), count = input("目标数量", "20", true), pages = input("最多加载页数", "20", true);
@@ -442,74 +956,15 @@ public final class CollectorPanel {
             catch (Exception error) { error(error); }
         }).show();
     }
-    private void analysis() {
-        LinearLayout commands = horizontal(); commands.setPadding(dp(12), 0, dp(8), 0);
-        commands.addView(primary("重新计算", this::render), new LinearLayout.LayoutParams(0, dp(40), 1));
-        commands.addView(icon(android.R.drawable.ic_menu_search, "分析条件", this::filterDialog)); body.addView(commands);
-        LinearLayout list = scrolling(); TextView pending = text("正在计算", 14, false); list.addView(pending);
-        new Thread(() -> {
-            try { JSONObject data = api("analysis", new JSONObject(filters.toString())); handler.post(() -> {
-                if (tab != 3 || activity.isFinishing()) return; list.removeAllViews();
-                list.addView(text("已分析 " + data.optInt("commentsAnalyzed") + " 条公开评论" + (data.optBoolean("truncated") ? " · 部分结果" : ""), 14, true));
-                JSONArray items = data.optJSONArray("items");
-                if (items.length() == 0) list.addView(text("当前条件下暂无结果", 14, false));
-                for (int i = 0; i < items.length(); i++) {
-                    JSONObject user = items.optJSONObject(i); String uid = user.optString("userId"); LinearLayout card = card(list);
-                    TextView name = text(user.optString("nickname", uid), 15, true); name.setMinHeight(dp(48)); name.setTextColor(link); name.setOnClickListener(view -> openProfile(uid)); card.addView(name);
-                    card.addView(text("评论 " + user.optInt("commentCount") + " 条 · 出现 " + user.optInt("postCount") + " 个帖子\n获赞 " + user.optLong("likesReceived") + " · 回复 " + user.optLong("replyCount"), 13, false));
-                    card.addView(text(date(user.optLong("firstCommentAt")) + " 至 " + date(user.optLong("lastCommentAt")), 12, false));
-                    card.addView(button("查看评论", () -> { tab = 0; userFilter = uid; offset = 0; render(); }));
-                }
-            }); } catch (Exception error) { handler.post(() -> pending.setText("计算失败：" + error.getMessage())); }
-        }, "collector-analysis").start();
+
+    private void taskAction(String operation, long id) {
+        try { api(operation, new JSONObject().put("taskId", id));
+            if (("resume".equals(operation) || "retry".equals(operation)) && showing()) open.get().dismiss(); else render(); }
+        catch (Exception error) { error(error); }
     }
-    private void collectNow(String id, boolean enqueue) {
-        try {
-            JSONObject params = new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", enqueue);
-            api("start", params); closePanel.run();
-        } catch (Exception error) { error(error); }
-    }
-    private void pageControls(JSONObject data) {
-        LinearLayout controls = horizontal(); controls.setPadding(dp(12), dp(8), dp(4), dp(12));
-        Button previous = button("上一页", () -> { offset = Math.max(0, offset - data.optInt("limit", 50)); render(); }); previous.setEnabled(offset > 0);
-        Button next = button("下一页", () -> { offset += data.optInt("limit", 50); render(); }); next.setEnabled(offset + data.optInt("limit", 50) < data.optInt("total"));
-        controls.addView(previous, new LinearLayout.LayoutParams(0, dp(40), 1)); controls.addView(next, new LinearLayout.LayoutParams(0, dp(40), 1)); body.addView(controls);
-    }
-    private EditText input(String hint, String value, boolean numeric) {
-        EditText view = new EditText(uiContext); view.setHint(hint); view.setText(value); view.setTextSize(14); view.setTextColor(foreground); view.setHintTextColor(secondary);
-        view.setSingleLine(true); view.setMinHeight(dp(48)); if (numeric) view.setInputType(InputType.TYPE_CLASS_NUMBER); return view;
-    }
-    private void filterDialog() { filterDialog(null); }
-    private void filterDialog(Runnable after) {
-        LinearLayout fields = vertical(); fields.setPadding(dp(20), 0, dp(20), 0);
-        EditText keyword = input("评论关键词", filters.optString("keyword"), false), region = input("评论 IP 属地（北京、河北）", filters.optString("ipRegion"), false);
-        fields.addView(keyword); fields.addView(region);
-        Spinner genders = new Spinner(uiContext); String[] genderKeys = {"all", "female", "male", "unknown", "female-or-unknown"};
-        genders.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item, new String[]{"全部性别", "女", "男", "未知", "女或未知"}));
-        genders.setMinimumHeight(dp(48)); fields.addView(genders);
-        for (int i = 0; i < genderKeys.length; i++) if (genderKeys[i].equals(filters.optString("gender", "all"))) genders.setSelection(i);
-        LinearLayout ages = horizontal(); EditText min = input("年龄下限", filters.has("minAge") ? filters.optString("minAge") : "", true);
-        EditText max = input("年龄上限", filters.has("maxAge") ? filters.optString("maxAge") : "", true);
-        ages.addView(min, new LinearLayout.LayoutParams(0, dp(56), 1)); ages.addView(max, new LinearLayout.LayoutParams(0, dp(56), 1)); fields.addView(ages);
-        Spinner sorts = new Spinner(uiContext); String[] sortKeys = {"captured_desc", "created_desc", "created_asc", "likes_desc", "captured_asc"};
-        sorts.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item, new String[]{"最新抓取", "最新评论", "最早评论", "点赞最多", "最早抓取"})); sorts.setMinimumHeight(dp(48)); fields.addView(sorts);
-        for (int i = 0; i < sortKeys.length; i++) if (sortKeys[i].equals(filters.optString("sort", "captured_desc"))) sorts.setSelection(i);
-        Spinner paging = new Spinner(uiContext); String[] pagingKeys = {"auto", "native", "ui"};
-        paging.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item,
-            new String[]{"自动（优先原生）", "原生接口", "页面滚动"})); paging.setMinimumHeight(dp(48)); fields.addView(paging);
-        for (int i = 0; i < pagingKeys.length; i++) if (pagingKeys[i].equals(filters.optString("pagingMode", "auto"))) paging.setSelection(i);
-        ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
-        alert().setTitle(after == null ? "结果条件" : "采集条件").setView(scroll).setNegativeButton("取消", null).setPositiveButton(after == null ? "应用" : "开始抓取", (dialog, which) -> {
-            try {
-                filters = new JSONObject().put("keyword", keyword.getText().toString().trim()).put("ipRegion", region.getText().toString().trim())
-                    .put("gender", genderKeys[genders.getSelectedItemPosition()]).put("sort", sortKeys[sorts.getSelectedItemPosition()])
-                    .put("pagingMode", pagingKeys[paging.getSelectedItemPosition()]);
-                if (!min.getText().toString().isEmpty()) filters.put("minAge", Integer.parseInt(min.getText().toString()));
-                if (!max.getText().toString().isEmpty()) filters.put("maxAge", Integer.parseInt(max.getText().toString()));
-                api("settings_save", new JSONObject().put("name", "filters").put("value", filters)); offset = 0; if (after != null) after.run(); else render();
-            } catch (Exception error) { error(error); }
-        }).show();
-    }
+
+    // ---------------------------------------------------------------- settings dialogs (unchanged behaviour)
+
     private void accountSettings() {
         JSONObject config;
         try { config = CloudAccountClient.config(activity); } catch (Exception error) { error(error); return; }
@@ -525,7 +980,7 @@ public final class CollectorPanel {
         LinearLayout actions = vertical(); actions.setPadding(0, dp(8), 0, 0);
         Button login = button(config.optString("accessToken").isEmpty() ? "登录并同步" : "重新登录并同步", () -> {});
         Button sync = button("立即同步", () -> {}); Button logout = button("退出登录", () -> {});
-        actions.addView(login, new LinearLayout.LayoutParams(-1, dp(48))); actions.addView(sync, new LinearLayout.LayoutParams(-1, dp(48))); actions.addView(logout, new LinearLayout.LayoutParams(-1, dp(48))); fields.addView(actions);
+        actions.addView(login, new LinearLayout.LayoutParams(-1, dp(44))); actions.addView(sync, new LinearLayout.LayoutParams(-1, dp(44))); actions.addView(logout, new LinearLayout.LayoutParams(-1, dp(44))); fields.addView(actions);
         sync.setEnabled(!config.optString("accessToken").isEmpty()); logout.setEnabled(!config.optString("accessToken").isEmpty());
         Runnable syncNow = () -> {
             login.setEnabled(false); sync.setEnabled(false); logout.setEnabled(false); state.setText("状态：正在同步…");
@@ -555,7 +1010,7 @@ public final class CollectorPanel {
             catch (Exception error) { error(error); }
         });
         ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
-        alert().setTitle("共享账户").setView(scroll).setNegativeButton("关闭", null).show();
+        alert().setTitle("共享账户").setView(scroll).setNegativeButton("关闭", (dialog, which) -> render()).show();
     }
     private String syncStateText(JSONObject config) {
         long last = config.optLong("lastSyncAt"); String error = config.optString("lastSyncError");
@@ -566,11 +1021,10 @@ public final class CollectorPanel {
     private void videoInfoSettings() {
         JSONObject saved = VideoInfoSettings.load(activity);
         LinearLayout fields = vertical(); fields.setPadding(dp(20), 0, dp(20), dp(12));
-        TextView note = text("控制帖子正文界面双击后弹出的作品信息。发布地址来自快手作品的 POI；作品没有 POI 时不会伪造地点。", 13, false);
+        TextView note = text("控制帖子正文界面双击后弹出的作品信息。作品带 POI 时显示具体地点，否则显示作品 IP 属地（快手只提供到省）。", 13, false);
         note.setTextColor(secondary); note.setPadding(0, 0, 0, dp(10)); fields.addView(note);
-
         String[] keys = {"location", "publish_time", "duration", "statistics", "video", "cover", "current_image", "music", "description", "copy_description"};
-        String[] labels = {"发布地址", "发布时间", "视频时长", "点赞 / 评论 / 收藏 / 分享", "保存作品信息", "封面图片", "当前图片（暂未支持）", "音乐信息", "视频文案", "复制文案按钮"};
+        String[] labels = {"发布地址", "发布时间", "视频时长", "点赞 / 评论 / 收藏 / 分享", "下载视频 / 图片", "封面图片", "当前图片（暂未支持）", "音乐信息与下载", "视频文案", "复制文案按钮"};
         Switch[] switches = new Switch[keys.length];
         for (int i = 0; i < keys.length; i++) {
             Switch toggle = new Switch(uiContext); toggle.setText(labels[i]); toggle.setTextSize(15); toggle.setTextColor(foreground);
@@ -578,11 +1032,9 @@ public final class CollectorPanel {
             if ("current_image".equals(keys[i])) toggle.setEnabled(false);
             fields.addView(toggle); switches[i] = toggle;
         }
-
-        TextView modeLabel = text("弹窗位置", 14, true); modeLabel.setPadding(0, dp(12), 0, 0); fields.addView(modeLabel);
-        Spinner mode = new Spinner(uiContext);
-        mode.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item, new String[]{"底部抽屉", "居中对话框"}));
-        mode.setMinimumHeight(dp(48)); mode.setSelection(VideoInfoSettings.centered(saved) ? 1 : 0); fields.addView(mode);
+        TextView modeLabel = text("弹窗位置", 14, true); modeLabel.setPadding(0, dp(12), 0, dp(4)); fields.addView(modeLabel);
+        int[] mode = {VideoInfoSettings.centered(saved) ? 1 : 0};
+        fields.addView(segmented(new String[]{"底部抽屉", "居中对话框"}, mode[0], index -> mode[0] = index));
         EditText timeFormat = input("时间格式，例如 yyyy-MM-dd HH:mm:ss", saved.optString("time_format", "yyyy-MM-dd HH:mm:ss"), false);
         fields.addView(timeFormat);
         ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
@@ -590,7 +1042,7 @@ public final class CollectorPanel {
             try {
                 JSONObject value = VideoInfoSettings.defaults();
                 for (int i = 0; i < keys.length; i++) value.put(keys[i], switches[i].isChecked());
-                value.put("presentation", mode.getSelectedItemPosition() == 1 ? "center" : "bottom");
+                value.put("presentation", mode[0] == 1 ? "center" : "bottom");
                 String format = timeFormat.getText().toString().trim();
                 if (!format.isEmpty()) value.put("time_format", format);
                 VideoInfoSettings.save(activity, value);
@@ -609,7 +1061,8 @@ public final class CollectorPanel {
                 boolean now = api("api_control", new JSONObject().put("enabled", !running)).optBoolean("running");
                 address.setText("127.0.0.1:" + LocalApi.PORT + " · " + (now ? "已开启" : "已关闭")); toggle.setText(now ? "关闭接口" : "开启接口"); }
             catch (Exception error) { error(error); }
-        }); settings.addView(toggle);
+        });
+        settings.addView(toggle, new LinearLayout.LayoutParams(-1, dp(44)));
         settings.addView(button("复制接口密钥", () -> {
             try {
                 String token = api("api_token", new JSONObject()).getString("token");
@@ -617,10 +1070,11 @@ public final class CollectorPanel {
                 extras.putBoolean("android.content.extra.IS_SENSITIVE", true); clip.getDescription().setExtras(extras);
                 ((ClipboardManager) activity.getSystemService(Activity.CLIPBOARD_SERVICE)).setPrimaryClip(clip);
             } catch (Exception error) { error(error); }
-        }));
-        settings.addView(button("导出当前任务", () -> { try { api("export", new JSONObject()); } catch (Exception error) { error(error); } }));
+        }), new LinearLayout.LayoutParams(-1, dp(44)));
+        settings.addView(button("导出当前任务", () -> { try { api("export", new JSONObject()); } catch (Exception error) { error(error); } }), new LinearLayout.LayoutParams(-1, dp(44)));
         alert().setTitle("本机接口").setView(settings).setPositiveButton("关闭", null).show();
     }
+
     private void events(long id) {
         try {
             JSONArray events = api("events", new JSONObject().put("taskId", id)).getJSONArray("items"); StringBuilder message = new StringBuilder();
@@ -628,7 +1082,6 @@ public final class CollectorPanel {
             alert().setTitle("任务 #" + id).setMessage(message.length() == 0 ? "暂无运行记录" : message.toString()).setPositiveButton("关闭", null).show();
         } catch (Exception error) { error(error); }
     }
-    private void openPost(String id) { if (!id.isEmpty()) launch("kwai://work/" + Uri.encode(id)); }
     private void copyDiagnostics(long id) {
         try {
             JSONObject report = new JSONObject().put("moduleBuild", BuildInfo.ID).put("android", android.os.Build.VERSION.RELEASE)
@@ -637,37 +1090,53 @@ public final class CollectorPanel {
                 .put("task", api("status", new JSONObject().put("taskId", id)))
                 .put("events", api("events", new JSONObject().put("taskId", id)).getJSONArray("items"));
             ((ClipboardManager) activity.getSystemService(Activity.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("任务诊断", report.toString()));
-            android.widget.Toast.makeText(activity, "已复制任务诊断", android.widget.Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, "已复制任务诊断", Toast.LENGTH_SHORT).show();
         } catch (Exception error) { error(error); }
     }
+
+    // ---------------------------------------------------------------- navigation helpers
+
+    private void openPost(String id) { if (!id.isEmpty()) launch("kwai://work/" + Uri.encode(id)); }
     private void openProfile(String id) { if (!id.isEmpty() && !"null".equals(id)) launch("kwai://profile/" + Uri.encode(id)); }
     private void launch(String url) {
         try { if (showing()) open.get().dismiss(); activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage("com.smile.gifmaker")); }
         catch (Exception error) { error(error); }
     }
+    /** Relaunches the collector process via its invisible WakeActivity, then reloads the panel. */
+    private void wakeCollector() {
+        try {
+            activity.startActivity(new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION));
+            Toast.makeText(activity, "正在唤醒采集服务…", Toast.LENGTH_SHORT).show();
+        } catch (Exception error) {
+            Toast.makeText(activity, "唤醒失败：" + error.getMessage(), Toast.LENGTH_LONG).show(); return;
+        }
+        handler.postDelayed(this::render, 1200);
+        handler.postDelayed(this::render, 3000);
+    }
+
+    // ---------------------------------------------------------------- polling
+
     private void poll() {
         Runnable refresh = new Runnable() {
             @Override public void run() {
                 if (activity.isFinishing() || activity.isDestroyed()) return;
                 if (dark(activity) != darkModeAtCreate && showing()) {
                     closePanel.run();
-                    handler.postDelayed(() -> show(activity, photo), 120);
+                    handler.postDelayed(() -> show(activity, photo), 320);
                     return;
                 }
                 try {
-                    JSONObject health = api("health", new JSONObject()), task = api("status", new JSONObject());
-                    String count = switch (task.optString("kind")) {
-                        case "discovery" -> "已发现 " + task.optInt("discoveredPosts") + " 条帖子";
-                        case "profile" -> "已补充 " + task.optInt("profilesDone") + "/" + task.optInt("profilesTotal") + " 位";
-                        default -> "已读 " + task.optInt("comments") + " 条评论";
-                    };
-                    String summaryText = "快手 · " + health.optInt("comments") + " 评论 · " + health.optInt("users") + " 用户\n任务 #" + task.optLong("taskId") + " " + state(task.optString("status")) + " · " + count +
-                        (showing() && task.optBoolean("auto") && task.optString("status").startsWith("running") && !task.optString("pagingDriver").startsWith("native-") ? "\n自动翻页暂缓 · 正在查看数据库" : "") +
-                        (cloudStatusHint.isEmpty() ? "" : "\n" + cloudStatusHint);
+                    JSONObject counts = api("summary", new JSONObject()), task = api("status", new JSONObject());
+                    String summaryText = "快手 · 帖子 " + counts.optInt("posts") + " · 评论 " + counts.optInt("comments") + " · 用户 " + counts.optInt("users")
+                        + (cloudStatusHint.isEmpty() ? "" : " · " + cloudStatusHint);
                     if (!summaryText.contentEquals(summary.getText())) summary.setText(summaryText);
                     maybeAutoSync(task);
-                    if (tab == 4 && !lastTaskSnapshot.equals(task.toString())) { lastTaskSnapshot = task.toString(); render(); }
-                } catch (Exception error) { summary.setText("采集服务不可用"); }
+                    if (page == PAGE_COLLECT && !lastTaskSnapshot.equals(task.toString())) {
+                        boolean first = lastTaskSnapshot.isEmpty(); lastTaskSnapshot = task.toString();
+                        if (!first) render();
+                    }
+                } catch (Exception error) { summary.setText("采集服务不可用 · 可在“我的”中唤醒"); }
                 handler.postDelayed(this, 2000);
             }
         }; handler.post(refresh);
@@ -681,17 +1150,165 @@ public final class CollectorPanel {
             lastAutoSyncTaskId = id; autoSyncRunning = true; cloudStatusHint = "云端同步中…";
             new Thread(() -> {
                 try { CloudAccountClient.sync(activity); cloudStatusHint = "云端已同步"; }
-                catch (Exception error) { cloudStatusHint = "云端同步失败，可在共享账户中重试"; }
+                catch (Exception error) { cloudStatusHint = "云端同步失败"; }
                 finally { autoSyncRunning = false; }
             }, "collector-cloud-auto-sync").start();
         } catch (Exception ignored) {}
     }
+
+    // ---------------------------------------------------------------- widgets
+
+    private int dp(int value) { return dp(activity, value); }
+    private static int dp(Activity activity, int value) { return Math.round(value * activity.getResources().getDisplayMetrics().density); }
+    private static boolean dark(Activity activity) {
+        UiModeManager mode = activity.getSystemService(UiModeManager.class);
+        if (mode != null) {
+            try { return (Boolean) UiModeManager.class.getMethod("isNightModeActive").invoke(mode); }
+            catch (Throwable ignored) { }
+        }
+        int systemConfigured = Resources.getSystem().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        int configured = activity.getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK;
+        if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_YES) return true;
+        if (mode != null && mode.getNightMode() == UiModeManager.MODE_NIGHT_NO) return false;
+        return systemConfigured == Configuration.UI_MODE_NIGHT_YES || configured == Configuration.UI_MODE_NIGHT_YES;
+    }
+    private android.app.AlertDialog.Builder alert() { return new android.app.AlertDialog.Builder(activity, dark(activity) ? android.R.style.Theme_Material_Dialog_Alert : android.R.style.Theme_Material_Light_Dialog_Alert); }
+    private LinearLayout vertical() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.VERTICAL); return view; }
+    private LinearLayout horizontal() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.HORIZONTAL); view.setGravity(Gravity.CENTER_VERTICAL); return view; }
+    private TextView text(String value, int size, boolean bold) {
+        TextView view = new TextView(activity); view.setText(value); view.setTextSize(size); view.setTextColor(foreground); view.setLineSpacing(0, 1.15f);
+        if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD); return view;
+    }
+    private TextView muted(String value, int size) { TextView view = text(value, size, false); view.setTextColor(secondary); return view; }
+    private TextView empty(String value) { TextView view = muted(value, 14); view.setGravity(Gravity.CENTER); view.setPadding(0, dp(40), 0, dp(40)); return view; }
+    private TextView linkText(String label, Runnable action) {
+        TextView view = text(label, 13, true); view.setTextColor(primary); view.setPadding(dp(10), dp(8), dp(4), dp(8));
+        view.setOnClickListener(v -> action.run()); Motion.press(view); return view;
+    }
+    private void sectionTitle(LinearLayout parent, String title) {
+        TextView label = text(title, 15, true); label.setPadding(dp(4), dp(14), 0, dp(6)); parent.addView(label);
+    }
+    private ImageButton icon(int drawable, String label, Runnable action) {
+        ImageButton button = new ImageButton(activity); button.setImageResource(drawable); button.setContentDescription(label);
+        button.setBackgroundColor(Color.TRANSPARENT); button.setImageTintList(ColorStateList.valueOf(foreground));
+        button.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(48))); button.setOnClickListener(view -> action.run()); Motion.press(button); return button;
+    }
+    private Button button(String label, Runnable action) { return styledButton(label, action, surfaceVariant, foreground); }
+    private Button primary(String label, Runnable action) { return styledButton(label, action, primary, Color.WHITE); }
+    private Button styledButton(String label, Runnable action, int background, int textColor) {
+        Button button = new Button(uiContext); button.setText(label); button.setTextSize(13); button.setAllCaps(false); button.setMinHeight(dp(36)); button.setMinimumHeight(dp(36)); button.setMinWidth(0); button.setMinimumWidth(0);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD); button.setTextColor(textColor); button.setBackground(round(background, 20));
+        button.setStateListAnimator(null); button.setPadding(dp(14), 0, dp(14), 0);
+        button.setOnClickListener(view -> action.run()); Motion.press(button); return button;
+    }
+    private LinearLayout.LayoutParams weighted(int leftMargin) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(36)); params.leftMargin = dp(leftMargin); return params;
+    }
+    private LinearLayout card(LinearLayout parent) {
+        LinearLayout card = vertical(); card.setPadding(dp(16), dp(14), dp(16), dp(14)); card.setBackground(round(surfaceContainer, 16));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(10)); parent.addView(card, params); return card;
+    }
+    /** Rounded pill; removable chips show "×" and clear on tap, action chips are outlined. */
+    private TextView chip(String label, boolean removable, Runnable action) {
+        TextView chip = text(removable ? label + "  ×" : label, 12, !removable);
+        chip.setSingleLine(true); chip.setEllipsize(TextUtils.TruncateAt.END); chip.setMaxWidth(dp(220));
+        chip.setPadding(dp(12), dp(6), dp(12), dp(6));
+        GradientDrawable shape = round(removable ? surfaceVariant : Color.TRANSPARENT, 16);
+        if (!removable) { shape.setStroke(dp(1), primary); chip.setTextColor(primary); }
+        chip.setBackground(shape); chip.setOnClickListener(view -> action.run()); Motion.press(chip);
+        return chip;
+    }
+    /** Segmented control: equal-width options, the selected one filled. */
+    private View segmented(String[] options, int selected, Consumer<Integer> onSelect) {
+        LinearLayout row = horizontal(); row.setBackground(round(surfaceVariant, 12)); row.setPadding(dp(3), dp(3), dp(3), dp(3));
+        TextView[] items = new TextView[options.length];
+        for (int i = 0; i < options.length; i++) {
+            final int index = i;
+            TextView item = text(options[i], 13, false); item.setGravity(Gravity.CENTER); item.setSingleLine(true); item.setEllipsize(TextUtils.TruncateAt.END);
+            item.setPadding(dp(4), 0, dp(4), 0);
+            item.setOnClickListener(view -> {
+                for (int j = 0; j < items.length; j++) styleSegment(items[j], j == index);
+                onSelect.accept(index);
+            });
+            styleSegment(item, i == selected); items[i] = item;
+            row.addView(item, new LinearLayout.LayoutParams(0, dp(34), 1));
+        }
+        LinearLayout wrapper = vertical(); wrapper.setPadding(0, dp(4), 0, dp(4)); wrapper.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        return wrapper;
+    }
+    private void styleSegment(TextView item, boolean on) {
+        item.setBackground(on ? round(surfaceContainer, 10) : null);
+        item.setTextColor(on ? foreground : secondary); item.setTypeface(Typeface.DEFAULT, on ? Typeface.BOLD : Typeface.NORMAL);
+        if (on) item.setElevation(dp(1)); else item.setElevation(0);
+    }
+    private CheckBox tint(CheckBox box) { box.setButtonTintList(ColorStateList.valueOf(primary)); return box; }
+    private GradientDrawable round(int color, int radius) { GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape; }
+    private GradientDrawable topRounded(int color, int radius) {
+        GradientDrawable shape = new GradientDrawable(); shape.setColor(color);
+        float r = dp(radius); shape.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0}); return shape;
+    }
+    private JSONObject api(String operation, JSONObject params) throws Exception { return CollectorClient.call(activity, operation, params); }
+    private void error(Exception error) { alert().setMessage(error.getMessage()).setPositiveButton("确定", null).show(); }
+    private LinearLayout scrolling() {
+        ScrollView scroll = new ScrollView(activity); currentScroll = scroll; LinearLayout list = vertical(); list.setPadding(dp(12), dp(4), dp(12), dp(16)); scroll.addView(list);
+        scroll.setClipToPadding(false);
+        body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1)); return list;
+    }
+    private void pageControls(JSONObject data) {
+        int limit = data.optInt("limit", 50), total = data.optInt("total");
+        if (total <= limit) return;
+        LinearLayout controls = horizontal(); controls.setPadding(dp(12), dp(6), dp(12), dp(8));
+        Button previous = button("上一页", () -> { offset = Math.max(0, offset - limit); render(); }); previous.setEnabled(offset > 0); previous.setAlpha(offset > 0 ? 1f : .4f);
+        Button next = button("下一页", () -> { offset += limit; render(); }); boolean more = offset + limit < total; next.setEnabled(more); next.setAlpha(more ? 1f : .4f);
+        TextView where = muted((offset / limit + 1) + " / " + ((total + limit - 1) / limit), 12); where.setGravity(Gravity.CENTER);
+        controls.addView(previous, new LinearLayout.LayoutParams(0, dp(38), 1)); controls.addView(where, new LinearLayout.LayoutParams(dp(64), -2)); controls.addView(next, new LinearLayout.LayoutParams(0, dp(38), 1));
+        body.addView(controls);
+    }
+    private EditText input(String hint, String value, boolean numeric) {
+        EditText view = new EditText(uiContext); view.setHint(hint); view.setText(value); view.setTextSize(14); view.setTextColor(foreground); view.setHintTextColor(secondary);
+        view.setSingleLine(true); view.setMinHeight(dp(48)); if (numeric) view.setInputType(InputType.TYPE_CLASS_NUMBER); return view;
+    }
+
+    /** Minimal wrapping row for chips. */
+    private static final class Flow extends ViewGroup {
+        private final int gap;
+        Flow(Context context, int gap) { super(context); this.gap = gap; }
+        @Override protected void onMeasure(int widthSpec, int heightSpec) {
+            int width = MeasureSpec.getSize(widthSpec), x = 0, y = 0, rowHeight = 0;
+            for (int i = 0; i < getChildCount(); i++) {
+                View child = getChildAt(i); if (child.getVisibility() == GONE) continue;
+                child.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST), MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+                if (x > 0 && x + child.getMeasuredWidth() > width) { x = 0; y += rowHeight + gap; rowHeight = 0; }
+                x += child.getMeasuredWidth() + gap; rowHeight = Math.max(rowHeight, child.getMeasuredHeight());
+            }
+            setMeasuredDimension(width, y + rowHeight);
+        }
+        @Override protected void onLayout(boolean changed, int l, int t, int r, int b) {
+            int width = r - l, x = 0, y = 0, rowHeight = 0;
+            for (int i = 0; i < getChildCount(); i++) {
+                View child = getChildAt(i); if (child.getVisibility() == GONE) continue;
+                if (x > 0 && x + child.getMeasuredWidth() > width) { x = 0; y += rowHeight + gap; rowHeight = 0; }
+                child.layout(x, y, x + child.getMeasuredWidth(), y + child.getMeasuredHeight());
+                x += child.getMeasuredWidth() + gap; rowHeight = Math.max(rowHeight, child.getMeasuredHeight());
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- labels
+
     private String number(JSONObject object, String key) { return object.has(key) && !object.isNull(key) ? object.optString(key) : "未知"; }
     private String date(long time) {
         if (time <= 0) return "时间未知"; if (time < 100000000000L) time *= 1000;
         return new SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(new Date(time));
     }
     private String gender(String gender) { return "female".equals(gender) ? "女" : "male".equals(gender) ? "男" : "未知"; }
+    private String genderFilterName(String key) {
+        return switch (key) { case "female" -> "女"; case "male" -> "男"; case "unknown" -> "性别未知"; case "female-or-unknown" -> "女或未知"; default -> "全部性别"; };
+    }
+    private String sortName(String key) {
+        return switch (key) { case "created_desc" -> "最新评论"; case "created_asc" -> "最早评论"; case "likes_desc" -> "点赞最多"; case "captured_asc" -> "最早抓取"; default -> "最新抓取"; };
+    }
+    private String kindName(String kind) { return "profile".equals(kind) ? "主页资料" : "discovery".equals(kind) ? "发现帖子" : "评论采集"; }
     private String runtimeStage(String value) {
         return switch (value) {
             case "comment_loading", "native_root_load" -> "正在读取主评论";
@@ -725,7 +1342,8 @@ public final class CollectorPanel {
     }
     private String issue(String code) {
         return switch (code) {
-            case "target_reached" -> "已达到发现目标"; case "search_eof_confirmed" -> "搜索末页已确认";
+            case "target_reached" -> "已达到目标数量"; case "page_limit_reached" -> "已达到页数上限（未确认末页）";
+            case "search_eof_confirmed" -> "搜索末页已确认";
             case "search_page_limit" -> "已达到搜索页数上限"; case "no_new_search_page" -> "搜索页面未继续加载";
             case "no_new_comment_page" -> "评论页面未继续加载"; case "profile_not_returned" -> "主页没有返回可用资料";
             case "root_page_not_observed" -> "尚未读取主评论首页，请返回快手后继续";
@@ -734,7 +1352,8 @@ public final class CollectorPanel {
             case "native_adapter_unavailable" -> "当前页面没有可用的原生分页器，请打开目标作品评论后继续";
             case "native_eof_unconfirmed" -> "页面已停止翻页，但接口尚未确认末页，请查看任务诊断";
             case "manual_login_required" -> "等待手动登录"; case "manual_verification_required" -> "等待手动完成平台验证";
-            case "manual_pause" -> "已手动暂停"; default -> code;
+            case "manual_pause" -> "已手动暂停"; case "superseded_by_new_task" -> "已被新任务替换，可续跑";
+            default -> code;
         };
     }
     private String state(String state) {
