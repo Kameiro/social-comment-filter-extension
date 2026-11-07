@@ -63,6 +63,11 @@ public final class KuaishouModule extends XposedModule {
     private final java.util.Set<String> commentSchemas = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private final java.util.Set<String> touchHooks = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
     private long lastTouchLogAt;
+    private final CurrentPostResolver currentPost = new CurrentPostResolver();
+    private JSONObject pendingPost;
+    // HomeActivity.dispatchTouchEvent calls super, and both it and Activity.dispatchTouchEvent are hooked.
+    // Without this guard every MotionEvent is observed twice and the second ACTION_UP clears the first tap.
+    private int touchDepth;
 
     @Override public void onModuleLoaded(ModuleLoadedParam param) {
         process = param.getProcessName();
@@ -108,6 +113,8 @@ public final class KuaishouModule extends XposedModule {
                 return result;
             });
         } catch (Exception error) { log(Log.WARN, TAG, "window_hook_unavailable", error); }
+        currentPost.bind(loader);
+        installFragmentTracking();
         installTouchHooks(loader);
         installRequests(loader);
         installNativePaging(loader);
@@ -179,19 +186,26 @@ public final class KuaishouModule extends XposedModule {
                     + " target=" + (target == null ? "null" : target.getClass().getName())
                     + " x=" + event.getRawX() + " y=" + event.getRawY());
             }
-            boolean secondDown = hasUsablePost() && target != null && isSameTarget(lastTapTarget.get(), target)
+            boolean secondDown = target != null && isSameTarget(lastTapTarget.get(), target)
                 && lastTapAt > 0L && now - lastTapAt <= 360L
                 && Math.abs(event.getRawX() - lastTapX) + Math.abs(event.getRawY() - lastTapY)
                     <= activity.getResources().getDisplayMetrics().density * 72f;
             downTarget = new WeakReference<>(target);
-            downOnMedia = target != null && hasUsablePost();
+            downOnMedia = target != null;
             downAt = now;
             downX = event.getRawX();
             downY = event.getRawY();
             if (!downOnMedia) lastTapAt = 0;
-            if (secondDown && downOnMedia) {
-                suppressSecondGesture = true;
-                return true;
+            if (secondDown) {
+                // Resolve only on a real double tap so single taps and scrolling stay untouched.
+                JSONObject post = postUnder(activity, event.getRawX(), event.getRawY(), target);
+                Log.i(TAG, "double_tap_second_down post=" + (post == null ? "" : post.optString("postId")));
+                if (post != null) {
+                    pendingPost = post;
+                    suppressSecondGesture = true;
+                    return true;
+                }
+                lastTapAt = 0L;
             }
             return false;
         }
@@ -207,7 +221,8 @@ public final class KuaishouModule extends XposedModule {
                     && now - downAt <= 500L;
                 suppressSecondGesture = false;
                 downOnMedia = false;
-                JSONObject post = lastPost;
+                JSONObject post = pendingPost;
+                pendingPost = null;
                 if (sameMedia && post != null && !post.optString("postId").isEmpty()) {
                     Log.i(TAG, "post_info_triggered target=" + target.getClass().getName() + " post=" + post.optString("postId"));
                     lastTapAt = 0L;
@@ -238,6 +253,34 @@ public final class KuaishouModule extends XposedModule {
         return false;
     }
 
+    private JSONObject postUnder(Activity activity, float rawX, float rawY, View target) {
+        try {
+            Object photo = currentPost.resolve(activity, rawX, rawY, target);
+            if (photo != null) {
+                JSONObject post = PublicMapper.post(photo);
+                if (post != null && !post.optString("postId").isEmpty()) {
+                    lastPost = post;
+                    rememberPost(photo);
+                    return post;
+                }
+            }
+        } catch (Throwable error) { Log.w(TAG, "current_post_resolve_failed", error); }
+        return hasUsablePost() ? lastPost : null;
+    }
+
+    private void installFragmentTracking() {
+        Class<?> fragment = currentPost.fragmentType();
+        if (fragment == null) { Log.w(TAG, "fragment_tracking_unavailable"); return; }
+        try {
+            hook(fragment.getDeclaredMethod("onResume")).intercept(chain -> {
+                Object result = chain.proceed();
+                currentPost.onFragmentResumed(chain.getThisObject());
+                return result;
+            });
+            Log.i(TAG, "fragment_tracking_installed");
+        } catch (Exception error) { log(Log.WARN, TAG, "fragment_tracking_unavailable", error); }
+    }
+
     private boolean hasUsablePost() {
         JSONObject post = lastPost;
         long capturedAt = post == null ? 0L : post.optLong("snapshotAt", 0L);
@@ -250,6 +293,7 @@ public final class KuaishouModule extends XposedModule {
         downX = downY = 0f;
         downOnMedia = false;
         suppressSecondGesture = false;
+        pendingPost = null;
         downTarget = new WeakReference<>(null);
         lastTapTarget = new WeakReference<>(null);
     }
@@ -441,6 +485,9 @@ public final class KuaishouModule extends XposedModule {
                 String key = method.getDeclaringClass().getName() + "#" + method.getName();
                 if (!touchHooks.add(key)) continue;
                 hook(method).intercept(chain -> {
+                    if (touchDepth > 0) return chain.proceed();
+                    touchDepth++;
+                    try {
                     boolean consume = false;
                     try {
                         Object receiver = chain.getThisObject();
@@ -455,6 +502,7 @@ public final class KuaishouModule extends XposedModule {
                     }
                     catch (Exception ignored) { Log.w(TAG, "double_tap_observer_failed"); }
                     return consume ? true : chain.proceed();
+                    } finally { touchDepth--; }
                 });
                 Log.i(TAG, "double_tap_hook_installed method=" + key);
             } catch (Exception error) { log(Log.WARN, TAG, "double_tap_hook_unavailable", error); }
