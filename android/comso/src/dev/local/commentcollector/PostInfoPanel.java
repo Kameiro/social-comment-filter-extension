@@ -305,7 +305,14 @@ final class PostInfoPanel {
     private static void toast(Activity activity, String value) { Toast.makeText(activity, value, Toast.LENGTH_SHORT).show(); }
 
     static void loadImage(ImageView target, String url) {
-        new Thread(() -> { try { byte[] bytes = download(url); Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length); if (bitmap != null) new Handler(Looper.getMainLooper()).post(() -> { target.setImageBitmap(bitmap); Motion.fadeIn(target, 260); }); } catch (Exception ignored) {} }, "post-info-image").start();
+        String loadUrl = imageUrlForAndroid(url);
+        new Thread(() -> { try { byte[] bytes = download(loadUrl); Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length); if (bitmap != null) new Handler(Looper.getMainLooper()).post(() -> { target.setImageBitmap(bitmap); Motion.fadeIn(target, 260); }); } catch (Exception ignored) {} }, "post-info-image").start();
+    }
+
+    /** Douyin's 100x100 avatar CDN commonly serves HEIC; the same path with JPEG decodes everywhere. */
+    private static String imageUrlForAndroid(String url) {
+        if (url == null) return "";
+        return url.replace(".heic", ".jpeg").replace(".heif", ".jpeg");
     }
     private enum Kind { VIDEO, IMAGE, AUDIO, FILE }
 
