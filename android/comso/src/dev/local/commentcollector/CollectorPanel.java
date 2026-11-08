@@ -667,7 +667,8 @@ public final class CollectorPanel {
 
     private void collectPage() throws Exception {
         LinearLayout list = scrolling();
-        String current = photo.get() == null ? "" : photo.get();
+        String suppliedCurrent = photo.get();
+        final String current = suppliedCurrent == null ? "" : suppliedCurrent;
 
         LinearLayout postCard = card(list);
         postCard.addView(muted("当前帖子", 12));
@@ -1424,7 +1425,8 @@ public final class CollectorPanel {
             }
             if (("resume".equals(operation) || "retry".equals(operation)) && showing()) {
                 String targetPhoto = updated.optString("photoId");
-                String currentPhoto = photo.get() == null ? "" : photo.get();
+                String currentPhoto = photo.get();
+                if (currentPhoto == null) currentPhoto = "";
                 if ("comment".equals(updated.optString("kind")) && !targetPhoto.isEmpty() && !targetPhoto.equals(currentPhoto)) {
                     openPost(targetPhoto);
                 } else {

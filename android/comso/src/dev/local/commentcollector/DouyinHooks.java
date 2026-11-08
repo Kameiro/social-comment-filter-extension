@@ -71,6 +71,7 @@ final class DouyinHooks {
                 if (doubleTap) doubleTapHooks++;
             } catch (Throwable error) { Log.w(TAG, "douyin_touch_hook_failed " + signature, error); }
         }
+        directDoubleTapAvailable = doubleTapHooks > 0;
         Log.i(TAG, "douyin_hooks_installed doubleTapHandlers=" + doubleTapHooks);
         // Capture the live panel instance from any of its methods, so we can ask it for the current Aweme later.
         int tracked = 0;
@@ -96,7 +97,8 @@ final class DouyinHooks {
             if (app == null) return;
             synchronized (DouyinHooks.this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
             DouyinComments target = comments;
-            new Thread(() -> target.observe(list, lastPostId), "douyin-comments").start();
+            String fallbackPost = lastPostId;
+            new Thread(() -> target.observe(list, fallbackPost), "douyin-comments").start();
         });
 
         DouyinProfiles.hook(xposed, loader, user -> {
@@ -134,6 +136,7 @@ final class DouyinHooks {
     }
 
     private static volatile java.lang.ref.WeakReference<Object> livePanel;
+    private volatile boolean directDoubleTapAvailable;
     private volatile ClassLoader hostLoader;
     private final java.util.concurrent.atomic.AtomicBoolean pagerStarted = new java.util.concurrent.atomic.AtomicBoolean();
 
@@ -152,6 +155,13 @@ final class DouyinHooks {
         detector = new DoubleTapDetector(xposed, new DoubleTapDetector.Handler() {
             @Override public Activity activity() { return activity; }
             @Override public boolean onDoubleTap(Activity host, float x, float y) {
+                // When Douyin exposes its holder+Aweme callback, it is the only source that knows
+                // which feed cell was tapped. The generic Activity detector sees the panel's
+                // preloaded current item and can otherwise open the neighbour's information.
+                if (directDoubleTapAvailable) {
+                    Log.i(TAG, "douyin_generic_double_tap_skipped direct_handler_available");
+                    return false;
+                }
                 Object aweme = currentAweme();
                 Log.i(TAG, "douyin_double_tap aweme=" + (aweme != null));
                 return aweme != null && showPost(aweme);
@@ -177,6 +187,7 @@ final class DouyinHooks {
         Activity current = activity;
         if (current == null || current.isFinishing()) return false;
         try {
+            markCurrent(aweme);
             JSONObject post = DouyinMapper.post(aweme);
             if (post == null) return false;
             Log.i(TAG, "post_info_triggered platform=douyin post=" + post.optString("postId"));
@@ -188,14 +199,21 @@ final class DouyinHooks {
 
     private volatile String lastPostId = "";
 
+    /** Updates the post supplier synchronously; persistence remains off the host UI thread. */
+    private void markCurrent(Object aweme) {
+        if (aweme == null) return;
+        String id = ModelReader.text(aweme, "aid", "aweme_id");
+        if (!id.isEmpty()) lastPostId = id;
+    }
+
     private void remember(Object aweme) {
+        markCurrent(aweme);
         Context app = context;
         if (app == null) return;
         synchronized (recorded) { if (recorded.put(aweme, Boolean.TRUE) != null) return; }
         new Thread(() -> {
             try {
                 JSONObject post = DouyinMapper.post(aweme);
-                if (post != null) lastPostId = post.optString("postId");
                 if (post != null) CollectorClient.call(app, "record_post", new JSONObject().put("post", post));
             } catch (Throwable ignored) {}
         }, "douyin-record-post").start();
