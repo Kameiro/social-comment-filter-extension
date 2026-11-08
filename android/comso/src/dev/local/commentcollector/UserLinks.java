@@ -29,9 +29,28 @@ final class UserLinks {
     static void message(Activity activity, JSONObject post) {
         String id = post.optString("authorId"), sec = post.optString("authorSecUid");
         if ("douyin".equals(post.optString("platform")) && startDouyinChat(activity, id, sec)) return;
-        // No direct chat entry known for this app: land on the profile, which carries the app's own message button.
+        if (("xhs".equals(post.optString("platform")) || "xiaohongshu".equals(post.optString("platform")))
+            && startXhsChat(activity, id, post.optString("authorName"))) return;
         profile(activity, post);
         toast(activity, "已打开主页，请点右上角私信");
+    }
+
+    /** Opens XHS's native one-to-one chat route. It only navigates; it never sends a message. */
+    private static boolean startXhsChat(Activity activity, String userId, String nickname) {
+        if (userId == null || userId.isEmpty()) return false;
+        try {
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("xhsdiscover://message/chat"))
+                .setPackage(activity.getPackageName());
+            intent.putExtra("userId", userId);
+            if (nickname != null && !nickname.isEmpty()) intent.putExtra("nickname", nickname);
+            intent.putExtra("source", "comso");
+            activity.startActivity(intent);
+            Log.i(TAG, "xhs_chat_started userId=" + userId);
+            return true;
+        } catch (Throwable error) {
+            Log.w(TAG, "xhs_chat_failed", error);
+            return false;
+        }
     }
 
     private static boolean startDouyinChat(Activity activity, String uid, String sec) {
