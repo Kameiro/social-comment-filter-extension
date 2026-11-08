@@ -263,6 +263,7 @@ public final class CollectorPanel {
     private String lastTaskShape = "";
     private java.util.function.Consumer<JSONObject> liveUpdate;
     private long lastAutoSyncTaskId;
+    private View openSwipeRow;
     private boolean autoSyncRunning;
     private volatile String cloudStatusHint = "";
     private final Set<String> selectedPosts = new LinkedHashSet<>(), selectedUsers = new LinkedHashSet<>();
@@ -719,9 +720,56 @@ public final class CollectorPanel {
         if (shown == 0) list.addView(muted("暂无其他任务", 13));
     }
 
-    /** Compact one-line task row; tap to expand into the full card. */
+    /** Compact one-line task row; swipe left for refresh & delete actions, tap to expand into the full card. */
     private void taskRow(LinearLayout parent, JSONObject task) {
-        LinearLayout row = card(parent); row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        FrameLayout swipeWrap = new FrameLayout(activity);
+        swipeWrap.setBackground(round(surfaceVariant, M3.SHAPE_LARGE));
+        swipeWrap.setClipToOutline(true);
+        swipeWrap.setClipChildren(true);
+        LinearLayout.LayoutParams wrapParams = new LinearLayout.LayoutParams(-1, -2);
+        wrapParams.setMargins(0, 0, 0, dp(10));
+        parent.addView(swipeWrap, wrapParams);
+
+        int actionWidth = dp(168);
+        LinearLayout actions = horizontal();
+        FrameLayout.LayoutParams actionParams = new FrameLayout.LayoutParams(actionWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.END);
+        swipeWrap.addView(actions, actionParams);
+
+        LinearLayout row = vertical();
+        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        row.setBackground(round(surfaceContainer, M3.SHAPE_LARGE));
+        swipeWrap.addView(row, new FrameLayout.LayoutParams(-1, -2));
+
+        Button refreshBtn = new Button(uiContext);
+        refreshBtn.setText("更新抓取");
+        refreshBtn.setTextColor(sc.onPrimary);
+        refreshBtn.setTextSize(13);
+        refreshBtn.setTypeface(refreshBtn.getTypeface(), Typeface.BOLD);
+        refreshBtn.setBackgroundColor(primary);
+        refreshBtn.setGravity(Gravity.CENTER);
+        refreshBtn.setPadding(0, 0, 0, 0);
+        refreshBtn.setOnClickListener(v -> {
+            row.animate().translationX(0f).setDuration(160).start();
+            openSwipeRow = null;
+            taskAction("refresh_task", task.optLong("taskId"));
+        });
+        actions.addView(refreshBtn, new LinearLayout.LayoutParams(dp(92), -1));
+
+        Button deleteBtn = new Button(uiContext);
+        deleteBtn.setText("删除");
+        deleteBtn.setTextColor(Color.WHITE);
+        deleteBtn.setTextSize(13);
+        deleteBtn.setTypeface(deleteBtn.getTypeface(), Typeface.BOLD);
+        deleteBtn.setBackgroundColor(errorColor);
+        deleteBtn.setGravity(Gravity.CENTER);
+        deleteBtn.setPadding(0, 0, 0, 0);
+        deleteBtn.setOnClickListener(v -> {
+            row.animate().translationX(0f).setDuration(160).start();
+            openSwipeRow = null;
+            deleteTask(task.optLong("taskId"));
+        });
+        actions.addView(deleteBtn, new LinearLayout.LayoutParams(dp(76), -1));
+
         LinearLayout line = horizontal();
         String kind = task.optString("kind"), state = task.optString("status");
         TextView title = text("#" + task.optLong("taskId") + " " + kindName(kind), 14, true);
@@ -733,14 +781,71 @@ public final class CollectorPanel {
         TextView summaryView = muted(taskSummary(task), 12);
         row.addView(summaryView);
         LinearLayout details = vertical(); details.setVisibility(View.GONE); row.addView(details);
-        row.setOnClickListener(view -> {
-            if (details.getVisibility() == View.GONE) {
-                if (details.getChildCount() == 0) { try { taskDetails(details, task, false); } catch (Exception error) { details.addView(muted(String.valueOf(error.getMessage()), 12)); } }
-                summaryView.setVisibility(View.GONE);
-                details.setVisibility(View.VISIBLE); Motion.fadeIn(details, 200);
-            } else {
-                details.setVisibility(View.GONE);
-                summaryView.setVisibility(View.VISIBLE);
+
+        row.setOnTouchListener(new View.OnTouchListener() {
+            private float downRawX, downRawY, startTx;
+            private boolean swiping;
+
+            @Override public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downRawX = event.getRawX();
+                        downRawY = event.getRawY();
+                        startTx = row.getTranslationX();
+                        swiping = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE:
+                        float dx = event.getRawX() - downRawX;
+                        float dy = event.getRawY() - downRawY;
+                        if (!swiping && Math.abs(dx) > dp(8) && Math.abs(dx) > Math.abs(dy) * 1.15f) {
+                            swiping = true;
+                            if (row.getParent() != null) row.getParent().requestDisallowInterceptTouchEvent(true);
+                            if (openSwipeRow != null && openSwipeRow != row) {
+                                openSwipeRow.animate().translationX(0f).setDuration(160).start();
+                            }
+                        }
+                        if (swiping) {
+                            float tx = Math.max(-actionWidth, Math.min(0f, startTx + dx));
+                            row.setTranslationX(tx);
+                            return true;
+                        }
+                        return false;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        if (swiping) {
+                            float dx2 = event.getRawX() - downRawX;
+                            if (row.getTranslationX() < -actionWidth * 0.35f || (dx2 < -dp(24) && startTx == 0)) {
+                                row.animate().translationX(-actionWidth).setDuration(180).start();
+                                openSwipeRow = row;
+                            } else {
+                                row.animate().translationX(0f).setDuration(180).start();
+                                if (openSwipeRow == row) openSwipeRow = null;
+                            }
+                            return true;
+                        }
+                        if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                            if (row.getTranslationX() < -dp(8)) {
+                                row.animate().translationX(0f).setDuration(180).start();
+                                if (openSwipeRow == row) openSwipeRow = null;
+                                return true;
+                            }
+                            if (details.getVisibility() == View.GONE) {
+                                if (details.getChildCount() == 0) {
+                                    try { taskDetails(details, task, false); }
+                                    catch (Exception error) { details.addView(muted(String.valueOf(error.getMessage()), 12)); }
+                                }
+                                summaryView.setVisibility(View.GONE);
+                                details.setVisibility(View.VISIBLE);
+                                Motion.fadeIn(details, 200);
+                            } else {
+                                details.setVisibility(View.GONE);
+                                summaryView.setVisibility(View.VISIBLE);
+                            }
+                            return true;
+                        }
+                        return false;
+                }
+                return false;
             }
         });
     }
@@ -850,6 +955,10 @@ public final class CollectorPanel {
         if ("paused".equals(state)) buttons.add(primary("继续", () -> taskAction("resume", id)));
         if (state.startsWith("running") || "paused".equals(state) || "queued".equals(state)) buttons.add(button("停止", () -> taskAction("stop", id)));
         if ("stopped".equals(state)) buttons.add(button("续跑", () -> taskAction("retry", id)));
+        if (!state.startsWith("running") && !"queued".equals(state)) {
+            buttons.add(button("更新抓取", () -> taskAction("refresh_task", id)));
+            buttons.add(button("删除", () -> deleteTask(id)));
+        }
         if ("comment".equals(kind)) {
             buttons.add(button("查看评论", () -> showTaskComments(id)));
             buttons.add(button("打开帖子", () -> openPost(task.optString("photoId"))));
@@ -1415,15 +1524,25 @@ public final class CollectorPanel {
         }).show();
     }
 
+    private void deleteTask(long id) {
+        try {
+            api("delete_task", new JSONObject().put("taskId", id));
+            if (taskFilter == id) taskFilter = 0;
+            Toast.makeText(activity, "已删除任务 #" + id, Toast.LENGTH_SHORT).show();
+            render();
+        } catch (Exception error) { error(error); }
+    }
+
     private void taskAction(String operation, long id) {
         try {
             JSONObject updated = api(operation, new JSONObject().put("taskId", id));
-            if (("resume".equals(operation) || "retry".equals(operation)) && "queued".equals(updated.optString("status"))) {
-                Toast.makeText(activity, "已加入排队，当前任务完成后自动续跑", Toast.LENGTH_SHORT).show();
+            if (("resume".equals(operation) || "retry".equals(operation) || "refresh_task".equals(operation)) && "queued".equals(updated.optString("status"))) {
+                Toast.makeText(activity, "refresh_task".equals(operation) ? "已加入排队，当前任务完成后自动更新抓取" : "已加入排队，当前任务完成后自动续跑", Toast.LENGTH_SHORT).show();
                 render();
                 return;
             }
-            if (("resume".equals(operation) || "retry".equals(operation)) && showing()) {
+            if (("resume".equals(operation) || "retry".equals(operation) || "refresh_task".equals(operation)) && showing()) {
+                if ("refresh_task".equals(operation)) Toast.makeText(activity, "已开始更新抓取", Toast.LENGTH_SHORT).show();
                 String targetPhoto = updated.optString("photoId");
                 String currentPhoto = photo.get();
                 if (currentPhoto == null) currentPhoto = "";

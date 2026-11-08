@@ -313,6 +313,67 @@ public final class CaptureProvider extends ContentProvider {
                 }
                 out.putString("data", new JSONObject().put("token", value).toString()); return out;
             }
+            if ("delete_task".equals(method)) {
+                long targetId = input.getLong("taskId");
+                db.beginTransaction();
+                try {
+                    String[] arg = new String[]{String.valueOf(targetId)};
+                    db.execSQL("DELETE FROM comments WHERE task=?", arg);
+                    db.execSQL("DELETE FROM pages WHERE task=?", arg);
+                    db.execSQL("DELETE FROM groups_eof WHERE task=?", arg);
+                    db.execSQL("DELETE FROM events WHERE task=?", arg);
+                    db.execSQL("DELETE FROM profile_targets WHERE task=?", arg);
+                    db.execSQL("DELETE FROM discovered WHERE task=?", arg);
+                    db.execSQL("DELETE FROM tasks WHERE id=?", arg);
+                    db.setTransactionSuccessful();
+                } finally { db.endTransaction(); }
+                advance();
+                long current = activeId();
+                writeStatus(status(current));
+                JSONObject res = new JSONObject().put("deleted", true).put("taskId", targetId);
+                out.putString("data", res.toString());
+                out.putString("json", res.toString());
+                return out;
+            }
+            if ("refresh_task".equals(method)) {
+                long targetId = input.getLong("taskId");
+                JSONObject previous = status(targetId);
+                if ("idle".equals(previous.optString("status"))) throw new IllegalStateException("任务不存在");
+                String[] arg = new String[]{String.valueOf(targetId)};
+                db.beginTransaction();
+                try {
+                    db.execSQL("DELETE FROM pages WHERE task=?", arg);
+                    db.execSQL("DELETE FROM groups_eof WHERE task=?", arg);
+                    if ("profile".equals(previous.optString("kind"))) {
+                        db.execSQL("UPDATE profile_targets SET status='pending',issue=NULL WHERE task=?", arg);
+                    }
+                    long currentActive = activeId();
+                    long now = System.currentTimeMillis();
+                    if (currentActive != 0 && currentActive != targetId) {
+                        if ("paused".equals(status(currentActive).optString("status"))) {
+                            db.execSQL("UPDATE tasks SET status='stopped',issue='superseded_by_refresh',updated=? WHERE id=?", new Object[]{now, currentActive});
+                        } else {
+                            db.execSQL("UPDATE tasks SET status='queued',pages=0,root_eof=0,root_evidence=NULL,issue=NULL,auto=1,generation=generation+1,updated=? WHERE id=?", new Object[]{now, targetId});
+                            event(targetId, "queued_for_refresh");
+                            db.setTransactionSuccessful();
+                            JSONObject st = status(targetId);
+                            out.putString("data", st.toString());
+                            out.putString("json", st.toString());
+                            return out;
+                        }
+                    }
+                    db.execSQL("DELETE FROM settings WHERE name='platform_block'");
+                    String nextState = "profile".equals(previous.optString("kind")) ? "running-profiles" : "running";
+                    db.execSQL("UPDATE tasks SET status=?,pages=0,root_eof=0,root_evidence=NULL,issue=NULL,auto=1,generation=generation+1,updated=? WHERE id=?", new Object[]{nextState, now, targetId});
+                    event(targetId, "refreshed");
+                    db.setTransactionSuccessful();
+                } finally { db.endTransaction(); }
+                JSONObject st = status(targetId);
+                writeStatus(st);
+                out.putString("data", st.toString());
+                out.putString("json", st.toString());
+                return out;
+            }
             long id = activeId();
             if ("append".equals(method)) {
                 if (extras == null || extras.getLong("taskId") != id || id == 0 ||
