@@ -135,6 +135,8 @@ public final class CaptureProvider extends ContentProvider {
         out.put("pagingDriver", scalar("SELECT paging_driver FROM tasks WHERE id=?", String.valueOf(id)));
         out.put("nativeLoads", Integer.parseInt(scalar("SELECT native_loads FROM tasks WHERE id=?", String.valueOf(id))));
         out.put("uiScrolls", Integer.parseInt(scalar("SELECT ui_scrolls FROM tasks WHERE id=?", String.valueOf(id))));
+        JSONObject paramsObj = out.optJSONObject("params");
+        String taskPlatform = paramsObj == null ? "" : paramsObj.optString("platform");
         String postId = out.optString("photoId");
         if (!postId.isEmpty()) {
             String postData = scalar("SELECT data FROM posts WHERE id=?", postId);
@@ -143,9 +145,12 @@ public final class CaptureProvider extends ContentProvider {
                     JSONObject post = new JSONObject(postData);
                     String postTitle = post.optString("title");
                     if (!postTitle.isEmpty() && !"null".equals(postTitle)) out.put("postTitle", postTitle);
+                    if (taskPlatform.isEmpty()) taskPlatform = post.optString("platform");
                 } catch (Exception ignored) {}
             }
+            if (taskPlatform.isEmpty() && postId.matches("[0-9a-fA-F]{24}")) taskPlatform = "xhs";
         }
+        if (!taskPlatform.isEmpty()) out.put("platform", taskPlatform);
         return out;
     }
 

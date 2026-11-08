@@ -51,11 +51,12 @@ final class DoubleTapDetector {
 
     /** Time of the last real finger touch; module-injected gestures bypass Activity.dispatchTouchEvent, so they never set it. */
     static volatile long lastUserTouch;
+    static volatile boolean injecting;
 
     private void hookMethod(Method dispatch) {
         try {
             xposed.hook(dispatch).intercept(chain -> {
-                if (depth > 0) return chain.proceed();
+                if (depth > 0 || injecting) return chain.proceed();
                 MotionEvent e = (MotionEvent) chain.getArg(0);
                 lastUserTouch = android.os.SystemClock.uptimeMillis();
                 Activity host = chain.getThisObject() instanceof Activity ? (Activity) chain.getThisObject() : handler.activity();
@@ -76,10 +77,12 @@ final class DoubleTapDetector {
                     } else if (action == MotionEvent.ACTION_UP) {
                         boolean tap = e.getEventTime() - lastTapDown < 220 && Math.hypot(e.getX() - downX, e.getY() - downY) < 40;
                         lastTapUp = tap ? e.getEventTime() : 0; lastX = e.getX(); lastY = e.getY();
-                    }
-                    if (holding) {
-                        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) holding = false;
-                        return true;
+                        if (holding) {
+                            holding = false;
+                            if (tap) return true;
+                        }
+                    } else if (action == MotionEvent.ACTION_CANCEL) {
+                        holding = false;
                     }
                 } catch (Throwable error) { Log.w(TAG, "double_tap_failed", error); }
                 depth++;

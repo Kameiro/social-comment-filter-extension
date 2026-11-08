@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
@@ -36,11 +38,13 @@ final class XhsComments {
     private final ClassLoader loader;
     private final Supplier<Context> context;
     private final Supplier<Activity> activity;
+    private final Supplier<View> activeRootView;
     private final Supplier<String> currentPost;
     private final Consumer<String> onPostObserved;
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
     private final WeakIdentityMap<String> seen = new WeakIdentityMap<>();
     private final WeakIdentityMap<Long> clickedExpands = new WeakIdentityMap<>();
+    private final Set<String> savedFingerprints = ConcurrentHashMap.newKeySet();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Map<String, JSONObject> recentPages = new LinkedHashMap<>() {
         @Override protected boolean removeEldestEntry(Map.Entry<String, JSONObject> eldest) { return size() > 10; }
@@ -50,17 +54,26 @@ final class XhsComments {
     private volatile int idleTicks;
 
     XhsComments(XposedInterface xposed, ClassLoader loader, Supplier<Context> context, Supplier<Activity> activity,
-                Supplier<String> currentPost, Consumer<String> onPostObserved) {
+                Supplier<View> activeRootView, Supplier<String> currentPost, Consumer<String> onPostObserved) {
         this.xposed = xposed;
         this.loader = loader;
         this.context = context;
         this.activity = activity;
+        this.activeRootView = activeRootView;
         this.currentPost = currentPost;
         this.onPostObserved = onPostObserved;
     }
 
+    XhsComments(XposedInterface xposed, ClassLoader loader, Supplier<Context> context, Supplier<Activity> activity,
+                Supplier<String> currentPost, Consumer<String> onPostObserved) {
+        this(xposed, loader, context, activity, () -> {
+            Activity act = activity.get();
+            return (act != null && act.getWindow() != null) ? act.getWindow().getDecorView() : null;
+        }, currentPost, onPostObserved);
+    }
+
     XhsComments(XposedInterface xposed, ClassLoader loader, Supplier<Context> context, Supplier<String> currentPost) {
-        this(xposed, loader, context, () -> null, currentPost, null);
+        this(xposed, loader, context, () -> null, () -> null, currentPost, null);
     }
 
     void install() {
@@ -92,7 +105,7 @@ final class XhsComments {
             }
         }
 
-        // Lightweight background watcher ensuring auto-paging runs while a comment task is active
+        // Lightweight background watcher ensuring auto-paging runs while an XHS comment task is active
         new Thread(() -> {
             while (true) {
                 try {
@@ -100,7 +113,9 @@ final class XhsComments {
                     Context app = context.get();
                     if (app != null && !paging) {
                         JSONObject task = CollectorClient.call(app, "status", new JSONObject());
-                        if ("comment".equals(task.optString("kind"))
+                        String plat = task.optString("platform");
+                        if ((plat.isEmpty() || "xhs".equals(plat))
+                            && "comment".equals(task.optString("kind"))
                             && task.optString("status").startsWith("running")
                             && task.optBoolean("auto", true)) {
                             main.post(this::ensurePaging);
@@ -143,7 +158,9 @@ final class XhsComments {
             main.post(() -> {
                 if (!paging) return;
                 if (activeTask == null) { main.postDelayed(this::tick, 2000); return; }
-                boolean go = "comment".equals(activeTask.optString("kind"))
+                String plat = activeTask.optString("platform");
+                boolean go = (plat.isEmpty() || "xhs".equals(plat))
+                    && "comment".equals(activeTask.optString("kind"))
                     && activeTask.optString("status").startsWith("running")
                     && activeTask.optBoolean("auto", true);
                 if (!go) { stopPaging("task_not_running"); return; }
@@ -177,7 +194,8 @@ final class XhsComments {
     private void scrollComments(Context app, JSONObject task) {
         Activity host = activity.get();
         if (host == null || host.isFinishing()) return;
-        View decor = host.getWindow() == null ? null : host.getWindow().getDecorView();
+        View decor = activeRootView != null ? activeRootView.get() : null;
+        if (decor == null && host.getWindow() != null) decor = host.getWindow().getDecorView();
         if (decor == null) return;
 
         // 1. Check if there is an unexpanded reply button visible
@@ -225,8 +243,8 @@ final class XhsComments {
         int[] at = new int[2];
         best.getLocationOnScreen(at);
         float x = at[0] + best.getWidth() * 0.5f;
-        float from = at[1] + best.getHeight() * 0.82f;
-        float to = at[1] + best.getHeight() * 0.22f;
+        float from = Math.max(at[1] + best.getHeight() * 0.82f, screenHeight * 0.78f);
+        float to = Math.min(at[1] + best.getHeight() * 0.22f, screenHeight * 0.25f);
         if (!canScrollDown) {
             // Pull slightly down then push back up to trigger reload
             float swap = from;
@@ -236,12 +254,19 @@ final class XhsComments {
         long down = SystemClock.uptimeMillis();
         final int steps = 10;
         final float startY = from, endY = to;
-        dispatch(decor, down, down, MotionEvent.ACTION_DOWN, x, startY);
+        final View targetDecor = decor;
+        dispatch(targetDecor, down, down, MotionEvent.ACTION_DOWN, x, startY);
         for (int i = 1; i <= steps; i++) {
             final int n = i;
-            main.postDelayed(() -> dispatch(decor, down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, x, startY + (endY - startY) * n / steps), 18L * i);
+            main.postDelayed(() -> dispatch(targetDecor, down, SystemClock.uptimeMillis(), MotionEvent.ACTION_MOVE, x, startY + (endY - startY) * n / steps), 18L * i);
         }
-        main.postDelayed(() -> dispatch(decor, down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, endY), 18L * (steps + 1));
+        main.postDelayed(() -> {
+            dispatch(targetDecor, down, SystemClock.uptimeMillis(), MotionEvent.ACTION_UP, x, endY);
+            if (best.canScrollVertically(1)) {
+                best.scrollBy(0, Math.max(200, (int) (best.getHeight() * 0.55f)));
+            }
+        }, 18L * (steps + 1));
+        Log.i(TAG, "xhs_auto_scroll view=" + best.getClass().getSimpleName() + " canScrollDown=" + canScrollDown + " idle=" + idleTicks);
     }
 
     private void completePendingReplies(Context app, JSONObject task) {
@@ -276,7 +301,9 @@ final class XhsComments {
         if (root == null) return;
         MotionEvent event = MotionEvent.obtain(down, time, action, x, y, 0);
         event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        try { root.dispatchTouchEvent(event); } catch (Throwable ignored) {} finally { event.recycle(); }
+        DoubleTapDetector.injecting = true;
+        try { root.dispatchTouchEvent(event); } catch (Throwable ignored) {}
+        finally { DoubleTapDetector.injecting = false; event.recycle(); }
     }
 
     private View findExpandButton(View root) {
@@ -307,19 +334,33 @@ final class XhsComments {
 
     private static View findCommentList(View view, int screenHeight, View best) {
         if (view == null || view.getVisibility() != View.VISIBLE) return best;
-        String name = view.getClass().getName();
-        if (name.contains("RecyclerView") || view.canScrollVertically(1) || view.canScrollVertically(-1)) {
-            int[] at = new int[2]; view.getLocationOnScreen(at);
+        boolean canScrollVertical = view.canScrollVertically(1) || view.canScrollVertically(-1);
+        boolean isRecyclerView = view.getClass().getName().contains("RecyclerView");
+        boolean isHorizontalOnly = view.canScrollHorizontally(1) || view.canScrollHorizontally(-1);
+
+        if (canScrollVertical || (isRecyclerView && !isHorizontalOnly)) {
+            int[] at = new int[2];
+            view.getLocationOnScreen(at);
             int h = view.getHeight();
-            if (h > screenHeight * 0.22f) {
+            if (h > screenHeight * 0.20f) {
                 if (best == null) {
                     best = view;
                 } else {
-                    int[] bestAt = new int[2]; best.getLocationOnScreen(bestAt);
-                    if (bestAt[1] <= 0 && at[1] > 0) {
+                    int[] bestAt = new int[2];
+                    best.getLocationOnScreen(bestAt);
+                    boolean bestCanScroll = best.canScrollVertically(1) || best.canScrollVertically(-1);
+                    if (canScrollVertical && !bestCanScroll) {
                         best = view;
-                    } else if ((bestAt[1] > 0 && at[1] > 0) || (bestAt[1] <= 0 && at[1] <= 0)) {
-                        if (h > best.getHeight()) best = view;
+                    } else if (!canScrollVertical && bestCanScroll) {
+                        // keep best
+                    } else {
+                        int bottom = at[1] + h;
+                        int bestBottom = bestAt[1] + best.getHeight();
+                        if (at[1] > bestAt[1] || bottom > bestBottom) {
+                            best = view;
+                        } else if (at[1] == bestAt[1] && h > best.getHeight()) {
+                            best = view;
+                        }
                     }
                 }
             }
@@ -386,6 +427,7 @@ final class XhsComments {
         long generation = task.optLong("generation");
         String fingerprint = page.optString("cursor") + ":" + page.optString("photoId") + ":" + page.optString("rootId")
             + ":" + (rows == null ? 0 : rows.length()) + ":" + firstId(rows) + ":" + taskId + ":" + generation;
+        if (!savedFingerprints.add(fingerprint)) return;
         if (responseIdentity != null) {
             synchronized (seen) { if (fingerprint.equals(seen.put(responseIdentity, fingerprint))) return; }
         }

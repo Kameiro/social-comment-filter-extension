@@ -1242,7 +1242,7 @@ public final class CollectorPanel {
     private void collectNow(String id, boolean enqueue) {
         if (id == null || id.isEmpty()) { error(new IllegalStateException("还没有识别到当前帖子")); return; }
         try {
-            JSONObject params = new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", enqueue);
+            JSONObject params = new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", enqueue).put("platform", hostPlatform());
             JSONObject result = api("start", params);
             Toast.makeText(activity, result.optBoolean("duplicate") ? "该帖子已有任务 #" + result.optLong("taskId") : "已开始采集，返回" + hostName() + "继续", Toast.LENGTH_SHORT).show();
             closePanel.run();
@@ -1287,7 +1287,7 @@ public final class CollectorPanel {
     private void batchStart(List<String> ids) {
         try {
             JSONArray tasks = new JSONArray();
-            for (String id : ids) tasks.put(new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", true));
+            for (String id : ids) tasks.put(new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", true).put("platform", hostPlatform()));
             api("batch_start", new JSONObject().put("tasks", tasks));
             Toast.makeText(activity, "已加入 " + ids.size() + " 个帖子", Toast.LENGTH_SHORT).show();
             selectedPosts.clear(); page = PAGE_COLLECT; render();
@@ -1296,7 +1296,7 @@ public final class CollectorPanel {
 
     private void profileTask(JSONArray users) {
         if (users.length() == 0) { error(new IllegalStateException("请先选择用户")); return; }
-        try { api("start", new JSONObject().put("kind", "profile").put("userIds", users).put("auto", true).put("enqueue", true)); closePanel.run(); }
+        try { api("start", new JSONObject().put("kind", "profile").put("userIds", users).put("auto", true).put("enqueue", true).put("platform", hostPlatform())); closePanel.run(); }
         catch (Exception error) { error(error); }
     }
 
@@ -1306,7 +1306,7 @@ public final class CollectorPanel {
         fields.addView(keyword); fields.addView(count); fields.addView(pages);
         alert().setTitle("发现帖子").setView(fields).setNegativeButton("取消", null).setPositiveButton("开始发现", (dialog, which) -> {
             try { api("start", new JSONObject().put("kind", "discovery").put("keyword", keyword.getText().toString().trim())
-                .put("target", Integer.parseInt(count.getText().toString())).put("maxPages", Integer.parseInt(pages.getText().toString())).put("auto", true).put("enqueue", true)); closePanel.run(); }
+                .put("target", Integer.parseInt(count.getText().toString())).put("maxPages", Integer.parseInt(pages.getText().toString())).put("auto", true).put("enqueue", true).put("platform", hostPlatform())); closePanel.run(); }
             catch (Exception error) { error(error); }
         }).show();
     }

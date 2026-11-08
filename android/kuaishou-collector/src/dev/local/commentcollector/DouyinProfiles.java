@@ -238,6 +238,11 @@ final class DouyinProfiles {
         new Thread(() -> {
             try {
                 JSONObject task = CollectorClient.call(context, "status", new JSONObject());
+                String plat = task.optString("platform");
+                if ((!plat.isEmpty() && !"douyin".equals(plat)) || task.optString("photoId").matches("[0-9a-fA-F]{24}")) {
+                    main.postDelayed(this::tick, 3000);
+                    return;
+                }
                 if ("profile".equals(task.optString("kind")) && task.optString("status").startsWith("running")) {
                     Activity host = activity.get();
                     if (host != null && !host.isFinishing()) drive(task.optLong("taskId"), host);

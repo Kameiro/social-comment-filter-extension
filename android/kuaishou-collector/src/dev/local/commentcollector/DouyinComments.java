@@ -47,7 +47,14 @@ final class DouyinComments {
         if (!paging) return;
         new Thread(() -> {
             boolean running = false, unknown = false;
-            try { JSONObject task = CollectorClient.call(context, "status", new JSONObject()); JSONObject params = task.optJSONObject("params"); nativeMode = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto")); running = "comment".equals(task.optString("kind")) && task.optString("status").startsWith("running"); } catch (Throwable ignored) { unknown = true; }
+            try {
+                JSONObject task = CollectorClient.call(context, "status", new JSONObject());
+                String plat = task.optString("platform");
+                boolean platformMismatch = (!plat.isEmpty() && !"douyin".equals(plat)) || task.optString("photoId").matches("[0-9a-fA-F]{24}");
+                JSONObject params = task.optJSONObject("params");
+                nativeMode = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto"));
+                running = !platformMismatch && "comment".equals(task.optString("kind")) && task.optString("status").startsWith("running");
+            } catch (Throwable ignored) { unknown = true; }
             final boolean go = running, failed = unknown;
             main.post(() -> {
                 if (!paging) return;
@@ -97,7 +104,8 @@ final class DouyinComments {
     private static void dispatch(android.view.View root, long down, long time, int action, float x, float y) {
         android.view.MotionEvent event = android.view.MotionEvent.obtain(down, time, action, x, y, 0);
         event.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
-        try { root.dispatchTouchEvent(event); } finally { event.recycle(); }
+        DoubleTapDetector.injecting = true;
+        try { root.dispatchTouchEvent(event); } finally { DoubleTapDetector.injecting = false; event.recycle(); }
     }
 
     private static android.view.View findList(android.view.View view, int screenHeight, android.view.View best) {
@@ -195,6 +203,8 @@ final class DouyinComments {
     private long replyStep() throws Exception {
         JSONObject task;
         try { task = CollectorClient.call(context, "status", new JSONObject()); } catch (Throwable ignored) { return 3000; }
+        String plat = task.optString("platform");
+        if ((!plat.isEmpty() && !"douyin".equals(plat)) || task.optString("photoId").matches("[0-9a-fA-F]{24}")) return 3000;
         if ("comment".equals(task.optString("kind")) && task.optString("status").startsWith("running")) maybeOpenPost(task);
         if (!"comment".equals(task.optString("kind")) || !"running-replies".equals(task.optString("status"))) return 3000;
         String photo = task.optString("photoId");

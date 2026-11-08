@@ -62,6 +62,12 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             if (result == null || result.containsKey("error")) return;
             JSONObject state = new JSONObject(result.getString("json"));
             if (!state.optString("status").startsWith("running")) { running = false; stage = state.optString("status"); return; }
+            String taskPlatform = state.optString("platform");
+            if ((!taskPlatform.isEmpty() && !"kuaishou".equals(taskPlatform))
+                || state.optString("photoId").matches("[0-9a-fA-F]{24}")) {
+                running = false;
+                return;
+            }
             if (!running) { actions = 0; lastProgress = SystemClock.elapsedRealtime(); running = true; }
             if (taskId != state.optLong("taskId") || generation != state.optLong("generation")) {
                 taskId = state.optLong("taskId"); pages = -1; actions = 0; lastClick = ""; repliesStarted = false;

@@ -40,6 +40,7 @@ final class XhsHooks {
     private DoubleTapDetector detector;
     private XhsComments comments;
     private final WeakHashMap<Dialog, DialogTapState> commentDialogTaps = new WeakHashMap<>();
+    private volatile WeakReference<Dialog> activeCommentDialog;
 
     XhsHooks(XposedInterface xposed) { this.xposed = xposed; }
 
@@ -74,7 +75,7 @@ final class XhsHooks {
         });
         detector.install();
         hookCommentDialogs();
-        comments = new XhsComments(xposed, loader, () -> context, () -> activity, this::currentPostId, id -> { if (id != null && !id.isEmpty()) lastPostId = id; });
+        comments = new XhsComments(xposed, loader, () -> context, () -> activity, this::activeRootView, this::currentPostId, id -> { if (id != null && !id.isEmpty()) lastPostId = id; });
         comments.install();
         Log.i(TAG, "xhs_hooks_installed");
     }
@@ -160,11 +161,33 @@ final class XhsHooks {
             xposed.hook(dispatch).intercept(chain -> {
                 Dialog dialog = (Dialog) chain.getThisObject();
                 MotionEvent event = (MotionEvent) chain.getArg(0);
-                if (isCommentDialog(dialog) && suppressCommentDoubleTap(dialog, event)) return true;
+                if (isCommentDialog(dialog)) {
+                    activeCommentDialog = new WeakReference<>(dialog);
+                    if (suppressCommentDoubleTap(dialog, event)) return true;
+                }
                 return chain.proceed();
             });
             Log.i(TAG, "xhs_comment_dialog_hook_installed");
         } catch (Throwable error) { Log.w(TAG, "xhs_comment_dialog_hook_unavailable", error); }
+        try {
+            Method show = Dialog.class.getDeclaredMethod("show");
+            xposed.hook(show).intercept(chain -> {
+                Dialog dialog = (Dialog) chain.getThisObject();
+                if (isCommentDialog(dialog)) activeCommentDialog = new WeakReference<>(dialog);
+                return chain.proceed();
+            });
+        } catch (Throwable ignored) {}
+    }
+
+    View activeRootView() {
+        WeakReference<Dialog> ref = activeCommentDialog;
+        Dialog d = ref != null ? ref.get() : null;
+        if (d != null && d.isShowing() && d.getWindow() != null) {
+            View decor = d.getWindow().getDecorView();
+            if (decor != null && decor.isShown()) return decor;
+        }
+        Activity act = activity;
+        return (act != null && act.getWindow() != null) ? act.getWindow().getDecorView() : null;
     }
 
     private boolean suppressCommentDoubleTap(Dialog dialog, MotionEvent event) {
@@ -235,16 +258,6 @@ final class XhsHooks {
     }
 
     private static boolean shouldHoldImageTap(Activity host, float x, float y) {
-        if (!isDetailActivity(host) || isCommentLayer(host, x, y)) return false;
-        View view = deepestView(host.getWindow() == null ? null : host.getWindow().getDecorView(), x, y);
-        if (view == null) return false;
-        for (View c = view; c != null; ) {
-            String name = c.getClass().getName().toLowerCase(java.util.Locale.ROOT);
-            if (name.contains("video") || name.contains("surface") || name.contains("player")) return false;
-            if (name.contains("image") || name.contains("photo") || c instanceof android.widget.ImageView) return true;
-            Object parent = c.getParent();
-            c = parent instanceof View ? (View) parent : null;
-        }
         return false;
     }
 
