@@ -70,7 +70,7 @@ dist/                      安卓扩展发布产物
 
 详细的平板安装、首次测试和排错步骤见 [安卓使用说明](docs/ANDROID.md)。
 
-快手 App 内嵌采集模块的 Vector 源码、构建和诊断说明见 [`android/kuaishou-collector`](android/kuaishou-collector/)；它与 Chromium 扩展是两套独立运行时。
+App 内嵌采集模块（comso）的 Vector 源码、构建和诊断说明见 [`android/comso`](android/comso/)；它与 Chromium 扩展是两套独立运行时。
 
 需要在平板本机准备后续性别核验所需的后台浏览器环境时，参见 [ZeroTermux 最短教程](docs/TERMUX.md)。当前教程只做环境验证，不会改变插件的评论抓取功能。
 

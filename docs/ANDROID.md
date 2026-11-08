@@ -43,16 +43,16 @@
 
 ## 快手 Vector 原生模块
 
-快手 App 内嵌的评论数据库和手机版评论采集模块位于 [`android/kuaishou-collector`](../android/kuaishou-collector/)。它是独立的 Vector/libxposed API 102 模块，不属于 Chromium 扩展，也不会修改快手 APK。当前适配基线为快手 `14.8.40.50567`、Android 16 和 Vector API 102。
+App 内嵌的评论数据库和手机版评论采集模块（comso）位于 [`android/comso`](../android/comso/)。它是独立的 Vector/libxposed API 102 模块，不属于 Chromium 扩展，也不会修改目标 APK。当前适配快手、抖音、小红书与 Vector API 102。
 
 在 macOS 本地构建：
 
 ```bash
-node android/kuaishou-collector/test.mjs
-node android/kuaishou-collector/build.mjs
+node android/comso/test.mjs
+node android/comso/build.mjs
 ```
 
-APK 会生成到 `android/runtime/collector/kuaishou-collector-debug.apk`。在 Vector 中启用快手和模块自身作用域，覆盖安装 APK 后强行停止并重新打开快手。不要把 `android/runtime/`、数据库、登录状态或测试截图提交到仓库。
+APK 会生成到 `android/runtime/collector/comso.apk`。在 Vector 中启用快手和模块自身作用域，覆盖安装 APK 后强行停止并重新打开快手。不要把 `android/runtime/`、数据库、登录状态或测试截图提交到仓库。
 
 `0.1.3` / versionCode `4` 修复 Android 16 真机中的 `Unknown authority dev.local.commentcollector.capture`：模块清单同时注册了 `CaptureProvider`，并声明了该 Provider 的 Android 包可见性。这个错误表示本地采集 Provider 未被系统发现，与快手评论接口或账号登录状态无关。系统悬浮窗权限不是内嵌数据库 Dialog 的前提。
 

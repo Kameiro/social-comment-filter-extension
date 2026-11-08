@@ -49,7 +49,7 @@ const key = join(runtime, 'development.keystore');
 if (!existsSync(key)) run(join(java, 'bin/keytool'), ['-genkeypair', '-keystore', key, '-storepass', 'android',
   '-keypass', 'android', '-alias', 'development', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '3650',
   '-dname', 'CN=Local Android Lab']);
-const apk = join(runtime, 'kuaishou-collector-debug.apk');
+const apk = join(runtime, 'comso.apk');
 run(join(tools, 'apksigner'), ['sign', '--ks', key, '--ks-pass', 'pass:android', '--out', apk, aligned]);
 run(join(tools, 'apksigner'), ['verify', apk]);
 console.log(JSON.stringify({ apk, api: '102.0.0', developmentOnly: true }, null, 2));

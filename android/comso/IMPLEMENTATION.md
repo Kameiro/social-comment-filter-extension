@@ -90,7 +90,7 @@ App 不在前台时不自动翻页，不将“任务保存”表述为“关闭 
 
 ## 开发制品
 
-已构建并在 Android 16 模拟器安装验证的模块 APK：`runtime/collector/kuaishou-collector-debug.apk`（路径相对上级 android-lab）。
+已构建并在 Android 16 模拟器安装验证的模块 APK：`runtime/collector/comso.apk`（路径相对上级 android-lab）。
 版本：`0.1.3` / versionCode `4`，注入构建 `0.1.3-provider-visibility-20261029`。包含手动任务首页刷新、折叠评论展开、回复父评论恢复、原生动作分类、响应等待超时、进程诊断和 Android 16 Provider 可见性修复。
 SHA-256：`c5612c60e460f677a13b166e2e037b153ca034f869df281f042a9c8572459614`。
 设备安装文件哈希一致；这仅确认该开发制品与模拟器安装一致，不等于正式发布或真机适配。

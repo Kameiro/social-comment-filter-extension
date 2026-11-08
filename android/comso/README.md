@@ -1,15 +1,30 @@
-# 快手 App 内评论数据库模块
+# comso：快手 / 抖音 / 小红书 App 内评论采集模块
 
-适配基线：官方快手 Android `14.8.40.50567`、Android 16 ARM64、Vector 3090 / libxposed API 102。
-交付形式为 Vector 模块 APK，不重打包快手，不修改登录、平台请求、签名或返回值。
-当前模块版本为 `0.1.3`（versionCode 4），为开发版本；快手和抖音双击、抖音评论读取已在连接的 PKX110 / Android 17 / Vector 真机环境完成现场验证。
+适配基线：快手 Android `14.8.40.50567`、抖音 `com.ss.android.ugc.aweme`、小红书 `9.51.0`（`com.xingin.xhs`），Android 16/17 ARM64、Vector 3090 / libxposed API 102。
+交付形式为 Vector 模块 APK（`comso.apk`），不重打包宿主应用，不修改登录、平台请求、签名或返回值。
+当前模块版本为 `0.1.3`（versionCode 4）；快手、抖音、小红书三平台双击作品信息弹窗、设置页内嵌入口及评论/回复自动采集已在连接的 PKX110 / Android 17 / Vector 真机环境完成现场验证。
 
 ## 2026-11-08 更新
 
+- 模块目录与构建产物统一命名为 `android/comso` 与 `comso.apk`（涵盖快手、抖音、小红书三平台）。
+- 三平台原生设置页统一嵌入 `comso 模块设置` 卡片（快手 `SettingsActivity`、抖音 `DouYinSettingNewVersionActivity`、小红书 `SettingActivityV2`），支持一键开关「显示侧边悬浮采集按钮」与「双击作品弹出信息面板」。
+- 采集面板体验升级：
+  - 原地无闪烁更新进度（结构快照比对，仅在状态变化时重建视图，数字跳动时原地刷新）。
+  - 任务卡片展示帖子标题与通俗中文说明，隐藏开发者内部字段术语。
+  - 修复停止任务点击「续跑」时与其他暂停/运行任务冲突的问题，并支持续跑时自动拉起目标作品。
+  - 图文作品双击弹窗自动显示「图文信息」并隐藏「视频时长」。
+- 小红书 `9.51.0` 评论与回复完整采集：
+  - 兼容 `com.xingin.entities.q`（一级评论与内联回复）、`com.xingin.entities.v`（主评论+二级回复列表）、`com.xingin.entities.w`（二级回复分页）三种响应实体及 `NoteFeed` / `NoteItemBean` 帖子实体。
+  - 支持首屏评论缓存去重回放、自动点击「展开回复/展开更多/查看折叠评论」及纵向评论列表平滑滑动翻页。
+  - 支持批量解析小红书 `explore/` 链接与 24 位十六进制笔记 ID。
+- 多平台数据与任务隔离：
+  - 修复 `CaptureProvider.append` 写库时平台标识硬编码问题，确保 `xhs`、`douyin`、`kuaishou` 的帖子与用户按各自平台归档。
+  - 任务状态携带 `platform` 标识，快手 `AutoPager`、抖音 `DouyinComments`/`DouyinProfiles`、小红书 `XhsComments` 各自只处理所属平台任务，防止后台跨应用抢占任务。
+  - 新增 `DoubleTapDetector.injecting` 标记，模块自动注入的翻页滑动手势不触发用户触屏冷却或单击拦截。
 - 抖音 `com.ss.android.ugc.aweme` 已现场验证：双击视频弹出作品信息，地点显示“云南 西双版纳傣族自治州”，并记录 `douyin_double_tap` / `post_info_triggered`。
 - 抖音评论入口已现场验证：打开评论后原生响应读取 20 条一级评论，日志记录 `more=true`、游标 `20` 和作品 ID；当前任务处于暂停状态时会按设计跳过落库，不伪造任务完成。
 - 快手原生设置页、作品信息双击和设置开关已现场验证；关闭“视频文案”后弹窗不再显示文案，恢复开关后回到默认显示。
-- 小红书 9.51.0 已完成首轮真机验证：`NoteFeed.F0()` 记录当前笔记，正文区域双击弹出作品信息面板，第二次点击被消费且点赞数未变化；`com.xingin.entities.q.f()` 捕获原生评论响应。实测笔记 `6ae94c8300000000030154f5` 返回 10 条评论、`hasMore=true` 和 JSON 游标，继续滚动后捕获到折叠页与下一页。当前任务是暂停中的 discovery 任务，按设计只记录响应并跳过评论落库。
+- 小红书 9.51.0 已完成首轮真机验证：`NoteFeed.F0()` 记录当前笔记，正文区域双击弹出作品信息面板，第二次点击被消费且点赞数未变化；`com.xingin.entities.q.f()` 捕获原生评论响应。实测笔记 `6ae94c8300000000030154f5` 返回 10 条评论、`hasMore=true` 和 JSON 游标，继续滚动后捕获到折叠页与下一页。
 - 小红书双击修复已加入：详情页当前作品从 `NoteDetailRepository.d()` / `pfa.c.f()` 获取，避免下滑后误用预加载的下一个视频；评论层和 `NoteCommentActivity` 的双击直接消费，不弹作品信息、不打开回复输入框。图片帖正文仍可弹出当前作品信息。
 - 小红书视频详情兼容已补齐：视频详情使用 `DetailFeedActivity`，当前视频从触点对象树和 `ItemVisibilityStatePublisher.k()` 解析；真机日志已确认当前 ID 与 `post_info_triggered` 的作品 ID 一致。
 - 图文帖图片层已增加首击保护：图片单击不会先被小红书切入大图，双击会直接弹出当前作品信息；视频和正文文字区域保持原有点击行为。
@@ -68,9 +83,9 @@
 ## 构建
 
 ```bash
-node android/kuaishou-collector/test.mjs
-node android/kuaishou-collector/build.mjs
-adb install -r android/runtime/collector/kuaishou-collector-debug.apk
+node android/comso/test.mjs
+node android/comso/build.mjs
+adb install -r android/runtime/collector/comso.apk
 ```
 
 使用 Java 21 和 Android SDK 36 的 javac、D8、aapt2、zipalign、apksigner，无需 Gradle。

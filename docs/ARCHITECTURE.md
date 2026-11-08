@@ -8,13 +8,13 @@
 extension/                 Chrome/Chromium 扩展（电脑端，也可生成平板浏览器包）
 services/cloud-server/     账户、租户、订阅和数据同步 API
 services/playwright-worker 电脑端主页资料与发现任务服务
-android/kuaishou-collector/快手 App 内 Vector/libxposed 模块（手机端主入口）
+android/comso/             快手 / 抖音 / 小红书 App 内 Vector/libxposed 模块（手机端主入口）
 scripts/build-helium-android.mjs
                             生成可选的 Helium/Titanium 浏览器包
 docs/                      用户说明、测试证据和端间契约
 ```
 
-电脑端使用浏览器扩展读取抖音、小红书和快手页面。手机端的主要交付物是 `android/kuaishou-collector`，它注入快手 `com.smile.gifmaker`，把评论、帖子和公开用户资料保存到本机数据库，再按账户状态自动同步到云端。Helium/Titanium 包属于兼容运行时，保留用于平板浏览器场景，不再作为手机端 LSPosed 模块的替代品。
+电脑端使用浏览器扩展读取抖音、小红书和快手页面。手机端的主要交付物是 `android/comso`，它注入快手 `com.smile.gifmaker`、抖音 `com.ss.android.ugc.aweme`、小红书 `com.xingin.xhs`，把评论、帖子和公开用户资料保存到本机数据库，再按账户状态自动同步到云端。Helium/Titanium 包属于兼容运行时，保留用于平板浏览器场景，不再作为手机端 LSPosed 模块的替代品。
 
 ## 共享账户
 
@@ -38,4 +38,4 @@ docs/                      用户说明、测试证据和端间契约
 
 ## 构建关系
 
-修改电脑端公共逻辑后，运行 `node scripts/build-helium-android.mjs` 更新 `dist/helium-android-extension`。修改手机模块后，运行 `node android/kuaishou-collector/test.mjs` 和 `node android/kuaishou-collector/build.mjs`；构建产物放在上级本地 `runtime/`，不提交到仓库。
+修改电脑端公共逻辑后，运行 `node scripts/build-helium-android.mjs` 更新 `dist/helium-android-extension`。修改手机模块后，运行 `node android/comso/test.mjs` 和 `node android/comso/build.mjs`；构建产物放在上级本地 `runtime/`，不提交到仓库。

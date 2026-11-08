@@ -105,8 +105,8 @@ HTTP 401 表示缺少密钥，403 表示不允许的网页 Origin，409 表示�
 ## 回归
 
 ```bash
-node outputs/android-lab/kuaishou-collector/test.mjs
-COLLECTOR_TEST_DB=outputs/android-lab/runtime/collector/capture-test.db node outputs/android-lab/kuaishou-collector/api-smoke.mjs
+node android/comso/test.mjs
+COLLECTOR_TEST_DB=android/runtime/collector/capture-test.db node android/comso/api-smoke.mjs
 ```
 
 `api-smoke.mjs` 使用已保存的真实数据，不输出评论内容、昵称或密钥；中文编码测试临时写入 UI 设置并在 finally 中恢复，不创建采集任务。
