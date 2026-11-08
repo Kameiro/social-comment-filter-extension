@@ -28,6 +28,8 @@ final class DouyinComments {
     static final boolean DEBUG_FORCE_UI = false;
 
 
+    static volatile java.util.function.Consumer<String> onPostObserved;
+
     DouyinComments(Context context, java.util.function.Supplier<android.app.Activity> activity) { this.context = context; this.activity = activity; }
 
     /** Keeps scrolling the open comment list while a comment task is running and more pages remain. */
@@ -120,6 +122,33 @@ final class DouyinComments {
             for (int i = 0; i < group.getChildCount(); i++) best = findList(group.getChildAt(i), screenHeight, best);
         }
         return best;
+    }
+
+    static boolean hasVisibleDrawer(android.app.Activity host) {
+        if (host == null || host.getWindow() == null) return false;
+        android.view.View decor = host.getWindow().getDecorView();
+        if (decor == null || !decor.isShown()) return false;
+        int screenHeight = host.getResources().getDisplayMetrics().heightPixels;
+        android.view.View best = findList(decor, screenHeight, null);
+        if (best != null && best.isShown()) return true;
+        android.view.View any = findDrawerRecyclerView(decor, screenHeight);
+        return any != null && any.isShown();
+    }
+
+    private static android.view.View findDrawerRecyclerView(android.view.View view, int screenHeight) {
+        if (view == null || view.getVisibility() != android.view.View.VISIBLE || !view.isShown()) return null;
+        if (view.getClass().getName().contains("RecyclerView")) {
+            int[] at = new int[2]; view.getLocationOnScreen(at);
+            if (at[1] > screenHeight * .15f && view.getHeight() > screenHeight * .25f) return view;
+        }
+        if (view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                android.view.View res = findDrawerRecyclerView(group.getChildAt(i), screenHeight);
+                if (res != null) return res;
+            }
+        }
+        return null;
     }
 
     /** Maps a {@code CommentItemList} to the shared page JSON, or null when it holds no comments. */
@@ -335,6 +364,11 @@ final class DouyinComments {
             // it must not count as the end of the list.
             if (page.optString("rootId").isEmpty() && Boolean.FALSE.equals(page.opt("hasMore")) && "0".equals(page.optString("cursor", "0")) && page.optLong("total") == 0) return;
             Log.i(TAG, "douyin_comment_list rows=" + page.getJSONArray("rows").length() + " post=" + page.optString("photoId") + " more=" + page.opt("hasMore") + " cursor=" + page.opt("cursor") + " total=" + page.opt("total") + " first=" + page.getJSONArray("rows").getJSONObject(0).optString("commentId"));
+            String pagePost = page.optString("photoId");
+            if (!pagePost.isEmpty() && page.optString("rootId").isEmpty()) {
+                java.util.function.Consumer<String> cb = onPostObserved;
+                if (cb != null) cb.accept(pagePost);
+            }
             JSONObject task = CollectorClient.call(context, "status", new JSONObject());
             if (!"comment".equals(task.optString("kind")) || !task.optString("status").startsWith("running")) { Log.i(TAG, "douyin_comment_skipped task_not_running kind=" + task.optString("kind") + " status=" + task.optString("status")); return; }
             if (!task.optString("photoId").isEmpty() && !task.optString("photoId").equals(page.optString("photoId"))) { Log.i(TAG, "douyin_comment_skipped other_post task=" + task.optString("photoId") + " page=" + page.optString("photoId")); return; }

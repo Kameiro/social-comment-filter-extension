@@ -26,9 +26,12 @@ final class DouyinNativePager {
     private static final java.util.LinkedHashSet<String> shown = new java.util.LinkedHashSet<>();
     private static volatile boolean replayStarted;
     private static String shownPost = "";
+    private static volatile String lastCapturedPost = "";
+    static volatile java.util.function.Consumer<String> onPostCaptured;
 
     static boolean ready() { return proxy != null && method != null && args != null; }
     static String post() { Object[] a = args; return a != null && a.length > 0 && a[0] != null ? String.valueOf(a[0]) : ""; }
+    static String lastCapturedPost() { return lastCapturedPost == null ? "" : lastCapturedPost; }
 
     /** Finds the Retrofit invocation handler class through a throwaway proxy and hooks its invoke(). */
     static synchronized void install(XposedInterface xposed, ClassLoader loader) {
@@ -57,7 +60,13 @@ final class DouyinNativePager {
                     Object[] raw = (Object[]) chain.getArg(2);
                     if (raw != null) {
                         proxy = chain.getArg(0); method = called; args = raw.clone(); capturedAt = System.currentTimeMillis();
-                        Log.i(TAG, "douyin_native_captured post=" + post() + " cursor=" + raw[1] + " count=" + raw[2]);
+                        String current = post();
+                        if (replaying.get() == null && !current.isEmpty()) {
+                            lastCapturedPost = current;
+                            java.util.function.Consumer<String> cb = onPostCaptured;
+                            if (cb != null) cb.accept(current);
+                        }
+                        Log.i(TAG, "douyin_native_captured post=" + current + " cursor=" + raw[1] + " count=" + raw[2]);
                     }
                 }
                 return chain.proceed();

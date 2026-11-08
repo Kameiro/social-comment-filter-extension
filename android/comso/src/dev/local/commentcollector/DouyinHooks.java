@@ -29,6 +29,9 @@ final class DouyinHooks {
     private volatile Context context;
     private volatile Activity activity;
     private final WeakIdentityMap<Boolean> recorded = new WeakIdentityMap<>();
+    private final CurrentPostResolver resolver = new CurrentPostResolver();
+    private volatile long lastPanelTouchAt;
+    private volatile String lastCommentPostId = "";
 
     DouyinHooks(XposedInterface xposed) { this.xposed = xposed; }
 
@@ -45,6 +48,33 @@ final class DouyinHooks {
                 return result;
             });
         } catch (Throwable error) { Log.w(TAG, "douyin_lifecycle_hook_failed", error); }
+
+        resolver.bind(loader, "com.ss.android.ugc.aweme.feed.model.Aweme");
+        Class<?> fragment = resolver.fragmentType();
+        if (fragment != null) {
+            try {
+                xposed.hook(fragment.getDeclaredMethod("onResume")).intercept(chain -> {
+                    Object result = chain.proceed();
+                    Object frag = chain.getThisObject();
+                    resolver.onFragmentResumed(frag);
+                    try {
+                        Activity act = activity;
+                        if (act != null) {
+                            Object fragAct = SnapshotMapper.invoke(frag, "getActivity", new Class<?>[0]);
+                            if (fragAct == act) {
+                                Object found = resolver.findPreferId(frag, 6);
+                                if (found != null) remember(found);
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    return result;
+                });
+                Log.i(TAG, "douyin_fragment_tracking_installed");
+            } catch (Throwable error) { Log.w(TAG, "douyin_fragment_tracking_unavailable", error); }
+        }
+
+        DouyinComments.onPostObserved = this::onCommentPostObserved;
+        DouyinNativePager.onPostCaptured = this::onNativePostCaptured;
 
         Class<?> panel, aweme, holder;
         try {
@@ -65,6 +95,7 @@ final class DouyinHooks {
                     MotionEvent event = (MotionEvent) chain.getArg(0);
                     Log.i(TAG, "douyin_panel_touch method=" + signature + " action=" + (event == null ? -1 : event.getActionMasked())
                         + " candidate=" + doubleTap);
+                    lastPanelTouchAt = System.currentTimeMillis();
                     if (doubleTap && chain.getArg(2) != null && showPost(chain.getArg(2))) return null; // handled: no like
                     return chain.proceed();
                 });
@@ -81,7 +112,10 @@ final class DouyinHooks {
             try {
                 xposed.hook(method).intercept(chain -> {
                     Object self = chain.getThisObject();
-                    if (self != null) { Object old = livePanel == null ? null : livePanel.get(); if (old != self) { livePanel = new java.lang.ref.WeakReference<>(self); } }
+                    if (self != null && isCurrentPanel(self)) {
+                        Object old = livePanel == null ? null : livePanel.get();
+                        if (old != self) { livePanel = new java.lang.ref.WeakReference<>(self); }
+                    }
                     return chain.proceed();
                 });
                 tracked++;
@@ -97,7 +131,7 @@ final class DouyinHooks {
             if (app == null) return;
             synchronized (DouyinHooks.this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
             DouyinComments target = comments;
-            String fallbackPost = lastPostId;
+            String fallbackPost = resolveCurrentPostId();
             new Thread(() -> target.observe(list, fallbackPost), "douyin-comments").start();
         });
 
@@ -129,7 +163,10 @@ final class DouyinHooks {
             Method current = panel.getDeclaredMethod("getCurrentAweme");
             xposed.hook(current).intercept(chain -> {
                 Object result = chain.proceed();
-                if (result != null) remember(result);
+                if (result != null) {
+                    Object self = chain.getThisObject();
+                    if (isCurrentPanel(self)) remember(result); else recordOnly(result);
+                }
                 return result;
             });
         } catch (Throwable error) { Log.w(TAG, "douyin_current_aweme_hook_failed", error); }
@@ -158,16 +195,53 @@ final class DouyinHooks {
                 // When Douyin exposes its holder+Aweme callback, it is the only source that knows
                 // which feed cell was tapped. The generic Activity detector sees the panel's
                 // preloaded current item and can otherwise open the neighbour's information.
-                if (directDoubleTapAvailable) {
+                if (directDoubleTapAvailable && System.currentTimeMillis() - lastPanelTouchAt < 600) {
                     Log.i(TAG, "douyin_generic_double_tap_skipped direct_handler_available");
                     return false;
                 }
-                Object aweme = currentAweme();
+                Object aweme = null;
+                boolean isFlow = host != null && host.getClass().getName().contains("FlowPageActivity");
+                if (!isFlow) {
+                    Object panel = livePanel == null ? null : livePanel.get();
+                    if (panel != null && isCurrentPanel(panel)) {
+                        aweme = currentAweme();
+                    }
+                }
+                if (aweme == null && host != null) {
+                    android.view.View decor = host.getWindow() == null ? null : host.getWindow().getDecorView();
+                    android.view.View touched = CurrentPostResolver.deepestView(decor, x, y);
+                    aweme = resolver.resolve(host, x, y, touched);
+                    if (aweme == null) aweme = resolver.resolveActivity(host, x, y);
+                }
+                if (aweme == null) aweme = currentAweme();
                 Log.i(TAG, "douyin_double_tap aweme=" + (aweme != null));
                 return aweme != null && showPost(aweme);
             }
         });
         detector.install();
+    }
+
+    private static Activity panelActivity(Object panel) {
+        if (panel == null) return null;
+        Object act = ModelReader.get(panel, "activity");
+        if (act instanceof Activity) return (Activity) act;
+        Object ctx = SnapshotMapper.invoke(panel, "getContext", new Class<?>[0]);
+        if (ctx instanceof Activity) return (Activity) ctx;
+        if (ctx instanceof android.content.ContextWrapper) {
+            android.content.Context base = ((android.content.ContextWrapper) ctx).getBaseContext();
+            if (base instanceof Activity) return (Activity) base;
+        }
+        Object act2 = SnapshotMapper.invoke(panel, "getActivity", new Class<?>[0]);
+        if (act2 instanceof Activity) return (Activity) act2;
+        return null;
+    }
+
+    private boolean isCurrentPanel(Object panel) {
+        if (panel == null) return false;
+        Activity act = activity;
+        if (act == null) return true;
+        Activity pAct = panelActivity(panel);
+        return pAct == null || pAct == act;
     }
 
     private static Object currentAweme() {
@@ -187,7 +261,7 @@ final class DouyinHooks {
         Activity current = activity;
         if (current == null || current.isFinishing()) return false;
         try {
-            markCurrent(aweme);
+            remember(aweme);
             JSONObject post = DouyinMapper.post(aweme);
             if (post == null) return false;
             Log.i(TAG, "post_info_triggered platform=douyin post=" + post.optString("postId"));
@@ -199,6 +273,20 @@ final class DouyinHooks {
 
     private volatile String lastPostId = "";
 
+    private void onCommentPostObserved(String postId) {
+        if (postId != null && !postId.isEmpty()) {
+            lastCommentPostId = postId;
+            lastPostId = postId;
+        }
+    }
+
+    private void onNativePostCaptured(String postId) {
+        if (postId != null && !postId.isEmpty()) {
+            lastCommentPostId = postId;
+            lastPostId = postId;
+        }
+    }
+
     /** Updates the post supplier synchronously; persistence remains off the host UI thread. */
     private void markCurrent(Object aweme) {
         if (aweme == null) return;
@@ -206,8 +294,8 @@ final class DouyinHooks {
         if (!id.isEmpty()) lastPostId = id;
     }
 
-    private void remember(Object aweme) {
-        markCurrent(aweme);
+    private void recordOnly(Object aweme) {
+        if (aweme == null) return;
         Context app = context;
         if (app == null) return;
         synchronized (recorded) { if (recorded.put(aweme, Boolean.TRUE) != null) return; }
@@ -217,6 +305,72 @@ final class DouyinHooks {
                 if (post != null) CollectorClient.call(app, "record_post", new JSONObject().put("post", post));
             } catch (Throwable ignored) {}
         }, "douyin-record-post").start();
+    }
+
+    private void remember(Object aweme) {
+        markCurrent(aweme);
+        recordOnly(aweme);
+    }
+
+    private String resolveCurrentPostId() {
+        Activity act = activity;
+        if (act != null && DouyinComments.hasVisibleDrawer(act)) {
+            String commentPost = lastCommentPostId;
+            if (commentPost.isEmpty()) commentPost = DouyinNativePager.lastCapturedPost();
+            if (commentPost.isEmpty()) commentPost = DouyinNativePager.post();
+            if (!commentPost.isEmpty()) {
+                lastPostId = commentPost;
+                return commentPost;
+            }
+        }
+        if (act != null) {
+            boolean isFlow = act.getClass().getName().contains("FlowPageActivity");
+            Object aweme = null;
+            if (!isFlow) {
+                Object panel = livePanel == null ? null : livePanel.get();
+                if (panel != null && isCurrentPanel(panel)) {
+                    aweme = currentAweme();
+                }
+            }
+            if (aweme == null) {
+                android.view.View decor = act.getWindow() == null ? null : act.getWindow().getDecorView();
+                float midX = act.getResources().getDisplayMetrics().widthPixels * 0.5f;
+                float midY = act.getResources().getDisplayMetrics().heightPixels * 0.5f;
+                aweme = resolver.resolve(act, midX, midY, decor);
+                if (aweme == null) aweme = resolver.resolveActivity(act, midX, midY);
+                if (aweme == null) aweme = resolver.resolveActivity(act, -1, -1);
+            }
+            if (aweme != null) {
+                remember(aweme);
+                String aid = ModelReader.text(aweme, "aid", "aweme_id");
+                if (!aid.isEmpty()) return aid;
+            }
+        }
+        return lastPostId == null ? "" : lastPostId;
+    }
+
+    private void refreshCurrentPost(Activity act) {
+        if (act == null || act.isFinishing() || act != activity) return;
+        boolean isFlow = act.getClass().getName().contains("FlowPageActivity");
+        Object aweme = null;
+        if (!isFlow) {
+            Object panel = livePanel == null ? null : livePanel.get();
+            if (panel != null && isCurrentPanel(panel)) {
+                aweme = currentAweme();
+            }
+        }
+        if (aweme == null) {
+            android.view.View decor = act.getWindow() == null ? null : act.getWindow().getDecorView();
+            float midX = act.getResources().getDisplayMetrics().widthPixels * 0.5f;
+            float midY = act.getResources().getDisplayMetrics().heightPixels * 0.5f;
+            aweme = resolver.resolve(act, midX, midY, decor);
+            if (aweme == null) aweme = resolver.resolveActivity(act, midX, midY);
+            if (aweme == null) aweme = resolver.resolveActivity(act, -1, -1);
+        }
+        if (aweme != null) {
+            remember(aweme);
+            Log.i(TAG, "douyin_post_refreshed activity=" + act.getClass().getSimpleName() + " post=" + ModelReader.text(aweme, "aid", "aweme_id"));
+        }
     }
 
     /** Application.onCreate can finish before the module hooks it; poll for the live Application and attach to it. */
@@ -235,7 +389,17 @@ final class DouyinHooks {
         synchronized (this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
         comments.startReplyDriver();
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
-            @Override public void onActivityResumed(Activity value) { activity = value; Log.i(TAG, "douyin_resumed " + value.getClass().getSimpleName() + " loader=" + (hostLoader != null)); if (hostLoader != null) new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start(); if (comments != null) comments.ensurePaging(); CollectorPanel.attach(value, () -> lastPostId); CollectorPanel.attachDouyinSettingsEntry(value, () -> lastPostId); }
+            @Override public void onActivityResumed(Activity value) {
+                activity = value;
+                Log.i(TAG, "douyin_resumed " + value.getClass().getSimpleName() + " loader=" + (hostLoader != null));
+                if (hostLoader != null) new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start();
+                if (comments != null) comments.ensurePaging();
+                CollectorPanel.attach(value, DouyinHooks.this::resolveCurrentPostId);
+                CollectorPanel.attachDouyinSettingsEntry(value, DouyinHooks.this::resolveCurrentPostId);
+                refreshCurrentPost(value);
+                main.postDelayed(() -> refreshCurrentPost(value), 400);
+                main.postDelayed(() -> refreshCurrentPost(value), 1000);
+            }
             @Override public void onActivityPaused(Activity value) { if (activity == value) activity = null; }
             @Override public void onActivityCreated(Activity value, Bundle state) { if (detector != null) detector.hook(value.getClass()); }
             @Override public void onActivityStarted(Activity value) {}

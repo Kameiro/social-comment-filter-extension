@@ -117,9 +117,6 @@ final class CurrentPostResolver {
     Object resolveActivity(Activity activity, float rawX, float rawY) {
         Class<?> photo = photoType;
         if (activity == null || photo == null) return null;
-        String name = activity.getClass().getName();
-        if (!name.contains("com.xingin.matrix.notedetail.NoteDetailActivity")
-            && !name.contains("com.xingin.matrix.detail.activity.DetailFeedActivity")) return null;
         Object found = null;
         if (rawX >= 0 && rawY >= 0 && activity.getWindow() != null) {
             View touched = deepestView(activity.getWindow().getDecorView(), rawX, rawY);
@@ -130,7 +127,7 @@ final class CurrentPostResolver {
             }
         }
         if (found == null) found = findPreferId(activity, photo, 8);
-        if (found != null) Log.i(TAG, "current_post_resolved source=xhs_detail_activity");
+        if (found != null) Log.i(TAG, "current_post_resolved source=activity activity=" + activity.getClass().getSimpleName());
         return found;
     }
 
@@ -169,6 +166,12 @@ final class CurrentPostResolver {
         return null;
     }
 
+    Object findPreferId(Object root, int maxDepth) {
+        Class<?> photo = photoType;
+        if (root == null || photo == null) return null;
+        return findPreferId(root, photo, maxDepth);
+    }
+
     private Object findPreferId(Object root, Class<?> photo, int maxDepth) {
         Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
         ArrayDeque<Object[]> queue = new ArrayDeque<>();
@@ -184,7 +187,7 @@ final class CurrentPostResolver {
                 Object lazyValue = unwrapLazy(value); if (lazyValue != value) value = lazyValue;
                 if (photo.isInstance(value)) {
                     if (first == null) first = value;
-                    if (!ModelReader.text(value, "id", "noteId", "sourceNoteId").isEmpty()) return value;
+                    if (!ModelReader.text(value, "id", "noteId", "sourceNoteId", "aid", "aweme_id").isEmpty()) return value;
                     continue;
                 }
                 if (level + 1 >= maxDepth || visited.contains(value) || !traversable(value)) continue;
@@ -194,7 +197,7 @@ final class CurrentPostResolver {
         return first;
     }
 
-    private static View deepestView(View root, float x, float y) {
+    static View deepestView(View root, float x, float y) {
         if (root == null || root.getVisibility() != View.VISIBLE || !root.isShown()) return null;
         int[] at = new int[2]; root.getLocationOnScreen(at);
         if (x < at[0] || y < at[1] || x >= at[0] + root.getWidth() || y >= at[1] + root.getHeight()) return null;
