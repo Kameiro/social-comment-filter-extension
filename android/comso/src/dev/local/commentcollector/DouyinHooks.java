@@ -55,18 +55,7 @@ final class DouyinHooks {
             try {
                 xposed.hook(fragment.getDeclaredMethod("onResume")).intercept(chain -> {
                     Object result = chain.proceed();
-                    Object frag = chain.getThisObject();
-                    resolver.onFragmentResumed(frag);
-                    try {
-                        Activity act = activity;
-                        if (act != null) {
-                            Object fragAct = SnapshotMapper.invoke(frag, "getActivity", new Class<?>[0]);
-                            if (fragAct == act) {
-                                Object found = resolver.findPreferId(frag, 6);
-                                if (found != null) remember(found);
-                            }
-                        }
-                    } catch (Throwable ignored) {}
+                    resolver.onFragmentResumed(chain.getThisObject());
                     return result;
                 });
                 Log.i(TAG, "douyin_fragment_tracking_installed");
@@ -312,6 +301,12 @@ final class DouyinHooks {
         recordOnly(aweme);
     }
 
+    private static boolean isPostDetailActivity(Activity act) {
+        if (act == null) return false;
+        String name = act.getClass().getName();
+        return (name.contains("FlowPageActivity") || name.contains("DetailActivity")) && !name.contains("Search");
+    }
+
     private String resolveCurrentPostId() {
         Activity act = activity;
         if (act != null && DouyinComments.hasVisibleDrawer(act)) {
@@ -324,7 +319,9 @@ final class DouyinHooks {
             }
         }
         if (act != null) {
-            boolean isFlow = act.getClass().getName().contains("FlowPageActivity");
+            String actName = act.getClass().getName();
+            boolean isSearch = actName.contains("Search");
+            boolean isFlow = actName.contains("FlowPageActivity");
             Object aweme = null;
             if (!isFlow) {
                 Object panel = livePanel == null ? null : livePanel.get();
@@ -332,7 +329,7 @@ final class DouyinHooks {
                     aweme = currentAweme();
                 }
             }
-            if (aweme == null) {
+            if (aweme == null && !isSearch) {
                 android.view.View decor = act.getWindow() == null ? null : act.getWindow().getDecorView();
                 float midX = act.getResources().getDisplayMetrics().widthPixels * 0.5f;
                 float midY = act.getResources().getDisplayMetrics().heightPixels * 0.5f;
@@ -350,7 +347,7 @@ final class DouyinHooks {
     }
 
     private void refreshCurrentPost(Activity act) {
-        if (act == null || act.isFinishing() || act != activity) return;
+        if (act == null || act.isFinishing() || act != activity || !isPostDetailActivity(act)) return;
         boolean isFlow = act.getClass().getName().contains("FlowPageActivity");
         Object aweme = null;
         if (!isFlow) {
@@ -396,9 +393,11 @@ final class DouyinHooks {
                 if (comments != null) comments.ensurePaging();
                 CollectorPanel.attach(value, DouyinHooks.this::resolveCurrentPostId);
                 CollectorPanel.attachDouyinSettingsEntry(value, DouyinHooks.this::resolveCurrentPostId);
-                refreshCurrentPost(value);
-                main.postDelayed(() -> refreshCurrentPost(value), 400);
-                main.postDelayed(() -> refreshCurrentPost(value), 1000);
+                if (isPostDetailActivity(value)) {
+                    refreshCurrentPost(value);
+                    main.postDelayed(() -> refreshCurrentPost(value), 400);
+                    main.postDelayed(() -> refreshCurrentPost(value), 1000);
+                }
             }
             @Override public void onActivityPaused(Activity value) { if (activity == value) activity = null; }
             @Override public void onActivityCreated(Activity value, Bundle state) { if (detector != null) detector.hook(value.getClass()); }

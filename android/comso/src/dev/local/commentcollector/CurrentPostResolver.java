@@ -117,6 +117,11 @@ final class CurrentPostResolver {
     Object resolveActivity(Activity activity, float rawX, float rawY) {
         Class<?> photo = photoType;
         if (activity == null || photo == null) return null;
+        String name = activity.getClass().getName();
+        if (name.contains("Search") || name.contains("MainActivity") || name.contains("SplashActivity") || name.contains("IndexActivity")) return null;
+        boolean isDetail = name.contains("NoteDetailActivity") || name.contains("DetailFeedActivity")
+            || name.contains("FlowPageActivity") || name.contains("DetailActivity") || name.contains("UltraDetailActivity");
+        if (!isDetail) return null;
         Object found = null;
         if (rawX >= 0 && rawY >= 0 && activity.getWindow() != null) {
             View touched = deepestView(activity.getWindow().getDecorView(), rawX, rawY);
@@ -156,6 +161,7 @@ final class CurrentPostResolver {
                 try { value = field.get(object); } catch (Throwable ignored) { continue; }
                 if (value == null) continue;
                 Object lazyValue = unwrapLazy(value);
+                if (lazyValue == null) continue;
                 if (lazyValue != value) value = lazyValue;
                 if (photo.isInstance(value)) return value;
                 if (level + 1 >= maxDepth || visited.contains(value) || !traversable(value)) continue;
@@ -184,7 +190,9 @@ final class CurrentPostResolver {
                 Object value;
                 try { value = field.get(object); } catch (Throwable ignored) { continue; }
                 if (value == null) continue;
-                Object lazyValue = unwrapLazy(value); if (lazyValue != value) value = lazyValue;
+                Object lazyValue = unwrapLazy(value);
+                if (lazyValue == null) continue;
+                if (lazyValue != value) value = lazyValue;
                 if (photo.isInstance(value)) {
                     if (first == null) first = value;
                     if (!ModelReader.text(value, "id", "noteId", "sourceNoteId", "aid", "aweme_id").isEmpty()) return value;
@@ -214,10 +222,11 @@ final class CurrentPostResolver {
     private static Object unwrapLazy(Object value) {
         if (value == null || !value.getClass().getName().startsWith("kotlin.")) return value;
         try {
+            Method isInit = value.getClass().getMethod("isInitialized");
+            if (!Boolean.TRUE.equals(isInit.invoke(value))) return null;
             Method getValue = value.getClass().getMethod("getValue");
-            Object result = getValue.invoke(value);
-            return result == null ? value : result;
-        } catch (Throwable ignored) { return value; }
+            return getValue.invoke(value);
+        } catch (Throwable ignored) { return null; }
     }
 
     private boolean traversable(Object value) {
