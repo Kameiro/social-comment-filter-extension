@@ -39,11 +39,20 @@ final class UserLinks {
     private static boolean startXhsChat(Activity activity, String userId, String nickname) {
         if (userId == null || userId.isEmpty()) return false;
         try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("xhsdiscover://message/chat"))
-                .setPackage(activity.getPackageName());
+            // Going through xhsdiscover://message/chat first opens RouterPageActivity. The
+            // current XHS router drops the userId while forwarding that route, which leaves
+            // ChatActivity on the generic "用户" screen and produces a transient network error.
+            // Start the native activity explicitly so all chat extras survive the hand-off.
+            Intent intent = new Intent()
+                .setClassName(activity.getPackageName(), "com.xingin.im.ui.activity.ChatActivity");
             intent.putExtra("userId", userId);
             if (nickname != null && !nickname.isEmpty()) intent.putExtra("nickname", nickname);
             intent.putExtra("source", "comso");
+            intent.putExtra("targetStoreId", -1);
+            intent.putExtra("msgStoreId", "0");
+            intent.putExtra("chat_type", 0);
+            intent.putExtra("chat_unread_count", 0);
+            intent.putExtra("chat_auto_show_keyboard", false);
             activity.startActivity(intent);
             Log.i(TAG, "xhs_chat_started userId=" + userId);
             return true;
