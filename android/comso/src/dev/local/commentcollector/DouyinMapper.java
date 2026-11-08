@@ -20,6 +20,7 @@ final class DouyinMapper {
         put(out, "authorId", ModelReader.text(author, "uid"));
         put(out, "authorSecUid", ModelReader.text(author, "secUid", "sec_uid"));
         put(out, "authorName", ModelReader.text(author, "nickname"));
+        put(out, "authorAvatarUrl", firstUrl(author, "avatarThumb", "avatarMedium", "avatarLarger", "avatarUrl"));
 
         Object stats = ModelReader.get(aweme, "statistics");
         putNumber(out, "likes", ModelReader.get(stats, "digg_count", "diggCount"));
@@ -71,6 +72,13 @@ final class DouyinMapper {
 
     private static void put(JSONObject out, String key, String value) throws Exception { if (value != null && !value.isEmpty()) out.put(key, value); }
     private static void putNumber(JSONObject out, String key, Object value) throws Exception { if (value instanceof Number) out.put(key, ((Number) value).longValue()); }
+    private static String firstUrl(Object object, String... keys) {
+        for (String key : keys) {
+            String url = ModelReader.url(ModelReader.get(object, key));
+            if (!url.isEmpty()) return url;
+        }
+        return "";
+    }
     private static long number(Object value) {
         if (value instanceof Number) return ((Number) value).longValue();
         try { return value == null ? 0 : Long.parseLong(String.valueOf(value)); } catch (NumberFormatException ignored) { return 0; }

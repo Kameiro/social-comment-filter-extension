@@ -10,6 +10,7 @@ import org.json.JSONObject;
 /** Whitelists public model fields; never serializes entire platform objects. */
 public final class PublicMapper {
     private PublicMapper() {}
+    static String avatarUrl(Object user) { return urlText(first(user, "mAvatar", "mAvatars")); }
     private static String text(Object value) { return value == null ? "" : String.valueOf(value); }
     private static void put(JSONObject out, String key, Object value) throws Exception { out.put(key, value == null ? JSONObject.NULL : value); }
     private static Object first(Object object, String... names) {
@@ -166,6 +167,8 @@ public final class PublicMapper {
         if (!location.isEmpty()) out.put("location", location).put("locationSource", "kuaishou_android.QPhoto.location");
         else if (!ipRegion.isEmpty()) out.put("location", "IP属地：" + ipRegion).put("locationSource", "kuaishou_android.CommonMeta.captionIpLocation");
         put(out, "authorId", SnapshotMapper.field(user, "mId")); put(out, "authorName", SnapshotMapper.field(user, "mName"));
+        String authorAvatar = urlText(first(user, "mAvatar", "mAvatars"));
+        if (!authorAvatar.isEmpty()) out.put("authorAvatarUrl", authorAvatar);
         put(out, "likes", SnapshotMapper.field(metrics, "mLikeCount")); put(out, "commentTotal", SnapshotMapper.field(metrics, "mCommentCount"));
         put(out, "shares", SnapshotMapper.field(metrics, "mShareCount")); put(out, "favorites", SnapshotMapper.field(metrics, "mCollectCount"));
         Object duration = first(photo, "mDuration", "mDurationMs", "mVideoDuration", "getDuration", "getDurationMs");

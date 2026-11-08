@@ -304,7 +304,7 @@ final class PostInfoPanel {
     private static void copy(Activity activity, String value) { ClipboardManager manager = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE); if (manager != null) manager.setPrimaryClip(ClipData.newPlainText("作品文案", value == null ? "" : value)); }
     private static void toast(Activity activity, String value) { Toast.makeText(activity, value, Toast.LENGTH_SHORT).show(); }
 
-    private static void loadImage(ImageView target, String url) {
+    static void loadImage(ImageView target, String url) {
         new Thread(() -> { try { byte[] bytes = download(url); Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length); if (bitmap != null) new Handler(Looper.getMainLooper()).post(() -> { target.setImageBitmap(bitmap); Motion.fadeIn(target, 260); }); } catch (Exception ignored) {} }, "post-info-image").start();
     }
     private enum Kind { VIDEO, IMAGE, AUDIO, FILE }

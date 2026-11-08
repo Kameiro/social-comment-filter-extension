@@ -145,6 +145,8 @@ public final class SnapshotMapper {
         Object name = field(comment, "mAuthorName", "author_name");
         if (name == null) name = field(user, "mName");
         put(row, "nickname", name);
+        String avatar = PublicMapper.avatarUrl(user);
+        if (!avatar.isEmpty()) row.put("avatarUrl", avatar);
         row.put("gender", PublicMapper.gender(field(user, "mSex")));
         put(row, "created", field(comment, "mCreated", "created"));
         put(row, "likes", field(comment, "mLikedCount", "likedCount"));

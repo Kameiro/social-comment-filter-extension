@@ -5,7 +5,7 @@ import java.util.List;
 import org.json.JSONObject;
 
 public final class XhsCommentMapperTest {
-    public static class User { public String userid = "u1", nickname = "小红"; }
+    public static class User { public String userid = "u1", nickname = "小红", image = "https://ci.xiaohongshu.com/comment-avatar.jpg"; }
     public static class Comment {
         public String id = "c1", content = "正文评论", noteId = "n1", ipLocation = "IP属地：上海", time = "1760000000";
         public Integer likeCount = 7, subCommentCount = 1;
@@ -57,6 +57,7 @@ public final class XhsCommentMapperTest {
         check("n1".equals(mapped.getString("photoId")), "post");
         check(mapped.getJSONArray("rows").length() == 4, "rows count (root + inline reply + pic + meme)");
         check("上海".equals(mapped.getJSONArray("rows").getJSONObject(0).getString("ipRegion")), "ip stripped");
+        check("https://ci.xiaohongshu.com/comment-avatar.jpg".equals(mapped.getJSONArray("rows").getJSONObject(0).getString("avatarUrl")), "comment avatar");
         check(mapped.getJSONArray("rows").getJSONObject(1).getInt("level") == 2, "reply level");
         check("[图片]".equals(mapped.getJSONArray("rows").getJSONObject(2).getString("text")), "pic fallback");
         check("[表情]".equals(mapped.getJSONArray("rows").getJSONObject(3).getString("text")), "meme fallback");

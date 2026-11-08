@@ -166,6 +166,7 @@ final class DouyinComments {
         put(row, "userId", ModelReader.text(user, "uid"));
         put(row, "secUid", ModelReader.text(user, "secUid", "sec_uid"));
         put(row, "nickname", ModelReader.text(user, "nickname"));
+        put(row, "avatarUrl", firstUrl(user, "avatarThumb", "avatarMedium", "avatarLarger", "avatarUrl"));
         Object created = ModelReader.get(comment, "createTime");
         if (created instanceof Number) row.put("created", ((Number) created).longValue());
         Object likes = ModelReader.get(comment, "diggCount");
@@ -181,6 +182,13 @@ final class DouyinComments {
     }
 
     private static void put(JSONObject row, String key, String value) throws Exception { if (value != null && !value.isEmpty()) row.put(key, value); }
+    private static String firstUrl(Object object, String... keys) {
+        for (String key : keys) {
+            String url = ModelReader.url(ModelReader.get(object, key));
+            if (!url.isEmpty()) return url;
+        }
+        return "";
+    }
 
 
     // ---- reply expansion (running-replies phase), driven natively through Douyin's own reply-list API

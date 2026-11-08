@@ -940,10 +940,17 @@ public final class CollectorPanel {
             JSONObject row = items.getJSONObject(i), user = row.optJSONObject("user");
             String name = row.optString("nickname", row.optString("userId"));
             LinearLayout line = horizontal();
+            ImageView avatar = thumbnail(row, "avatarUrl", "userAvatarUrl");
+            Runnable openUser = () -> userDetail(row.optString("userId"), name);
+            avatar.setOnClickListener(view -> openUser.run());
+            line.addView(avatar, new LinearLayout.LayoutParams(dp(36), dp(36)));
+            LinearLayout authorBox = vertical();
+            authorBox.setPadding(dp(10), 0, 0, 0);
             TextView author = text(name, 15, true); author.setOnClickListener(view -> userDetail(row.optString("userId"), name));
-            line.addView(author, new LinearLayout.LayoutParams(0, -2, 1));
+            authorBox.addView(author);
             String g = user == null ? "unknown" : user.optString("gender", "unknown");
-            if (!"unknown".equals(g)) { TextView tag = text(gender(g), 11, true); tag.setPadding(dp(6), dp(1), dp(6), dp(1)); tag.setBackground(round(surfaceVariant, 8)); line.addView(tag); }
+            if (!"unknown".equals(g)) { TextView tag = text(gender(g), 11, true); tag.setPadding(dp(6), dp(1), dp(6), dp(1)); tag.setBackground(round(surfaceVariant, 8)); authorBox.addView(tag); }
+            line.addView(authorBox, new LinearLayout.LayoutParams(0, -2, 1));
             card.addView(line);
             String region = row.optString("ipRegion"); if (region.isEmpty() || "null".equals(region)) region = "未知";
             card.addView(muted((row.optInt("level") == 2 ? "回复" : "评论") + " · IP " + region + " · " + date(row.optLong("created")), 12));
@@ -983,7 +990,11 @@ public final class CollectorPanel {
             TextView title = text(rawTitle.isEmpty() || "null".equals(rawTitle) ? "作品 " + id : rawTitle, 15, true); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
             heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1)); card.addView(heading);
             String author = row.optString("authorName");
-            card.addView(muted((author.isEmpty() || "null".equals(author) ? "" : author + " · ") + "赞 " + number(row, "likes") + " · 评论 " + number(row, "commentTotal") + " · 收藏 " + number(row, "favorites"), 12));
+            LinearLayout authorLine = horizontal();
+            authorLine.addView(thumbnail(row, "authorAvatarUrl", "avatarUrl"), new LinearLayout.LayoutParams(dp(30), dp(30)));
+            TextView authorText = muted((author.isEmpty() || "null".equals(author) ? "" : author + " · ") + "赞 " + number(row, "likes") + " · 评论 " + number(row, "commentTotal") + " · 收藏 " + number(row, "favorites"), 12);
+            authorText.setPadding(dp(8), 0, 0, 0); authorLine.addView(authorText, new LinearLayout.LayoutParams(0, -2, 1));
+            card.addView(authorLine);
             LinearLayout foot = horizontal(); foot.setPadding(0, dp(6), 0, 0);
             foot.addView(muted("快照 " + date(row.optLong("snapshotAt")), 12), new LinearLayout.LayoutParams(0, -2, 1));
             foot.addView(linkText("评论", () -> { postFilter = id; dataKind = DATA_COMMENTS; offset = 0; render(); }));
@@ -1013,7 +1024,9 @@ public final class CollectorPanel {
             CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择用户 " + id); select.setChecked(selectedUsers.contains(id));
             select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedUsers.add(id); else selectedUsers.remove(id); render(); });
             heading.addView(select);
+            heading.addView(thumbnail(user, "avatarUrl", "authorAvatarUrl"), new LinearLayout.LayoutParams(dp(32), dp(32)));
             TextView name = text(user.optString("nickname", id), 15, true); name.setOnClickListener(view -> userDetail(id, user.optString("nickname", id)));
+            name.setPadding(dp(10), 0, 0, 0);
             heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); card.addView(heading);
             card.addView(muted("性别 " + gender(user.optString("gender")) + " · 年龄 " + number(user, "age") + " · 评论 IP " + number(user, "lastCommentIpRegion"), 12));
             card.addView(muted("主页 IP " + number(user, "profileIpRegion") + " · 所在地 " + number(user, "location"), 12));
@@ -1614,6 +1627,30 @@ public final class CollectorPanel {
     }
     private TextView muted(String value, int size) { TextView view = text(value, size, false); view.setTextColor(secondary); return view; }
     private TextView empty(String value) { TextView view = muted(value, 14); view.setGravity(Gravity.CENTER); view.setPadding(0, dp(40), 0, dp(40)); return view; }
+    /** Displays the small avatar URL captured with a post/comment, with a neutral fallback icon. */
+    private ImageView thumbnail(JSONObject object, String... keys) {
+        ImageView image = new ImageView(activity);
+        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setBackground(round(surfaceVariant, 18));
+        image.setClipToOutline(true);
+        image.setImageResource(android.R.drawable.ic_menu_myplaces);
+        String url = "";
+        for (String key : keys) {
+            url = object == null ? "" : object.optString(key, "");
+            if (!url.isEmpty() && !"null".equalsIgnoreCase(url)) break;
+            url = "";
+        }
+        if (url.isEmpty() && object != null) {
+            JSONObject user = object.optJSONObject("user");
+            if (user != null) for (String key : keys) {
+                url = user.optString(key, "");
+                if (!url.isEmpty() && !"null".equalsIgnoreCase(url)) break;
+                url = "";
+            }
+        }
+        if (url.startsWith("http")) PostInfoPanel.loadImage(image, url);
+        return image;
+    }
     private TextView linkText(String label, Runnable action) {
         TextView view = text(label, 13, true); view.setTextColor(primary); view.setPadding(dp(10), dp(8), dp(4), dp(8));
         view.setOnClickListener(v -> action.run()); Motion.press(view); return view;

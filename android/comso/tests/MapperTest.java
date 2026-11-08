@@ -16,6 +16,7 @@ public final class MapperTest {
     public static class QSubComment { public List<Comment> mComments = new ArrayList<>(); public String mCursor; }
     public static class Comment {
         public String mId, mPhotoId, mRootCommentId, mComment, mAuthorName, mAuthorId, mAuthorArea;
+        public UserInfo mUser = new UserInfo();
         public Long mCreated, mLikedCount;
         public Integer mSubCommentCount;
         public QSubComment mSubComment;
@@ -30,7 +31,7 @@ public final class MapperTest {
     public static class NativeCommentResponse {
         public List<Comment> mComments = new ArrayList<>(); public Boolean mHasMore = true; public Map<String,Object> mSubCommentMap;
     }
-    public static class UserInfo { public String mId = "large-user-9223372036854775808", mSex = "F", mName = "public", mText = "public bio"; public String token = "never-export"; }
+    public static class UserInfo { public String mId = "large-user-9223372036854775808", mSex = "F", mName = "public", mText = "public bio", mAvatar = "https://cdn.example.com/avatar.jpg"; public String token = "never-export"; }
     public static class IpLocation { public String ipLocationName = "北京"; }
     public static class Meta { public IpLocation mIpLocation = new IpLocation(); }
     public static class Profile {
@@ -64,6 +65,7 @@ public final class MapperTest {
         JSONObject page = SnapshotMapper.page(response, new JSONObject());
         check(page.getString("photoId").equals("post-A"), "Bind actual post");
         check(page.getJSONArray("rows").getJSONObject(0).getString("commentId").equals(row.mId), "64-bit ids stay strings");
+        check("https://cdn.example.com/avatar.jpg".equals(page.getJSONArray("rows").getJSONObject(0).getString("avatarUrl")), "Kuaishou comment avatar");
         check(page.getJSONArray("rows").getJSONObject(0).getLong("likes") == 7, "Real likes preserved");
         check(page.getBoolean("hasMore"), "Has-more page is not EOF");
         row.mRootCommentId = "0"; check(SnapshotMapper.page(response, new JSONObject()).getJSONArray("rows").getJSONObject(0).getInt("level") == 1, "Zero parent sentinel stays a root comment"); row.mRootCommentId = null;
@@ -119,6 +121,7 @@ public final class MapperTest {
         profile.mUserProfile.mIsBlockedByOwner = true; check(PublicMapper.profile(profile) == null, "Blocked profile not bypassed");
         QPhoto photo = new QPhoto();
         JSONObject mappedPost = PublicMapper.post(photo);
+        check("https://cdn.example.com/avatar.jpg".equals(mappedPost.getString("authorAvatarUrl")), "Kuaishou post avatar");
         check(mappedPost.getString("location").contains("大世界五金城") && mappedPost.getString("location").contains("杭州"), "Post publishing location mapped from POI");
         photo.mLocation = null;
         mappedPost = PublicMapper.post(photo);

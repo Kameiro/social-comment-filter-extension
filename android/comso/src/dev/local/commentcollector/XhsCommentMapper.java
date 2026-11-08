@@ -165,6 +165,9 @@ final class XhsCommentMapper {
         Object user = ModelReader.get(comment, "user");
         put(row, "userId", ModelReader.text(user, "userid", "userId", "id"));
         put(row, "nickname", ModelReader.text(user, "nickname", "name"));
+        String avatar = firstUrl(user, "image", "avatar", "images", "imageSizeLarge", "avatarHolder");
+        if (avatar.isEmpty()) avatar = firstUrl(comment, "userAvatar", "userImage", "avatar");
+        put(row, "avatarUrl", avatar);
 
         String ip = ModelReader.text(comment, "ipLocation").replaceFirst("^\\s*(IP\\s*)?属地\\s*[:：]?\\s*", "").trim();
         put(row, "ipRegion", ip);
@@ -196,6 +199,14 @@ final class XhsCommentMapper {
     private static void putNumber(JSONObject out, String key, Object value) throws Exception {
         long n = number(value);
         if (value != null && (n > 0 || value instanceof Number)) out.put(key, n);
+    }
+
+    private static String firstUrl(Object object, String... keys) {
+        for (String key : keys) {
+            String url = ModelReader.url(ModelReader.get(object, key));
+            if (!url.isEmpty()) return url;
+        }
+        return "";
     }
 
     private static long number(Object value) {

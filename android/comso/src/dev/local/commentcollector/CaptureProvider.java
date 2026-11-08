@@ -524,6 +524,7 @@ public final class CaptureProvider extends ContentProvider {
                 if (!userId.isEmpty()) {
                     JSONObject user = new JSONObject().put("userId", userId).put("platform", row.optString("platform", pagePlatform)).put("nickname", row.opt("nickname"))
                         .put("lastCommentIpRegion", row.opt("ipRegion")).put("lastCommentAt", row.optLong("created")).put("lastCapturedAt", row.optLong("capturedAt"));
+                    if (!row.optString("avatarUrl").isEmpty()) user.put("avatarUrl", row.optString("avatarUrl"));
                     if (!"unknown".equals(row.optString("gender", "unknown"))) user.put("gender", row.optString("gender"));
                     mergeRecord("users", userId, user);
                 }

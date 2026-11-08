@@ -29,6 +29,7 @@
 - 小红书视频详情兼容已补齐：视频详情使用 `DetailFeedActivity`，当前视频从触点对象树和 `ItemVisibilityStatePublisher.k()` 解析；真机日志已确认当前 ID 与 `post_info_triggered` 的作品 ID 一致。
 - 图文帖图片层已增加首击保护：图片单击不会先被小红书切入大图，双击会直接弹出当前作品信息；视频和正文文字区域保持原有点击行为。
 - 小红书作品信息面板的“私信”按钮直接启动原生 `com.xingin.im.ui.activity.ChatActivity`，携带作者 `userId`、昵称和会话参数，避免 `xhsdiscover://message/chat` 中转丢失用户信息；不自动发送消息，启动失败时回退到作者主页。
+- 帖子作者、评论用户和用户列表统一显示平台提供的缩略头像；小红书、抖音、快手分别从各自的用户头像字段映射到 `authorAvatarUrl` / `avatarUrl`。
 
 ## 2026-11-07 更新
 
