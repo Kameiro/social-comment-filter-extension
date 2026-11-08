@@ -28,6 +28,7 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
 import android.widget.ArrayAdapter;
+import android.widget.AdapterView;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -254,6 +255,9 @@ public final class CollectorPanel {
     private long taskFilter;
     private boolean allTasks;
     private ScrollView currentScroll;
+    /** Data-page scroll container; the header and result list share one scroll surface. */
+    private ScrollView dataScroll;
+    private LinearLayout dataContent;
     private String lastTaskSnapshot = "";
     /** Structure-only fingerprint of the active task (numbers stripped): progress ticks update views in place instead of rebuilding the page. */
     private String lastTaskShape = "";
@@ -884,15 +888,38 @@ public final class CollectorPanel {
     private String scope() { return allPlatforms ? "all" : hostPlatform(); }
 
     private void dataPage() throws Exception {
+        dataScroll = new ScrollView(activity);
+        dataScroll.setClipToPadding(false);
+        dataScroll.setFillViewport(true);
+        dataContent = vertical();
+        dataScroll.addView(dataContent);
+        body.addView(dataScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+
         LinearLayout top = vertical(); top.setPadding(dp(12), dp(2), dp(12), dp(4));
         top.addView(segmented(new String[]{"评论", "帖子", "用户"}, dataKind, index -> {
             dataKind = index; offset = 0; selectedPosts.clear(); selectedUsers.clear();
             if (index != DATA_COMMENTS) taskFilter = 0;
             render();
         }));
-        LinearLayout scopeRow = vertical(); scopeRow.setPadding(0, dp(8), 0, 0);
-        scopeRow.addView(segmented(new String[]{"仅" + hostName(), "全部平台"}, allPlatforms ? 1 : 0, index -> { allPlatforms = index == 1; offset = 0; selectedPosts.clear(); selectedUsers.clear(); render(); }));
-        top.addView(scopeRow);
+        LinearLayout selectorRow = horizontal();
+        selectorRow.setPadding(0, dp(8), 0, 0);
+        String[] scopes = {"仅" + hostName(), "全部平台"};
+        selectorRow.addView(dropdown("数据范围", scopes, allPlatforms ? 1 : 0, index -> {
+            boolean next = index == 1;
+            if (allPlatforms == next) return;
+            allPlatforms = next; offset = 0; selectedPosts.clear(); selectedUsers.clear(); render();
+        }), new LinearLayout.LayoutParams(0, -2, 1));
+        String[] sortKeys = {"captured_desc", "created_desc", "created_asc", "likes_desc", "captured_asc"};
+        String[] sortLabels = {"最新抓取", "最新评论", "最早评论", "点赞最多", "最早抓取"};
+        int selectedSort = 0;
+        String savedSort = filters.optString("sort", "captured_desc");
+        for (int i = 0; i < sortKeys.length; i++) if (sortKeys[i].equals(savedSort)) selectedSort = i;
+        View sortPicker = dropdown("排序", sortLabels, selectedSort, index -> {
+            if (index < 0 || index >= sortKeys.length || sortKeys[index].equals(filters.optString("sort", "captured_desc"))) return;
+            try { filters.put("sort", sortKeys[index]); saveFilters(); render(); } catch (Exception error) { error(error); }
+        });
+        LinearLayout.LayoutParams sortParams = new LinearLayout.LayoutParams(0, -2, 1); sortParams.leftMargin = dp(8); selectorRow.addView(sortPicker, sortParams);
+        top.addView(selectorRow);
         EditText box = input(dataKind == DATA_COMMENTS ? "搜索评论内容或昵称" : dataKind == DATA_POSTS ? "搜索帖子标题、作者或 ID" : "搜索昵称或用户 ID", search, false);
         box.setImeOptions(EditorInfo.IME_ACTION_SEARCH); box.setBackground(round(surfaceContainer, 14)); box.setPadding(dp(14), 0, dp(14), 0);
         box.setCompoundDrawablesRelativeWithIntrinsicBounds(android.R.drawable.ic_menu_search, 0, 0, 0); box.setCompoundDrawablePadding(dp(6));
@@ -900,12 +927,39 @@ public final class CollectorPanel {
         LinearLayout.LayoutParams boxParams = new LinearLayout.LayoutParams(-1, dp(44)); boxParams.topMargin = dp(8); top.addView(box, boxParams);
         View chips = dataKind == DATA_POSTS ? postChips() : conditionChips(false);
         LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(-1, -2); chipParams.topMargin = dp(8); top.addView(chips, chipParams);
-        body.addView(top);
-        switch (dataKind) {
-            case DATA_POSTS -> posts();
-            case DATA_USERS -> users();
-            default -> comments();
+        dataContent.addView(top);
+        try {
+            switch (dataKind) {
+                case DATA_POSTS -> posts();
+                case DATA_USERS -> users();
+                default -> comments();
+            }
+        } finally {
+            dataScroll = null;
+            dataContent = null;
         }
+    }
+
+    /** Compact labeled Spinner used for data-page choices that should not consume a full row of chips. */
+    private View dropdown(String label, String[] options, int selected, Consumer<Integer> onSelect) {
+        LinearLayout box = vertical();
+        TextView caption = muted(label, 11); caption.setPadding(dp(4), 0, 0, dp(1)); box.addView(caption);
+        Spinner spinner = new Spinner(uiContext);
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_item, options);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(adapter);
+        spinner.setTag(selected);
+        spinner.setSelection(Math.max(0, Math.min(selected, options.length - 1)), false);
+        spinner.setMinimumHeight(dp(40));
+        spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                Object previous = spinner.getTag(); spinner.setTag(position);
+                if (!(previous instanceof Integer) || ((Integer) previous) != position) onSelect.accept(position);
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+        box.addView(spinner, new LinearLayout.LayoutParams(-1, dp(40)));
+        return box;
     }
 
     private View postChips() {
@@ -921,11 +975,12 @@ public final class CollectorPanel {
     private void countLine(String label, JSONObject data) {
         String unit = label.startsWith("用户") ? " 位" : " 条";
         TextView count = text(label + " · " + data.optInt("total") + unit, 13, true);
-        count.setPadding(dp(16), dp(4), dp(16), dp(4)); count.setTextColor(secondary); body.addView(count);
+        count.setPadding(dp(16), dp(8), dp(16), dp(6)); count.setTextColor(secondary);
+        (dataContent != null ? dataContent : body).addView(count);
     }
 
     private void comments() throws Exception {
-        JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 50).put("platform", scope());
+        JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 20).put("platform", scope());
         if (taskFilter > 0) query.put("taskId", taskFilter);
         if (!userFilter.isEmpty()) query.put("userId", userFilter);
         if (!postFilter.isEmpty()) query.put("photoId", postFilter);
@@ -939,6 +994,8 @@ public final class CollectorPanel {
             LinearLayout card = card(page);
             JSONObject row = items.getJSONObject(i), user = row.optJSONObject("user");
             String name = row.optString("nickname", row.optString("userId"));
+            boolean reply = row.optInt("level") == 2;
+            if (reply) card.setPadding(dp(30), dp(14), dp(16), dp(14));
             LinearLayout line = horizontal();
             ImageView avatar = thumbnail(row, "avatarUrl", "userAvatarUrl");
             Runnable openUser = () -> userDetail(row.optString("userId"), name);
@@ -953,7 +1010,7 @@ public final class CollectorPanel {
             line.addView(authorBox, new LinearLayout.LayoutParams(0, -2, 1));
             card.addView(line);
             String region = row.optString("ipRegion"); if (region.isEmpty() || "null".equals(region)) region = "未知";
-            card.addView(muted((row.optInt("level") == 2 ? "回复" : "评论") + " · IP " + region + " · " + date(row.optLong("created")), 12));
+            card.addView(muted((reply ? "↳ 回复" : "评论") + " · IP " + region + " · " + date(row.optLong("created")), 12));
             TextView content = text(row.optString("text"), 15, false); content.setTextIsSelectable(true); content.setPadding(0, dp(6), 0, dp(6)); card.addView(content);
             LinearLayout foot = horizontal();
             foot.addView(muted("赞 " + number(row, "likes") + " · 回复 " + number(row, "replies"), 12), new LinearLayout.LayoutParams(0, -2, 1));
@@ -965,7 +1022,7 @@ public final class CollectorPanel {
     }
 
     private void posts() throws Exception {
-        JSONObject query = new JSONObject().put("offset", offset).put("limit", 30).put("platform", scope());
+        JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 30).put("platform", scope());
         if (!search.isEmpty()) query.put("search", search);
         JSONObject data = api("posts", query);
         JSONArray items = data.getJSONArray("items");
@@ -976,7 +1033,7 @@ public final class CollectorPanel {
         for (int i = 0; i < items.length(); i++) pageIds.add(items.getJSONObject(i).optString("postId"));
         boolean allSelected = !pageIds.isEmpty() && selectedPosts.containsAll(pageIds);
         countRow.addView(linkText(allSelected ? "取消全选" : "全选本页", () -> { if (allSelected) selectedPosts.removeAll(pageIds); else selectedPosts.addAll(pageIds); render(); }));
-        body.addView(countRow);
+        (dataContent != null ? dataContent : body).addView(countRow);
         LinearLayout page = scrolling();
         if (items.length() == 0) page.addView(empty("暂无已保存作品"));
         for (int i = 0; i < items.length(); i++) {
@@ -1013,7 +1070,8 @@ public final class CollectorPanel {
         countLine("用户", data);
         if (!selectedUsers.isEmpty()) {
             Button fill = primary("补充选中 " + selectedUsers.size() + " 位用户的主页资料", () -> profileTask(new JSONArray(selectedUsers)));
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(40)); params.setMargins(dp(12), 0, dp(12), dp(4)); body.addView(fill, params);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(40)); params.setMargins(dp(12), 0, dp(12), dp(4));
+            (dataContent != null ? dataContent : body).addView(fill, params);
         }
         LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
         if (items.length() == 0) page.addView(empty("暂无已保存用户"));
@@ -1722,6 +1780,12 @@ public final class CollectorPanel {
     private JSONObject api(String operation, JSONObject params) throws Exception { return CollectorClient.call(activity, operation, params); }
     private void error(Exception error) { alert().setMessage(error.getMessage()).setPositiveButton("确定", null).show(); }
     private LinearLayout scrolling() {
+        if (dataContent != null && dataScroll != null) {
+            currentScroll = dataScroll;
+            LinearLayout list = vertical(); list.setPadding(dp(12), dp(4), dp(12), dp(16));
+            dataContent.addView(list);
+            return list;
+        }
         ScrollView scroll = new ScrollView(activity); currentScroll = scroll; LinearLayout list = vertical(); list.setPadding(dp(12), dp(4), dp(12), dp(16)); scroll.addView(list);
         scroll.setClipToPadding(false);
         body.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1)); return list;
@@ -1734,7 +1798,7 @@ public final class CollectorPanel {
         Button next = button("下一页", () -> { offset += limit; render(); }); boolean more = offset + limit < total; next.setEnabled(more); next.setAlpha(more ? 1f : .4f);
         TextView where = muted((offset / limit + 1) + " / " + ((total + limit - 1) / limit), 12); where.setGravity(Gravity.CENTER);
         controls.addView(previous, new LinearLayout.LayoutParams(0, dp(38), 1)); controls.addView(where, new LinearLayout.LayoutParams(dp(64), -2)); controls.addView(next, new LinearLayout.LayoutParams(0, dp(38), 1));
-        body.addView(controls);
+        (dataContent != null ? dataContent : body).addView(controls);
     }
     private EditText input(String hint, String value, boolean numeric) {
         EditText view = new EditText(uiContext); view.setHint(hint); view.setText(value); view.setTextSize(14); view.setTextColor(foreground); view.setHintTextColor(secondary);

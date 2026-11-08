@@ -734,8 +734,16 @@ public final class CaptureProvider extends ContentProvider {
         String postSearch = query.optString("search").trim();
         if (!postSearch.isEmpty()) { where.append(" AND (coalesce(json_extract(data,'$.title'),'') LIKE ? ESCAPE '\\' OR coalesce(json_extract(data,'$.authorName'),'') LIKE ? ESCAPE '\\' OR id=?)");
             args.add("%" + like(postSearch) + "%"); args.add("%" + like(postSearch) + "%"); args.add(postSearch); }
+        String order = switch (query.optString("sort", "captured_desc")) {
+            case "created_asc" -> "CAST(json_extract(data,'$.created') AS INTEGER) ASC";
+            case "created_desc" -> "CAST(json_extract(data,'$.created') AS INTEGER) DESC";
+            case "likes_desc" -> "CAST(json_extract(data,'$.likes') AS INTEGER) DESC";
+            case "captured_asc" -> "updated ASC";
+            case "captured_desc" -> "updated DESC";
+            default -> throw new IllegalArgumentException("排序条件无效");
+        };
         JSONArray items = new JSONArray();
-        try (Cursor cursor = db.rawQuery("SELECT data FROM " + table + " WHERE " + where + " ORDER BY updated DESC,id LIMIT " + limit + " OFFSET " + offset, args.toArray(new String[0]))) {
+        try (Cursor cursor = db.rawQuery("SELECT data FROM " + table + " WHERE " + where + " ORDER BY " + order + ",id LIMIT " + limit + " OFFSET " + offset, args.toArray(new String[0]))) {
             while (cursor.moveToNext()) items.put(new JSONObject(cursor.getString(0)));
         }
         return new JSONObject().put("items", items).put("total", Integer.parseInt(scalar("SELECT count(*) FROM " + table + " WHERE " + where, args.toArray(new String[0]))))
