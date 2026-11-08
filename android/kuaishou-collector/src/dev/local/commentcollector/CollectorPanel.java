@@ -67,6 +67,59 @@ public final class CollectorPanel {
     private static final String PILL_TAG = "comment_collector_pill";
     private static final String SETTINGS_ENTRY_TAG = "comment_collector_douyin_settings_entry";
 
+    /** Builds the styled "comso 模块设置" settings entry card used in Douyin and Kuaishou settings screens. */
+    public static RelativeLayout createSettingsCard(Activity activity, Supplier<String> currentPhoto, String tag) {
+        boolean dark = dark(activity);
+        float d = activity.getResources().getDisplayMetrics().density;
+        RelativeLayout card = new RelativeLayout(activity);
+        card.setTag(tag);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(dark ? 0xFF252630 : 0xFFF3F4F6);
+        bg.setCornerRadius(12 * d);
+        card.setBackground(bg);
+        int padH = Math.round(16 * d);
+        card.setPadding(padH, 0, padH, 0);
+
+        M3.Scheme sc = M3.scheme(activity, dark);
+        ImageView icon = new ImageView(activity);
+        icon.setId(0x7f0f0101);
+        GradientDrawable iconBg = new GradientDrawable();
+        iconBg.setColor(sc.primaryContainer);
+        iconBg.setCornerRadius(10 * d);
+        icon.setBackground(iconBg);
+        icon.setScaleType(ImageView.ScaleType.CENTER);
+        icon.setImageDrawable(new M3.IconDrawable(M3.Icon.CHAT, sc.onPrimaryContainer));
+        int iconSize = Math.round(24 * d);
+        RelativeLayout.LayoutParams iconLp = new RelativeLayout.LayoutParams(iconSize, iconSize);
+        iconLp.addRule(RelativeLayout.ALIGN_PARENT_START);
+        iconLp.addRule(RelativeLayout.CENTER_VERTICAL);
+        card.addView(icon, iconLp);
+
+        TextView label = new TextView(activity);
+        label.setText("comso 模块设置");
+        label.setTextSize(16);
+        label.setTextColor(dark ? Color.WHITE : 0xFF161823);
+        RelativeLayout.LayoutParams labelLp = new RelativeLayout.LayoutParams(-2, -2);
+        labelLp.addRule(RelativeLayout.END_OF, icon.getId());
+        labelLp.addRule(RelativeLayout.CENTER_VERTICAL);
+        labelLp.leftMargin = Math.round(12 * d);
+        card.addView(label, labelLp);
+
+        TextView chevron = new TextView(activity);
+        chevron.setText("›");
+        chevron.setTextSize(20);
+        chevron.setTextColor(dark ? 0x80FFFFFF : 0x80161823);
+        RelativeLayout.LayoutParams chevLp = new RelativeLayout.LayoutParams(-2, -2);
+        chevLp.addRule(RelativeLayout.ALIGN_PARENT_END);
+        chevLp.addRule(RelativeLayout.CENTER_VERTICAL);
+        card.addView(chevron, chevLp);
+
+        card.setOnClickListener(v -> showVideoInfoSettings(activity, currentPhoto));
+        card.setOnLongClickListener(v -> { showSettings(activity, currentPhoto); return true; });
+        Motion.press(card);
+        return card;
+    }
+
     /** Injects a "comso 模块设置" row into Douyin's Settings screen right below the top module card (or at the top of the settings list). */
     public static void attachDouyinSettingsEntry(Activity activity, Supplier<String> currentPhoto) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
@@ -80,54 +133,8 @@ public final class CollectorPanel {
                 int[] indexOut = {0};
                 LinearLayout container = findDouyinSettingsContainer((ViewGroup) decor, indexOut);
                 if (container == null) return;
-                boolean dark = dark(activity);
                 float d = activity.getResources().getDisplayMetrics().density;
-                RelativeLayout card = new RelativeLayout(activity);
-                card.setTag(SETTINGS_ENTRY_TAG);
-                GradientDrawable bg = new GradientDrawable();
-                bg.setColor(dark ? 0xFF252630 : 0xFFFFFFFF);
-                bg.setCornerRadius(12 * d);
-                card.setBackground(bg);
-                int padH = Math.round(16 * d);
-                card.setPadding(padH, 0, padH, 0);
-
-                M3.Scheme sc = M3.scheme(activity, dark);
-                ImageView icon = new ImageView(activity);
-                icon.setId(0x7f0f0101);
-                GradientDrawable iconBg = new GradientDrawable();
-                iconBg.setColor(sc.primaryContainer);
-                iconBg.setCornerRadius(10 * d);
-                icon.setBackground(iconBg);
-                icon.setScaleType(ImageView.ScaleType.CENTER);
-                icon.setImageDrawable(new M3.IconDrawable(M3.Icon.CHAT, sc.onPrimaryContainer));
-                int iconSize = Math.round(24 * d);
-                RelativeLayout.LayoutParams iconLp = new RelativeLayout.LayoutParams(iconSize, iconSize);
-                iconLp.addRule(RelativeLayout.ALIGN_PARENT_START);
-                iconLp.addRule(RelativeLayout.CENTER_VERTICAL);
-                card.addView(icon, iconLp);
-
-                TextView label = new TextView(activity);
-                label.setText("comso 模块设置");
-                label.setTextSize(16);
-                label.setTextColor(dark ? Color.WHITE : 0xFF161823);
-                RelativeLayout.LayoutParams labelLp = new RelativeLayout.LayoutParams(-2, -2);
-                labelLp.addRule(RelativeLayout.END_OF, icon.getId());
-                labelLp.addRule(RelativeLayout.CENTER_VERTICAL);
-                labelLp.leftMargin = Math.round(12 * d);
-                card.addView(label, labelLp);
-
-                TextView chevron = new TextView(activity);
-                chevron.setText("›");
-                chevron.setTextSize(20);
-                chevron.setTextColor(dark ? 0x80FFFFFF : 0x80161823);
-                RelativeLayout.LayoutParams chevLp = new RelativeLayout.LayoutParams(-2, -2);
-                chevLp.addRule(RelativeLayout.ALIGN_PARENT_END);
-                chevLp.addRule(RelativeLayout.CENTER_VERTICAL);
-                card.addView(chevron, chevLp);
-
-                card.setOnClickListener(v -> showVideoInfoSettings(activity, currentPhoto));
-                card.setOnLongClickListener(v -> { showSettings(activity, currentPhoto); return true; });
-                Motion.press(card);
+                RelativeLayout card = createSettingsCard(activity, currentPhoto, SETTINGS_ENTRY_TAG);
 
                 int insertIndex = Math.max(0, Math.min(container.getChildCount(), indexOut[0]));
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Math.round(54 * d));

@@ -481,16 +481,15 @@ public final class KuaishouModule extends XposedModule {
             View list = activity.findViewById(activity.getResources().getIdentifier("item_list", "id", TARGET));
             if (list == null || !(list.getParent() instanceof ViewGroup)) return;
             ViewGroup parent = (ViewGroup) list.getParent();
-            if (parent.findViewWithTag("comment_collector_native_settings_activity") != null) return;
-            TextView entry = new TextView(activity);
-            entry.setTag("comment_collector_native_settings_activity");
-            entry.setText("视频信息设置"); entry.setTextSize(16); entry.setTextColor(Color.WHITE);
-            entry.setGravity(Gravity.CENTER_VERTICAL); entry.setMinHeight(Math.round(56 * activity.getResources().getDisplayMetrics().density));
-            int padding = Math.round(20 * activity.getResources().getDisplayMetrics().density);
-            entry.setPadding(padding, 0, padding, 0);
-            entry.setBackgroundResource(android.R.drawable.list_selector_background);
-            entry.setOnClickListener(view -> CollectorPanel.showVideoInfoSettings(activity));
-            parent.addView(entry, 0, new ViewGroup.LayoutParams(-1, -2));
+            String tag = "comment_collector_native_settings_activity";
+            if (parent.findViewWithTag(tag) != null) return;
+            float d = activity.getResources().getDisplayMetrics().density;
+            View card = CollectorPanel.createSettingsCard(activity, () -> lastPhoto, tag);
+            int insertIndex = Math.max(0, parent.indexOfChild(list));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Math.round(54 * d));
+            int marginH = Math.round(16 * d);
+            lp.setMargins(marginH, Math.round(12 * d), marginH, Math.round(4 * d));
+            parent.addView(card, insertIndex, lp);
             Log.i(TAG, "settings_activity_entry_added");
         } catch (Exception error) { Log.w(TAG, "settings_activity_entry_failed", error); }
     }
@@ -500,18 +499,16 @@ public final class KuaishouModule extends XposedModule {
             Object value = SnapshotMapper.field(fragment, "f189091e");
             if (!(value instanceof LinearLayout)) return;
             LinearLayout list = (LinearLayout) value;
-            if (list.findViewWithTag("comment_collector_native_settings") != null) return;
+            String tag = "comment_collector_native_settings";
+            if (list.findViewWithTag(tag) != null) return;
             Activity activity = (Activity) SnapshotMapper.invoke(fragment, "getActivity", new Class<?>[0]);
             if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
-            TextView entry = new TextView(activity);
-            entry.setTag("comment_collector_native_settings");
-            entry.setText("视频信息设置"); entry.setTextSize(16); entry.setTextColor(Color.WHITE);
-            entry.setGravity(Gravity.CENTER_VERTICAL); entry.setMinHeight(Math.round(56 * activity.getResources().getDisplayMetrics().density));
-            int padding = Math.round(20 * activity.getResources().getDisplayMetrics().density);
-            entry.setPadding(padding, 0, padding, 0);
-            entry.setBackgroundResource(android.R.drawable.list_selector_background);
-            entry.setOnClickListener(view -> CollectorPanel.showVideoInfoSettings(activity));
-            list.addView(entry, new LinearLayout.LayoutParams(-1, -2));
+            float d = activity.getResources().getDisplayMetrics().density;
+            View card = CollectorPanel.createSettingsCard(activity, () -> lastPhoto, tag);
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Math.round(54 * d));
+            int marginH = Math.round(16 * d);
+            lp.setMargins(marginH, Math.round(12 * d), marginH, Math.round(4 * d));
+            list.addView(card, 0, lp);
             Log.i(TAG, "native_settings_entry_added");
         } catch (Exception error) { Log.w(TAG, "native_settings_entry_failed", error); }
     }
