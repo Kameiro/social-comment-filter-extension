@@ -250,6 +250,8 @@ public final class CollectorPanel {
     private JSONObject filters = new JSONObject();
     private int page = PAGE_COLLECT, dataKind = DATA_COMMENTS, offset;
     private String userFilter = "", userFilterName = "", postFilter = "", search = "";
+    /** When non-zero, the comments page is scoped to one capture task. */
+    private long taskFilter;
     private boolean allTasks;
     private ScrollView currentScroll;
     private String lastTaskSnapshot = "";
@@ -843,12 +845,33 @@ public final class CollectorPanel {
         if ("paused".equals(state)) buttons.add(primary("继续", () -> taskAction("resume", id)));
         if (state.startsWith("running") || "paused".equals(state) || "queued".equals(state)) buttons.add(button("停止", () -> taskAction("stop", id)));
         if ("stopped".equals(state)) buttons.add(button("续跑", () -> taskAction("retry", id)));
-        if ("comment".equals(kind)) buttons.add(button("打开帖子", () -> openPost(task.optString("photoId"))));
+        if ("comment".equals(kind)) {
+            buttons.add(button("查看评论", () -> showTaskComments(id)));
+            buttons.add(button("打开帖子", () -> openPost(task.optString("photoId"))));
+        }
         buttons.add(button("记录", () -> events(id)));
         buttons.add(button("诊断", () -> copyDiagnostics(id)));
         for (int i = 0; i < buttons.size(); i++) actions.addView(buttons.get(i), weighted(i == 0 ? 0 : 6));
         android.widget.HorizontalScrollView scroller = new android.widget.HorizontalScrollView(activity); scroller.setHorizontalScrollBarEnabled(false);
         scroller.addView(actions); card.addView(scroller);
+    }
+
+    /** Opens the complete comment list captured by one task, including replies. */
+    private void showTaskComments(long taskId) {
+        if (taskId <= 0) return;
+        page = PAGE_DATA;
+        dataKind = DATA_COMMENTS;
+        // A task can belong to another host app (for example an XHS task while the panel is opened from Kuaishou).
+        // Task-scoped navigation must therefore include all platforms; the taskId predicate remains authoritative.
+        allPlatforms = true;
+        taskFilter = taskId;
+        userFilter = "";
+        userFilterName = "";
+        postFilter = "";
+        search = "";
+        offset = 0;
+        currentScroll = null;
+        render();
     }
 
     // ---- 数据
@@ -862,7 +885,11 @@ public final class CollectorPanel {
 
     private void dataPage() throws Exception {
         LinearLayout top = vertical(); top.setPadding(dp(12), dp(2), dp(12), dp(4));
-        top.addView(segmented(new String[]{"评论", "帖子", "用户"}, dataKind, index -> { dataKind = index; offset = 0; selectedPosts.clear(); selectedUsers.clear(); render(); }));
+        top.addView(segmented(new String[]{"评论", "帖子", "用户"}, dataKind, index -> {
+            dataKind = index; offset = 0; selectedPosts.clear(); selectedUsers.clear();
+            if (index != DATA_COMMENTS) taskFilter = 0;
+            render();
+        }));
         LinearLayout scopeRow = vertical(); scopeRow.setPadding(0, dp(8), 0, 0);
         scopeRow.addView(segmented(new String[]{"仅" + hostName(), "全部平台"}, allPlatforms ? 1 : 0, index -> { allPlatforms = index == 1; offset = 0; selectedPosts.clear(); selectedUsers.clear(); render(); }));
         top.addView(scopeRow);
@@ -899,11 +926,13 @@ public final class CollectorPanel {
 
     private void comments() throws Exception {
         JSONObject query = new JSONObject(filters.toString()).put("offset", offset).put("limit", 50).put("platform", scope());
+        if (taskFilter > 0) query.put("taskId", taskFilter);
         if (!userFilter.isEmpty()) query.put("userId", userFilter);
         if (!postFilter.isEmpty()) query.put("photoId", postFilter);
         if (!search.isEmpty()) query.put("search", search);
         JSONObject data = api("comments", query);
-        countLine(userFilter.isEmpty() ? "评论" : "该用户的评论", data);
+        String label = taskFilter > 0 ? "任务 #" + taskFilter + " 的评论" : userFilter.isEmpty() ? "评论" : "该用户的评论";
+        countLine(label, data);
         LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
         if (items.length() == 0) page.addView(empty("当前条件下暂无评论"));
         for (int i = 0; i < items.length(); i++) {
@@ -1130,6 +1159,9 @@ public final class CollectorPanel {
     private View conditionChips(boolean forCollect) {
         Flow flow = new Flow(activity, dp(6));
         if (!forCollect) {
+            if (dataKind == DATA_COMMENTS && taskFilter > 0) {
+                flow.addView(chip("任务 #" + taskFilter, true, () -> { taskFilter = 0; offset = 0; render(); }));
+            }
             if (!userFilter.isEmpty()) flow.addView(chip("用户：" + (userFilterName.isEmpty() ? userFilter : userFilterName), true, () -> { userFilter = ""; userFilterName = ""; offset = 0; render(); }));
             if (!postFilter.isEmpty()) flow.addView(chip("帖子：" + postFilter, true, () -> { postFilter = ""; offset = 0; render(); }));
             if (!search.isEmpty()) flow.addView(chip("搜索：" + search, true, () -> { search = ""; offset = 0; render(); }));
