@@ -11,6 +11,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -90,7 +91,7 @@ final class PostInfoPanel {
         String music = first(post, "musicName");
         String artist = first(post, "musicArtist");
         if (!music.isEmpty() && !artist.isEmpty() && !music.contains(artist)) music = music + " - " + artist;
-        addRow(activity, content, "发布账号", empty(author) ? "未知" : author);
+        addAuthorRow(activity, content, post, author);
         if (VideoInfoSettings.enabled(settings, "location")) addRow(activity, content, "发布地点", empty(location) ? "未提供" : location);
         if (VideoInfoSettings.enabled(settings, "publish_time")) addRow(activity, content, "发布时间", formatDate(created, settings));
         if (!imagePost && VideoInfoSettings.enabled(settings, "duration")) addRow(activity, content, "视频时长", formatDuration(duration));
@@ -217,6 +218,51 @@ final class PostInfoPanel {
         LinearLayout row = new LinearLayout(activity); row.setOrientation(LinearLayout.VERTICAL); row.setPadding(0, dp(activity, 5), 0, dp(activity, 5));
         TextView key = M3.type(text(activity, label, M3.LABEL_MEDIUM, false, S.onSurfaceVariant), M3.LABEL_MEDIUM, false, S.onSurfaceVariant); row.addView(key);
         TextView val = text(activity, value, M3.BODY_LARGE, false, S.onSurface); val.setTextIsSelectable(true); row.addView(val);
+        parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    /** Adds a high-contrast, clickable author card with the author's avatar. */
+    private static void addAuthorRow(Activity activity, LinearLayout parent, JSONObject post, String author) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, dp(activity, 5), 0, dp(activity, 9));
+        TextView key = M3.type(text(activity, "发布账号", M3.LABEL_MEDIUM, false, S.onSurfaceVariant), M3.LABEL_MEDIUM, false, S.onSurfaceVariant);
+        row.addView(key);
+
+        LinearLayout user = new LinearLayout(activity);
+        user.setGravity(Gravity.CENTER_VERTICAL);
+        user.setPadding(dp(activity, 10), dp(activity, 7), dp(activity, 12), dp(activity, 7));
+        user.setBackground(round(S.secondaryContainer, dp(activity, 16), false));
+        user.setClickable(true);
+        user.setFocusable(true);
+        user.setContentDescription("打开用户主页" + (empty(author) ? "" : " " + author));
+        user.setOnClickListener(view -> UserLinks.profile(activity, post));
+
+        int avatarSize = dp(activity, 44);
+        ImageView avatar = new ImageView(activity);
+        avatar.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        avatar.setBackground(round(S.surfaceContainerHighest, avatarSize / 2, false));
+        avatar.setClipToOutline(true);
+        avatar.setImageResource(android.R.drawable.ic_menu_myplaces);
+        String avatarUrl = first(post, "authorAvatarUrl", "authorAvatar", "avatarUrl");
+        if (avatarUrl.startsWith("http")) loadImage(avatar, avatarUrl);
+        user.addView(avatar, new LinearLayout.LayoutParams(avatarSize, avatarSize));
+
+        LinearLayout labels = new LinearLayout(activity);
+        labels.setOrientation(LinearLayout.VERTICAL);
+        labels.setPadding(dp(activity, 12), 0, 0, 0);
+        String name = empty(author) ? "未知用户" : author;
+        TextView nameView = text(activity, name, M3.BODY_LARGE, true, S.primary);
+        nameView.setPaintFlags(nameView.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
+        labels.addView(nameView);
+        TextView hint = text(activity, "点击查看主页", M3.LABEL_MEDIUM, false, S.onSecondaryContainer);
+        labels.addView(hint);
+        user.addView(labels, new LinearLayout.LayoutParams(0, -2, 1));
+
+        TextView arrow = text(activity, "›", M3.TITLE_LARGE, true, S.primary);
+        arrow.setGravity(Gravity.CENTER);
+        user.addView(arrow, new LinearLayout.LayoutParams(dp(activity, 24), dp(activity, 44)));
+        row.addView(user, new LinearLayout.LayoutParams(-1, -2));
         parent.addView(row, new LinearLayout.LayoutParams(-1, -2));
     }
 

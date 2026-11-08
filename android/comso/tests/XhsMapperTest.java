@@ -5,7 +5,7 @@ import java.util.List;
 import org.json.JSONObject;
 
 public final class XhsMapperTest {
-    public static class User { public String userid = "u1", nickname = "小红"; }
+    public static class User { public String userid = "u1", nickname = "小红", image = "https://ci.xiaohongshu.com/avatar.jpg"; }
     public static class Img { public String url = "https://ci.xiaohongshu.com/a.jpg"; }
     public static class ImgItem { public String originUrl = "https://ci.xiaohongshu.com/origin.jpg"; }
     public static class VideoInfo { public String originUrl = "https://ci.xiaohongshu.com/video.mp4"; public long duration = 15; }
@@ -43,6 +43,7 @@ public final class XhsMapperTest {
         check("IP属地：浙江".equals(p.getString("location")), "ip fallback");
         check(p.getLong("likes") == 12 && p.getLong("commentTotal") == 4, "stats");
         check("小红".equals(p.getString("authorName")), "author");
+        check("https://ci.xiaohongshu.com/avatar.jpg".equals(p.getString("authorAvatarUrl")), "author avatar");
         check(p.getJSONArray("imageUrls").length() == 1 && p.has("coverUrl"), "images");
 
         Note poi = new Note(); poi.userSetLocation = "杭州西湖";

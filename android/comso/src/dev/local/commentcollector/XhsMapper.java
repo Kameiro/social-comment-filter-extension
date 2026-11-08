@@ -29,6 +29,9 @@ final class XhsMapper {
         Object user = ModelReader.get(note, "user");
         put(out, "authorId", ModelReader.text(user, "userid", "userId", "id"));
         put(out, "authorName", ModelReader.text(user, "nickname", "name", "nickName"));
+        String authorAvatar = firstUrl(user, "image", "avatar", "images", "imageSizeLarge", "avatarHolder");
+        if (authorAvatar.isEmpty()) authorAvatar = firstUrl(note, "newUserAvatarImage", "userAvatar", "userImage", "avatar");
+        if (!authorAvatar.isEmpty()) put(out, "authorAvatarUrl", authorAvatar);
 
         putNumber(out, "likes", ModelReader.get(note, "likedCount", "likes", "likeCount"));
         putNumber(out, "favorites", ModelReader.get(note, "collectedCount", "favCount", "collectCount"));
@@ -85,6 +88,13 @@ final class XhsMapper {
     private static void putNumber(JSONObject out, String key, Object value) throws Exception {
         long n = number(value);
         if (value != null && (n > 0 || value instanceof Number)) out.put(key, n);
+    }
+    private static String firstUrl(Object object, String... keys) {
+        for (String key : keys) {
+            String url = ModelReader.url(ModelReader.get(object, key));
+            if (!url.isEmpty()) return url;
+        }
+        return "";
     }
     private static long number(Object value) {
         if (value instanceof Number) return ((Number) value).longValue();
