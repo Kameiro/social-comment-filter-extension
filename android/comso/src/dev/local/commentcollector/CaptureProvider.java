@@ -649,7 +649,9 @@ public final class CaptureProvider extends ContentProvider {
                 while (cursor.moveToNext()) {
                     if (read >= maxRows) { more = true; break; }
                     JSONObject row = new JSONObject(cursor.getString(0));
-                    row.put("user", cursor.isNull(1) ? new JSONObject() : new JSONObject(cursor.getString(1)));
+                    JSONObject user = cursor.isNull(1) ? new JSONObject() : new JSONObject(cursor.getString(1));
+                    row.put("user", user);
+                    if (row.optString("avatarUrl").isEmpty() && !user.optString("avatarUrl").isEmpty()) row.put("avatarUrl", user.optString("avatarUrl"));
                     sink.accept(row); read++;
                 }
             }
@@ -660,7 +662,9 @@ public final class CaptureProvider extends ContentProvider {
         try (Cursor cursor = db.rawQuery("SELECT c.data,c.task,u.data" + from + " ORDER BY " + order + ",c.id LIMIT " + limit + " OFFSET " + offset, args.toArray(new String[0]))) {
             while (cursor.moveToNext()) {
                 JSONObject row = new JSONObject(cursor.getString(0)).put("taskId", cursor.getLong(1));
-                row.put("user", cursor.isNull(2) ? new JSONObject() : new JSONObject(cursor.getString(2)));
+                JSONObject user = cursor.isNull(2) ? new JSONObject() : new JSONObject(cursor.getString(2));
+                row.put("user", user);
+                if (row.optString("avatarUrl").isEmpty() && !user.optString("avatarUrl").isEmpty()) row.put("avatarUrl", user.optString("avatarUrl"));
                 items.put(row);
             }
         }
