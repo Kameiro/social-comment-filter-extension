@@ -29,7 +29,11 @@ final class DouyinNativePager {
     private static volatile String lastCapturedPost = "";
     static volatile java.util.function.Consumer<String> onPostCaptured;
 
-    static boolean ready() { return proxy != null && method != null && args != null; }
+    private static volatile Object profileProxy;
+    private static volatile Method profileMethod;
+
+    static boolean ready() { return proxy != null && method != null; }
+    static boolean profileReady() { return profileProxy != null && profileMethod != null; }
     static String post() { Object[] a = args; return a != null && a.length > 0 && a[0] != null ? String.valueOf(a[0]) : ""; }
     static String lastCapturedPost() { return lastCapturedPost == null ? "" : lastCapturedPost; }
 
@@ -52,6 +56,22 @@ final class DouyinNativePager {
             Object retrofit = serviceType.getMethod("createNewRetrofit", String.class).invoke(service, "https://api.amemv.com");
             Object sample = retrofit.getClass().getMethod("create", Class.class).invoke(retrofit, api);
             Log.i(TAG, "douyin_native_sample " + sample);
+            if (proxy == null) proxy = sample;
+            if (method == null) {
+                for (Method m : api.getDeclaredMethods()) {
+                    if ("fetchCommentListV2Post".equals(m.getName())) { method = m; break; }
+                }
+            }
+            try {
+                Class<?> profileApi = loader.loadClass("com.ss.android.ugc.aweme.feedliveshare.screen.api.IFeedLiveShareProfileApi");
+                profileProxy = retrofit.getClass().getMethod("create", Class.class).invoke(retrofit, profileApi);
+                for (Method m : profileApi.getDeclaredMethods()) {
+                    if ("getProfileUserOther".equals(m.getName())) { profileMethod = m; break; }
+                }
+                Log.i(TAG, "douyin_native_profile_api " + profileMethod);
+            } catch (Throwable profileError) {
+                Log.w(TAG, "douyin_native_profile_init_failed", profileError);
+            }
             Class<?> handler = Proxy.getInvocationHandler(sample).getClass();
             Method invoke = handler.getDeclaredMethod("invoke", Object.class, Method.class, Object[].class);
             xposed.hook(invoke).intercept(chain -> {
@@ -79,16 +99,37 @@ final class DouyinNativePager {
     /** Replays the captured request from a worker thread; the parsed list reaches DouyinComments via the model hook. */
     static Object fetch(long cursor, String expectPost) {
         Object p = proxy; Method m = method; Object[] a = args;
-        if (p == null || m == null || a == null) return null;
-        if (!expectPost.isEmpty() && !expectPost.equals(post())) return null;
+        if (p == null || m == null) return null;
         try {
-            Object[] copy = a.clone();
-            copy[1] = cursor;
+            Object[] copy;
+            if (a != null) {
+                copy = a.clone();
+                if (copy.length > 0) copy[0] = expectPost;
+                if (copy.length > 1) copy[1] = cursor;
+                if (copy.length > 2 && copy[2] instanceof Integer && ((Integer) copy[2]) <= 0) copy[2] = 20;
+            } else {
+                Class<?>[] types = m.getParameterTypes();
+                java.lang.annotation.Annotation[][] notes = m.getParameterAnnotations();
+                copy = new Object[types.length];
+                for (int i = 0; i < types.length; i++) {
+                    String name = paramName(notes[i]);
+                    if ("aweme_id".equals(name) || "item_id".equals(name) || (i == 0 && types[0] == String.class)) {
+                        copy[i] = expectPost;
+                    } else if ("cursor".equals(name) || (i == 1 && (types[1] == long.class || types[1] == Long.class))) {
+                        copy[i] = cursor;
+                    } else if ("count".equals(name) || (i == 2 && (types[2] == int.class || types[2] == Integer.class))) {
+                        copy[i] = 20;
+                    } else {
+                        copy[i] = zero(types[i]);
+                    }
+                }
+            }
             synchronized (shown) {
-                String current = post();
-                if (!current.equals(shownPost)) { shown.clear(); shownPost = current; }
-                if (!replayStarted || true) {
-                    if (a.length > SHOWN_CIDS && a[SHOWN_CIDS] instanceof String) for (String id : ((String) a[SHOWN_CIDS]).split(",")) if (!id.isEmpty()) shown.add(id);
+                if (!expectPost.equals(shownPost) || cursor == 0) { shown.clear(); shownPost = expectPost; }
+                if (a != null && !replayStarted) {
+                    if (a.length > SHOWN_CIDS && a[SHOWN_CIDS] instanceof String) {
+                        for (String id : ((String) a[SHOWN_CIDS]).split(",")) if (!id.isEmpty()) shown.add(id);
+                    }
                     replayStarted = true;
                 }
                 if (copy.length > SHOWN_CIDS && copy[L1_COUNT] instanceof Integer && copy[SHOWN_CIDS] instanceof String) {
@@ -108,10 +149,13 @@ final class DouyinNativePager {
             if (task != null) { try { result = task.getClass().getMethod("getResult").invoke(task); } catch (Throwable ignored) {} }
             String outcome = " result=" + (result == null ? "null" : result.getClass().getName());
             if (result != null) try {
-                org.json.JSONObject page = DouyinComments.page(result, post());
-                if (page != null) synchronized (shown) { org.json.JSONArray rows = page.getJSONArray("rows"); for (int i = 0; i < rows.length(); i++) shown.add(rows.getJSONObject(i).optString("commentId")); }
+                org.json.JSONObject page = DouyinComments.page(result, expectPost);
+                if (page != null) synchronized (shown) {
+                    org.json.JSONArray rows = page.getJSONArray("rows");
+                    for (int i = 0; i < rows.length(); i++) shown.add(rows.getJSONObject(i).optString("commentId"));
+                }
             } catch (Throwable ignored) {}
-            Log.i(TAG, "douyin_native_fetched cursor=" + cursor + outcome);
+            Log.i(TAG, "douyin_native_fetched post=" + expectPost + " cursor=" + cursor + outcome);
             return result;
         } catch (Throwable error) { Log.w(TAG, "douyin_native_fetch_failed", error); return null; }
     }
@@ -158,14 +202,16 @@ final class DouyinNativePager {
      */
     static Object fetchReplies(String rootId, long cursor, String expectPost) {
         Object p = proxy; Method lm = method; Object[] la = args;
-        if (p == null || lm == null || la == null || !expectPost.equals(post())) return null;
+        if (p == null || lm == null) return null;
         try {
             Method rm = replyMethod(lm.getDeclaringClass());
             if (rm == null) { Log.w(TAG, "douyin_reply_method_missing"); return null; }
             java.util.Map<String, Object> known = new java.util.HashMap<>();
-            java.lang.annotation.Annotation[][] listNotes = lm.getParameterAnnotations();
-            for (int i = 0; i < la.length && i < listNotes.length; i++) { String n = paramName(listNotes[i]); if (n != null && la[i] != null) known.put(n, la[i]); }
-            known.remove("insert_ids");
+            if (la != null) {
+                java.lang.annotation.Annotation[][] listNotes = lm.getParameterAnnotations();
+                for (int i = 0; i < la.length && i < listNotes.length; i++) { String n = paramName(listNotes[i]); if (n != null && la[i] != null) known.put(n, la[i]); }
+                known.remove("insert_ids");
+            }
             known.put("comment_id", rootId); known.put("cursor", cursor); known.put("count", 20); known.put("item_id", expectPost);
             Class<?>[] types = rm.getParameterTypes(); java.lang.annotation.Annotation[][] notes = rm.getParameterAnnotations();
             Object[] out = new Object[types.length];
@@ -184,5 +230,23 @@ final class DouyinNativePager {
             Log.i(TAG, "douyin_reply_fetched root=" + rootId + " cursor=" + cursor + " result=" + (result == null ? "null" : "ok"));
             return result;
         } catch (Throwable error) { Log.w(TAG, "douyin_reply_fetch_failed", error); return null; }
+    }
+
+    /**
+     * Calls Douyin's own user profile API (/aweme/v1/user/profile/other/) via Retrofit proxy.
+     * Returns the parsed UserResponse or null.
+     */
+    static Object fetchProfile(String userId, String secUserId) {
+        Object p = profileProxy; Method m = profileMethod;
+        if (p == null || m == null) return null;
+        try {
+            Object obs = m.invoke(p, userId, secUserId == null ? "" : secUserId, "");
+            if (obs == null) return null;
+            Method blockingFirst = obs.getClass().getMethod("blockingFirst");
+            return blockingFirst.invoke(obs);
+        } catch (Throwable error) {
+            Log.w(TAG, "douyin_native_profile_call_failed uid=" + userId, error);
+            return null;
+        }
     }
 }

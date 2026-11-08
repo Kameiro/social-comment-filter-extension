@@ -49,6 +49,9 @@ public final class CaptureProvider extends ContentProvider {
         column("paging_driver", "TEXT DEFAULT 'ui'");
         column("native_loads", "INTEGER DEFAULT 0");
         column("ui_scrolls", "INTEGER DEFAULT 0");
+        column("profile_targets", "sec_uid", "TEXT");
+        column("profile_targets", "attempts", "INTEGER DEFAULT 0");
+        column("profile_targets", "updated", "INTEGER DEFAULT 0");
         backfillRecords();
         if ("true".equals(scalar("SELECT data FROM settings WHERE name='api_enabled'")))
             new Thread(() -> { try { LocalApi.enable(getContext()); } catch (Exception ignored) {} }, "collector-api-start").start();
@@ -73,11 +76,12 @@ public final class CaptureProvider extends ContentProvider {
             db.execSQL("INSERT INTO settings VALUES ('schema_v2','done')"); db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
     }
-    private void column(String name, String declaration) {
-        try (Cursor cursor = db.rawQuery("PRAGMA table_info(tasks)", null)) {
+    private void column(String name, String declaration) { column("tasks", name, declaration); }
+    private void column(String table, String name, String declaration) {
+        try (Cursor cursor = db.rawQuery("PRAGMA table_info(" + table + ")", null)) {
             while (cursor.moveToNext()) if (name.equals(cursor.getString(1))) return;
         }
-        db.execSQL("ALTER TABLE tasks ADD COLUMN " + name + " " + declaration);
+        db.execSQL("ALTER TABLE " + table + " ADD COLUMN " + name + " " + declaration);
     }
 
     private boolean owner(int uid) { return uid == Process.myUid(); }
@@ -130,6 +134,7 @@ public final class CaptureProvider extends ContentProvider {
         out.put("profilesTotal", count("SELECT count(*) FROM profile_targets WHERE task=?", id));
         out.put("profilesDone", count("SELECT count(*) FROM profile_targets WHERE task=? AND status='complete'", id));
         out.put("profilesFailed", count("SELECT count(*) FROM profile_targets WHERE task=? AND status='failed'", id));
+        out.put("profilesPending", count("SELECT count(*) FROM profile_targets WHERE task=? AND status IN ('pending','running')", id));
         out.put("discoveredPosts", count("SELECT count(*) FROM discovered WHERE task=?", id));
         out.put("rootEvidence", scalar("SELECT root_evidence FROM tasks WHERE id=?", String.valueOf(id)));
         out.put("pagingDriver", scalar("SELECT paging_driver FROM tasks WHERE id=?", String.valueOf(id)));
@@ -225,12 +230,94 @@ public final class CaptureProvider extends ContentProvider {
                 JSONObject user = input.getJSONObject("user"); String uid = user.getString("userId");
                 mergeRecord("users", uid, user);
                 long active = activeId();
-                if (active != 0 && "profile".equals(status(active).optString("kind")) && status(active).optString("status").startsWith("running") &&
-                    input.optLong("taskId") == active && input.optLong("generation") == status(active).optLong("generation")) {
-                    db.execSQL("UPDATE profile_targets SET status='complete',issue=NULL WHERE task=? AND user=? AND status='pending'", new Object[]{active, uid});
-                    event(active, "public_profile_saved"); finishProfiles(active);
+                long targetTask = input.optLong("taskId", active);
+                db.execSQL("UPDATE profile_targets SET status='complete',issue=NULL,updated=? WHERE user=? AND (task=? OR ?=0)",
+                    new Object[]{System.currentTimeMillis(), uid, targetTask, targetTask});
+                if (targetTask != 0) {
+                    event(targetTask, "public_profile_saved");
+                    finishProfiles(targetTask);
                 }
                 out.putString("data", new JSONObject().put("saved", true).toString()); return out;
+            }
+            if ("profile_queue_add".equals(method)) {
+                long targetTask = input.getLong("taskId");
+                JSONArray uids = input.optJSONArray("userIds");
+                JSONObject secMap = input.optJSONObject("secUids");
+                int added = 0;
+                db.beginTransaction();
+                try {
+                    if (uids != null) {
+                        for (int i = 0; i < uids.length(); i++) {
+                            String uid = uids.optString(i);
+                            if (uid.isEmpty()) continue;
+                            String sec = secMap != null ? secMap.optString(uid) : "";
+                            String userJson = scalar("SELECT data FROM users WHERE id=?", uid);
+                            if (!userJson.isEmpty()) {
+                                try { if (new JSONObject(userJson).has("profileCapturedAt")) continue; } catch (Throwable ignored) {}
+                            }
+                            db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
+                                new Object[]{targetTask, uid, sec, System.currentTimeMillis()});
+                            added++;
+                        }
+                    }
+                    if (input.optBoolean("backfillTask")) {
+                        String sql = "SELECT DISTINCT json_extract(c.data, '$.userId'), coalesce(json_extract(c.data, '$.secUid'), '') " +
+                                     "FROM comments c LEFT JOIN users u ON json_extract(c.data, '$.userId') = u.id " +
+                                     "WHERE c.task=? AND json_extract(c.data, '$.userId') IS NOT NULL AND json_extract(c.data, '$.userId') != '' " +
+                                     "AND (u.data IS NULL OR json_extract(u.data, '$.profileCapturedAt') IS NULL)";
+                        try (Cursor cursor = db.rawQuery(sql, new String[]{String.valueOf(targetTask)})) {
+                            while (cursor.moveToNext()) {
+                                String uid = cursor.getString(0);
+                                String sec = cursor.getString(1);
+                                if (uid != null && !uid.isEmpty()) {
+                                    db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
+                                        new Object[]{targetTask, uid, sec == null ? "" : sec, System.currentTimeMillis()});
+                                    added++;
+                                }
+                            }
+                        }
+                    }
+                    String prio = input.optString("prioritizeUser");
+                    if (!prio.isEmpty()) {
+                        db.execSQL("INSERT OR REPLACE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, 0)",
+                            new Object[]{targetTask, prio, input.optString("secUid", "")});
+                        added++;
+                    }
+                    db.setTransactionSuccessful();
+                } finally { db.endTransaction(); }
+                out.putString("data", new JSONObject().put("added", added).toString()); return out;
+            }
+            if ("profile_queue_next".equals(method)) {
+                long targetTask = input.optLong("taskId", activeId());
+                if (targetTask == 0) { out.putString("data", new JSONObject().put("empty", true).toString()); return out; }
+                String user = null;
+                String secUid = "";
+                try (Cursor cursor = db.rawQuery("SELECT user, coalesce(sec_uid,'') FROM profile_targets WHERE task=? AND status='pending' ORDER BY updated ASC, user ASC LIMIT 1",
+                    new String[]{String.valueOf(targetTask)})) {
+                    if (cursor.moveToFirst()) {
+                        user = cursor.getString(0);
+                        secUid = cursor.getString(1);
+                    }
+                }
+                if (user == null || user.isEmpty()) {
+                    out.putString("data", new JSONObject().put("empty", true).toString());
+                    return out;
+                }
+                db.execSQL("UPDATE profile_targets SET status='running', updated=? WHERE task=? AND user=?",
+                    new Object[]{System.currentTimeMillis(), targetTask, user});
+                JSONObject res = new JSONObject().put("empty", false).put("userId", user).put("secUid", secUid).put("taskId", targetTask);
+                out.putString("data", res.toString());
+                return out;
+            }
+            if ("profile_queue_fail".equals(method)) {
+                long targetTask = input.getLong("taskId");
+                String uid = input.getString("userId");
+                String issue = input.optString("issue", "profile_fetch_failed");
+                db.execSQL("UPDATE profile_targets SET attempts=attempts+1, status=CASE WHEN attempts>=2 THEN 'failed' ELSE 'pending' END, issue=?, updated=? WHERE task=? AND user=?",
+                    new Object[]{issue, System.currentTimeMillis(), targetTask, uid});
+                finishProfiles(targetTask);
+                out.putString("data", new JSONObject().put("ok", true).toString());
+                return out;
             }
             if ("record_post".equals(method)) {
                 JSONObject post = input.getJSONObject("post"); mergeRecord("posts", post.getString("postId"), post);
@@ -363,8 +450,10 @@ public final class CaptureProvider extends ContentProvider {
                         }
                     }
                     db.execSQL("DELETE FROM settings WHERE name='platform_block'");
+                    String plat = previous.optJSONObject("params") != null ? previous.optJSONObject("params").optString("platform") : "";
+                    String nextDriver = "douyin".equals(plat) ? "native-root" : "ui";
                     String nextState = "profile".equals(previous.optString("kind")) ? "running-profiles" : "running";
-                    db.execSQL("UPDATE tasks SET status=?,pages=0,root_eof=0,root_evidence=NULL,issue=NULL,auto=1,generation=generation+1,updated=? WHERE id=?", new Object[]{nextState, now, targetId});
+                    db.execSQL("UPDATE tasks SET status=?,pages=0,root_eof=0,root_evidence=NULL,issue=NULL,auto=1,paging_driver=?,generation=generation+1,updated=? WHERE id=?", new Object[]{nextState, nextDriver, now, targetId});
                     event(targetId, "refreshed");
                     db.setTransactionSuccessful();
                 } finally { db.endTransaction(); }
@@ -401,13 +490,17 @@ public final class CaptureProvider extends ContentProvider {
                     out.putString("data", new JSONObject().put("items", ids).toString()); return out;
                 }
                 if ("native_eof".equals(method)) {
-                    if (!"root".equals(input.optString("stream"))) throw new IllegalArgumentException("原生末页流无效");
+                    String stream = input.optString("stream", input.optString("phase"));
+                    if (!"root".equals(stream)) throw new IllegalArgumentException("原生末页流无效");
                     String evidence = input.optString("evidence");
                     if (!"native_response_has_more_false".equals(evidence)) throw new IllegalArgumentException("原生末页证据无效");
                     db.execSQL("UPDATE tasks SET root_eof=1,root_evidence=?,updated=? WHERE id=?", new Object[]{evidence, System.currentTimeMillis(), id});
                     JSONObject after = status(id);
-                    String next = after.optInt("pendingReplies") == 0 ? "complete" : "running-replies";
-                    db.execSQL("UPDATE tasks SET status=?,updated=? WHERE id=?", new Object[]{next, System.currentTimeMillis(), id});
+                    int pendingReplies = after.optInt("pendingReplies");
+                    int pendingProfiles = after.optInt("profilesPending");
+                    String next = pendingReplies > 0 ? "running-replies" : pendingProfiles > 0 ? "running-profiles" : "complete";
+                    String nextIssue = "running-profiles".equals(next) ? "采集资料中" : null;
+                    db.execSQL("UPDATE tasks SET status=?,issue=?,updated=? WHERE id=?", new Object[]{next, nextIssue, System.currentTimeMillis(), id});
                     event(id, "root_eof:" + evidence);
                     if ("complete".equals(next)) advance();
                     out.putString("data", status(id).toString()); return out;
@@ -465,7 +558,10 @@ public final class CaptureProvider extends ContentProvider {
                 if (id != 0 && !input.optBoolean("enqueue")) throw new IllegalStateException("已有任务，请继续或加入队列");
                 ContentValues values = new ContentValues();
                 values.put("photo", photo); values.put("status", id != 0 || !scalar("SELECT data FROM settings WHERE name='platform_block'").isEmpty() ? "queued" : "running");
-                values.put("paging_driver", "auto".equals(input.optString("pagingMode", "auto")) ? "ui" : input.optString("pagingMode"));
+                String startPlat = input.optString("platform");
+                if (startPlat.isEmpty()) startPlat = photo.matches("[0-9a-fA-F]{24}") ? "xhs" : photo.matches("\\d{19}") ? "douyin" : "kuaishou";
+                String initialDriver = "auto".equals(input.optString("pagingMode", "auto")) ? ("douyin".equals(startPlat) ? "native-root" : "ui") : input.optString("pagingMode");
+                values.put("paging_driver", initialDriver);
                 values.put("auto", input.has("auto") ? (input.optBoolean("auto") ? 1 : 0) : extras != null && extras.containsKey("auto") ? (extras.getBoolean("auto") ? 1 : 0) : 1);
                 values.put("kind", kind); values.put("params", fingerprint); values.put("created", System.currentTimeMillis());
                 if (input.has("retryOf")) values.put("retry_of", input.getLong("retryOf"));
@@ -588,6 +684,16 @@ public final class CaptureProvider extends ContentProvider {
                     if (!row.optString("avatarUrl").isEmpty()) user.put("avatarUrl", row.optString("avatarUrl"));
                     if (!"unknown".equals(row.optString("gender", "unknown"))) user.put("gender", row.optString("gender"));
                     mergeRecord("users", userId, user);
+                    String secUid = row.optString("secUid");
+                    String userJson = scalar("SELECT data FROM users WHERE id=?", userId);
+                    boolean hasProfile = false;
+                    if (!userJson.isEmpty()) {
+                        try { hasProfile = new JSONObject(userJson).has("profileCapturedAt"); } catch (Throwable ignored) {}
+                    }
+                    if (!hasProfile) {
+                        db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
+                            new Object[]{id, userId, secUid, System.currentTimeMillis()});
+                    }
                 }
             }
             if (page.has("hasMore") && !page.isNull("hasMore") && !page.getBoolean("hasMore")) {
@@ -600,8 +706,13 @@ public final class CaptureProvider extends ContentProvider {
                 if (group.optBoolean("complete")) markGroup(id, group.getString("rootId"));
             }
             JSONObject after = status(id);
-            if (after.optBoolean("rootComplete")) db.execSQL("UPDATE tasks SET status=? WHERE id=?",
-                new Object[]{after.optInt("pendingReplies") == 0 ? "complete" : "running-replies", id});
+            if (after.optBoolean("rootComplete")) {
+                int pendingReplies = count("SELECT count(*) FROM comments c WHERE c.task=? AND c.root='' AND c.replies>0 AND NOT EXISTS (SELECT 1 FROM groups_eof g WHERE g.task=c.task AND g.root=c.id)", id);
+                int pendingProfiles = count("SELECT count(*) FROM profile_targets WHERE task=? AND status IN ('pending','running')", id);
+                String nextState = pendingReplies > 0 ? "running-replies" : pendingProfiles > 0 ? "running-profiles" : "complete";
+                String nextIssue = "running-profiles".equals(nextState) ? "采集资料中" : null;
+                db.execSQL("UPDATE tasks SET status=?,issue=? WHERE id=?", new Object[]{nextState, nextIssue, id});
+            }
             event(id, page.optBoolean("fromNativeCache") ? "cached_root_page_saved" : newPage ? "page_saved" : "page_refreshed");
             db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
@@ -642,10 +753,15 @@ public final class CaptureProvider extends ContentProvider {
         }
     }
     private void finishProfiles(long id) throws Exception {
-        if (count("SELECT count(*) FROM profile_targets WHERE task=? AND status='pending'", id) > 0) return;
+        if (id == 0) return;
+        if (count("SELECT count(*) FROM profile_targets WHERE task=? AND status IN ('pending','running')", id) > 0) return;
         boolean failed = count("SELECT count(*) FROM profile_targets WHERE task=? AND status='failed'", id) > 0;
-        db.execSQL("UPDATE tasks SET status=?,issue=?,updated=? WHERE id=?", new Object[]{failed ? "paused" : "complete", failed ? "profiles_incomplete" : null, System.currentTimeMillis(), id});
-        if (!failed) advance();
+        JSONObject task = status(id);
+        String st = task.optString("status");
+        if ("running-profiles".equals(st) || "profile".equals(task.optString("kind"))) {
+            db.execSQL("UPDATE tasks SET status=?,issue=?,updated=? WHERE id=?", new Object[]{failed ? "paused" : "complete", failed ? "profiles_incomplete" : null, System.currentTimeMillis(), id});
+            if (!failed) advance();
+        }
     }
     private void mergeRecord(String table, String id, JSONObject incoming) throws Exception {
         String previous = scalar("SELECT data FROM " + table + " WHERE id=?", id);
@@ -689,9 +805,19 @@ public final class CaptureProvider extends ContentProvider {
             where.append(" AND (coalesce(json_extract(c.data,'$.text'),'') LIKE ? ESCAPE '\\' OR coalesce(json_extract(c.data,'$.nickname'),'') LIKE ? ESCAPE '\\' OR json_extract(c.data,'$.userId')=?)");
             args.add("%" + like(search) + "%"); args.add("%" + like(search) + "%"); args.add(search);
         }
-        genderClause(where, args, "coalesce(json_extract(u.data,'$.gender'),'unknown')", query.optString("gender", "all"));
+        String gender = query.optString("gender", "all");
+        if (gender != null && !gender.isEmpty() && !"all".equals(gender)) {
+            List<String> gArgs = new ArrayList<>();
+            StringBuilder gSb = new StringBuilder();
+            genderClause(gSb, gArgs, "coalesce(json_extract(u.data,'$.gender'),'unknown')", gender);
+            if (gSb.length() > 0) {
+                where.append(" AND (").append(gSb.substring(5)).append(" OR json_extract(u.data,'$.profileCapturedAt') IS NULL)");
+                args.addAll(gArgs);
+            }
+        }
         for (String key : Arrays.asList("minAge", "maxAge")) if (query.has(key) && !query.isNull(key)) {
-            where.append(" AND CAST(json_extract(u.data,'$.age') AS INTEGER)").append("minAge".equals(key) ? ">=?" : "<=?"); args.add(String.valueOf(query.getInt(key)));
+            where.append(" AND (CAST(json_extract(u.data,'$.age') AS INTEGER)").append("minAge".equals(key) ? ">=?" : "<=?").append(" OR json_extract(u.data,'$.profileCapturedAt') IS NULL)");
+            args.add(String.valueOf(query.getInt(key)));
         }
         String order = switch (query.optString("sort", "captured_desc")) {
             case "created_asc" -> "CAST(json_extract(c.data,'$.created') AS INTEGER) ASC";
@@ -712,24 +838,45 @@ public final class CaptureProvider extends ContentProvider {
                     JSONObject row = new JSONObject(cursor.getString(0));
                     JSONObject user = cursor.isNull(1) ? new JSONObject() : new JSONObject(cursor.getString(1));
                     row.put("user", user);
+                    boolean profileCaptured = user.has("profileCapturedAt");
+                    row.put("profilePending", !profileCaptured);
+                    if (profileCaptured) {
+                        row.put("gender", user.optString("gender", "unknown"));
+                        row.put("profileIpRegion", user.optString("profileIpRegion", ""));
+                    } else {
+                        row.put("gender", "pending");
+                        row.put("profileIpRegion", "");
+                    }
                     if (row.optString("avatarUrl").isEmpty() && !user.optString("avatarUrl").isEmpty()) row.put("avatarUrl", user.optString("avatarUrl"));
+                    if (row.optString("nickname").isEmpty() && !user.optString("nickname").isEmpty()) row.put("nickname", user.optString("nickname"));
                     sink.accept(row); read++;
                 }
             }
             return new JSONObject().put("read", read).put("more", more);
         }
         int total = Integer.parseInt(scalar("SELECT count(*)" + from, args.toArray(new String[0])));
+        int pending = Integer.parseInt(scalar("SELECT count(*)" + from + " AND json_extract(u.data,'$.profileCapturedAt') IS NULL", args.toArray(new String[0])));
         JSONArray items = new JSONArray();
         try (Cursor cursor = db.rawQuery("SELECT c.data,c.task,u.data" + from + " ORDER BY " + order + ",c.id LIMIT " + limit + " OFFSET " + offset, args.toArray(new String[0]))) {
             while (cursor.moveToNext()) {
                 JSONObject row = new JSONObject(cursor.getString(0)).put("taskId", cursor.getLong(1));
                 JSONObject user = cursor.isNull(2) ? new JSONObject() : new JSONObject(cursor.getString(2));
                 row.put("user", user);
+                boolean profileCaptured = user.has("profileCapturedAt");
+                row.put("profilePending", !profileCaptured);
+                if (profileCaptured) {
+                    row.put("gender", user.optString("gender", "unknown"));
+                    row.put("profileIpRegion", user.optString("profileIpRegion", ""));
+                } else {
+                    row.put("gender", "pending");
+                    row.put("profileIpRegion", "");
+                }
                 if (row.optString("avatarUrl").isEmpty() && !user.optString("avatarUrl").isEmpty()) row.put("avatarUrl", user.optString("avatarUrl"));
+                if (row.optString("nickname").isEmpty() && !user.optString("nickname").isEmpty()) row.put("nickname", user.optString("nickname"));
                 items.put(row);
             }
         }
-        return new JSONObject().put("items", items).put("total", total).put("limit", limit).put("offset", offset);
+        return new JSONObject().put("items", items).put("total", total).put("matched", total - pending).put("pending", pending).put("limit", limit).put("offset", offset);
     }
     /** Splits "a, b；c" style input into terms. */
     private static List<String> terms(String value) {
@@ -834,9 +981,17 @@ public final class CaptureProvider extends ContentProvider {
         return new JSONObject().put("schemaVersion", 1).put("platform", "kuaishou").put("posts", posts)
             .put("comments", comments).put("users", users).put("analysisScopes", new JSONArray());
     }
-    private void markGroup(long id, String root) {
+    private void markGroup(long id, String root) throws Exception {
         ContentValues values = new ContentValues(); values.put("task", id); values.put("root", root);
         db.insertWithOnConflict("groups_eof", null, values, SQLiteDatabase.CONFLICT_IGNORE);
+        int pendingReplies = count("SELECT count(*) FROM comments c WHERE c.task=? AND c.root='' AND c.replies>0 AND NOT EXISTS (SELECT 1 FROM groups_eof g WHERE g.task=c.task AND g.root=c.id)", id);
+        if (pendingReplies == 0) {
+            int pendingProfiles = count("SELECT count(*) FROM profile_targets WHERE task=? AND status IN ('pending','running')", id);
+            String nextState = pendingProfiles > 0 ? "running-profiles" : "complete";
+            String nextIssue = "running-profiles".equals(nextState) ? "采集资料中" : null;
+            db.execSQL("UPDATE tasks SET status=?,issue=?,updated=? WHERE id=? AND status='running-replies'", new Object[]{nextState, nextIssue, System.currentTimeMillis(), id});
+            if ("complete".equals(nextState)) advance();
+        }
     }
     private void writeStatus(JSONObject status) throws Exception {
         AtomicFile file = new AtomicFile(new File(getContext().getFilesDir(), "status.json"));

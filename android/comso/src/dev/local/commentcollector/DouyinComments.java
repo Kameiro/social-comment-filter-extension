@@ -66,16 +66,12 @@ final class DouyinComments {
                 if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) { lastPageAt = System.currentTimeMillis(); main.postDelayed(this::tick, 800); return; }
                 idleTicks = System.currentTimeMillis() - lastPageAt > 1500 ? idleTicks + 1 : 0;
                 if (idleTicks > 8) { stopPaging("no_new_page"); return; }
-                if (nativeMode && DouyinNativePager.ready() && nextCursor >= 0) {
-                    long cursor = nextCursor; nextCursor = -1;
-                    new Thread(() -> { Object result = DouyinNativePager.fetch(cursor, DouyinNativePager.post()); if (result != null) observe(result, DouyinNativePager.post()); }, "douyin-native-page").start();
-                } else {
-                    // The native request may be installed before its first cursor is captured,
-                    // or a replay may fail transiently. Keep the task moving through Douyin's
-                    // visible comment list instead of waiting forever for a cursor that is not there.
-                    scrollComments();
+                if (nativeMode && DouyinNativePager.ready()) {
+                    stopPaging("handled_by_native_driver");
+                    return;
                 }
-                main.postDelayed(this::tick, nativeMode ? 1500 : 1100);
+                scrollComments();
+                main.postDelayed(this::tick, 1100);
             });
         }, "douyin-auto-page").start();
     }
@@ -187,7 +183,7 @@ final class DouyinComments {
     private static void append(JSONArray rows, Object comment, String post, String root) throws Exception {
         String id = ModelReader.text(comment, "cid");
         if (id.isEmpty()) return;
-        Object user = ModelReader.get(comment, "commentUser");
+        Object user = findUser(comment);
         if (!root.isEmpty() && id.equals(root)) return;
         JSONObject row = new JSONObject().put("platform", "douyin").put("commentId", id).put("photoId", post).put("postId", post)
             .put("rootId", root).put("level", root.isEmpty() ? 1 : 2);
@@ -195,7 +191,7 @@ final class DouyinComments {
         put(row, "userId", ModelReader.text(user, "uid"));
         put(row, "secUid", ModelReader.text(user, "secUid", "sec_uid"));
         put(row, "nickname", ModelReader.text(user, "nickname"));
-        put(row, "avatarUrl", firstUrl(user, "avatarThumb", "avatarMedium", "avatarLarger", "avatarUrl"));
+        put(row, "avatarUrl", firstUrl(user, "avatarThumb", "avatarMedium", "avatarLarger", "avatar168x168", "avatar300x300", "avatarUrl"));
         Object created = ModelReader.get(comment, "createTime");
         if (created instanceof Number) row.put("created", ((Number) created).longValue());
         Object likes = ModelReader.get(comment, "diggCount");
@@ -204,10 +200,50 @@ final class DouyinComments {
         if (replies instanceof Number) row.put("replies", ((Number) replies).longValue());
         String ip = ModelReader.text(comment, "ipLabel").replaceFirst("^\\s*IP\\s*属地\\s*[:：]?\\s*", "").trim();
         put(row, "ipRegion", ip);
-        row.put("ipRegionSource", "douyin_android.ipLabel").put("gender", "unknown").put("capturedAt", System.currentTimeMillis());
+        row.put("ipRegionSource", "douyin_android.ipLabel");
+        Object g = user == null ? null : ModelReader.get(user, "gender");
+        String gender = "unknown";
+        if (g instanceof Number) {
+            int gv = ((Number) g).intValue();
+            gender = gv == 1 ? "male" : gv == 2 ? "female" : "unknown";
+        } else if (g != null) {
+            String gs = String.valueOf(g).trim();
+            gender = "1".equals(gs) ? "male" : "2".equals(gs) ? "female" : "unknown";
+        }
+        row.put("gender", gender);
+        row.put("capturedAt", System.currentTimeMillis());
         rows.put(row);
         Object sub = ModelReader.get(comment, "replyComments");
         if (root.isEmpty() && sub instanceof List<?>) for (Object reply : (List<?>) sub) append(rows, reply, post, id);
+    }
+
+    static Object findUser(Object comment) {
+        if (comment == null) return null;
+        try {
+            java.lang.reflect.Method m = comment.getClass().getMethod("LLLLZ");
+            Object u = m.invoke(comment);
+            if (u != null) return u;
+        } catch (Throwable ignored) {}
+        try {
+            java.lang.reflect.Method m = comment.getClass().getMethod("getUser");
+            Object u = m.invoke(comment);
+            if (u != null) return u;
+        } catch (Throwable ignored) {}
+        Object user = ModelReader.get(comment, "user", "commentUser", "mUser", "author", "creator");
+        if (user != null) return user;
+        for (Class<?> c = comment.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                if (f.getType().getName().contains("User") || f.getName().toLowerCase(java.util.Locale.ROOT).contains("user")) {
+                    try {
+                        f.setAccessible(true);
+                        Object val = f.get(comment);
+                        if (val != null) return val;
+                    } catch (Throwable ignored) {}
+                }
+            }
+        }
+        return null;
     }
 
     private static void put(JSONObject row, String key, String value) throws Exception { if (value != null && !value.isEmpty()) row.put(key, value); }
@@ -242,27 +278,67 @@ final class DouyinComments {
         try { task = CollectorClient.call(context, "status", new JSONObject()); } catch (Throwable ignored) { return 3000; }
         String plat = task.optString("platform");
         if ((!plat.isEmpty() && !"douyin".equals(plat)) || task.optString("photoId").matches("[0-9a-fA-F]{24}")) return 3000;
-        if ("comment".equals(task.optString("kind")) && task.optString("status").startsWith("running")) maybeOpenPost(task);
-        if (!"comment".equals(task.optString("kind")) || !"running-replies".equals(task.optString("status"))) return 3000;
+        String kind = task.optString("kind");
+        String status = task.optString("status");
+        if (!"comment".equals(kind) || !status.startsWith("running")) return 3000;
         String photo = task.optString("photoId");
-        if (!DouyinNativePager.ready() || !photo.equals(DouyinNativePager.post())) {
-            if (System.currentTimeMillis() - lastReplyNote > 30000) { lastReplyNote = System.currentTimeMillis(); Log.i(TAG, "douyin_reply_waiting open_comments_of=" + photo + " ready=" + DouyinNativePager.ready()); }
-            return 3000;
-        }
-        if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) return 1000;
+        if (photo.isEmpty()) return 3000;
         long taskId = task.optLong("taskId"), generation = task.optLong("generation");
-        JSONObject listing = CollectorClient.call(context, "pending_reply_ids", new JSONObject().put("taskId", taskId).put("generation", generation));
-        JSONArray ids = listing.optJSONArray("items");
-        String root = null;
-        for (int i = 0; ids != null && i < ids.length(); i++) {
-            if (!replySkipped.contains(taskId + ":" + generation + ":" + ids.getString(i))) { root = ids.getString(i); break; }
+        JSONObject params = task.optJSONObject("params");
+        boolean isNative = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto")) && DouyinNativePager.ready();
+
+        if (isNative) {
+            if ("running".equals(status)) {
+                try {
+                    JSONObject pd = new JSONObject().put("taskId", taskId).put("driver", "native-root");
+                    CollectorClient.call(context, "paging_driver", pd);
+                } catch (Throwable ignored) {}
+                String key = taskId + ":" + generation + ":" + photo;
+                long cursor = furthest.getOrDefault(key, 0L);
+                Object result = DouyinNativePager.fetch(cursor, photo);
+                if (result != null) {
+                    observe(result, photo);
+                    Object more = ModelReader.get(result, "hasMore");
+                    boolean hasMore = Boolean.TRUE.equals(more);
+                    if (!hasMore) {
+                        JSONObject eof = new JSONObject().put("taskId", taskId).put("generation", generation)
+                            .put("stream", "root").put("evidence", "native_response_has_more_false");
+                        try { CollectorClient.call(context, "native_eof", eof); } catch (Throwable ignored) {}
+                    }
+                }
+                return 400;
+            } else if ("running-replies".equals(status)) {
+                try {
+                    JSONObject pd = new JSONObject().put("taskId", taskId).put("driver", "native-replies");
+                    CollectorClient.call(context, "paging_driver", pd);
+                } catch (Throwable ignored) {}
+                JSONObject listing = CollectorClient.call(context, "pending_reply_ids", new JSONObject().put("taskId", taskId).put("generation", generation));
+                JSONArray ids = listing.optJSONArray("items");
+                String root = null;
+                for (int i = 0; ids != null && i < ids.length(); i++) {
+                    if (!replySkipped.contains(taskId + ":" + generation + ":" + ids.getString(i))) { root = ids.getString(i); break; }
+                }
+                if (root == null) return 2000;
+                if (!fetchReplyGroup(root, photo, taskId, generation)) replySkipped.add(taskId + ":" + generation + ":" + root);
+                return 350;
+            }
+        } else {
+            if (status.startsWith("running")) maybeOpenPost(task);
+            if (!"running-replies".equals(status)) return 3000;
+            if (!DouyinNativePager.ready() || !photo.equals(DouyinNativePager.post())) return 3000;
+            if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) return 1000;
+            long tid = task.optLong("taskId"), gen = task.optLong("generation");
+            JSONObject listing = CollectorClient.call(context, "pending_reply_ids", new JSONObject().put("taskId", tid).put("generation", gen));
+            JSONArray ids = listing.optJSONArray("items");
+            String root = null;
+            for (int i = 0; ids != null && i < ids.length(); i++) {
+                if (!replySkipped.contains(tid + ":" + gen + ":" + ids.getString(i))) { root = ids.getString(i); break; }
+            }
+            if (root == null) return 5000;
+            if (!fetchReplyGroup(root, photo, tid, gen)) replySkipped.add(tid + ":" + gen + ":" + root);
+            return 500;
         }
-        if (root == null) {
-            if (System.currentTimeMillis() - lastReplyNote > 30000) { lastReplyNote = System.currentTimeMillis(); Log.i(TAG, "douyin_reply_unfinished skipped=" + replySkipped.size()); }
-            return 5000;
-        }
-        if (!fetchReplyGroup(root, photo, taskId, generation)) replySkipped.add(taskId + ":" + generation + ":" + root);
-        return 500;
+        return 3000;
     }
 
 
@@ -329,11 +405,10 @@ final class DouyinComments {
     private boolean fetchReplyGroup(String root, String photo, long taskId, long generation) throws Exception {
         long cursor = 0;
         for (int pageNumber = 0; pageNumber < 300; pageNumber++) {
-            while (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) { try { Thread.sleep(800); } catch (InterruptedException e) { return false; } }
             Object result = null;
             for (int attempt = 0; attempt < 3 && result == null; attempt++) {
                 result = DouyinNativePager.fetchReplies(root, cursor, photo);
-                if (result == null) { try { Thread.sleep(1500); } catch (InterruptedException e) { return false; } }
+                if (result == null) { try { Thread.sleep(600); } catch (InterruptedException e) { return false; } }
             }
             if (result == null) { Log.w(TAG, "douyin_reply_group_failed root=" + root); return false; }
             JSONObject page = page(result, photo, root);
@@ -350,7 +425,7 @@ final class DouyinComments {
             long next = cursor;
             try { next = Long.parseLong(page.optString("cursor")); } catch (NumberFormatException ignored) {}
             cursor = next > cursor ? next : cursor + 20;
-            try { Thread.sleep(700); } catch (InterruptedException e) { return false; }
+            try { Thread.sleep(350); } catch (InterruptedException e) { return false; }
         }
         return true;
     }

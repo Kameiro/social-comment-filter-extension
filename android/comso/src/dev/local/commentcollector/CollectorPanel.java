@@ -1,6 +1,7 @@
 package dev.local.commentcollector;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Dialog;
 import android.app.UiModeManager;
 import android.content.ClipData;
@@ -858,7 +859,10 @@ public final class CollectorPanel {
         String title = task.optString("postTitle").replace('\n', ' ').trim();
         if (title.length() > 14) title = title.substring(0, 14) + "…";
         String prefix = title.isEmpty() ? "" : title + " · ";
-        return prefix + "已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（帖子显示共 " + task.optLong("total") + " 条）") + (issue.isEmpty() ? "" : " · " + issue(issue));
+        String profSummary = "";
+        int profTotal = task.optInt("profilesTotal");
+        if (profTotal > 0) profSummary = " · 资料 " + task.optInt("profilesDone") + "/" + profTotal;
+        return prefix + "已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（帖子显示共 " + task.optLong("total") + " 条）") + profSummary + (issue.isEmpty() ? "" : " · " + issue(issue));
     }
 
     private void taskCard(LinearLayout parent, JSONObject task, boolean live) throws Exception {
@@ -866,7 +870,7 @@ public final class CollectorPanel {
         String kind = task.optString("kind"), state = task.optString("status");
         LinearLayout line = horizontal();
         line.addView(text("#" + task.optLong("taskId") + " " + kindName(kind), 15, true), new LinearLayout.LayoutParams(0, -2, 1));
-        boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native-");
+        boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native");
         TextView badge = text(waitingForPage ? "等待返回应用" : state(state), 12, true);
         boolean bad = "paused".equals(state) || "stopped".equals(state) || "failed".equals(state), good = "complete".equals(state);
         badge.setTextColor(bad ? sc.onErrorContainer : good ? sc.onPrimaryContainer : sc.onSecondaryContainer); badge.setPadding(dp(10), dp(3), dp(10), dp(3));
@@ -886,7 +890,7 @@ public final class CollectorPanel {
             + (task.optBoolean("rootComplete") ? "已滑到底部" : "尚未滑到底部");
     }
     private String driverLine(JSONObject task) {
-        return "采集方式：" + (task.optString("pagingDriver").startsWith("native-") ? "接口直连加载" : "自动滑动页面");
+        return "采集方式：" + (task.optString("pagingDriver").startsWith("native") ? "接口直连加载" : "自动滑动页面");
     }
     private static void setIfChanged(TextView view, String value) { if (!value.contentEquals(view.getText())) view.setText(value); }
     /** Task JSON with every number removed except ids, so only real state changes (status, buttons, issues) count as structural. */
@@ -907,7 +911,7 @@ public final class CollectorPanel {
 
     private void taskDetails(LinearLayout card, JSONObject task, boolean live) throws Exception {
         long id = task.getLong("taskId"); String state = task.optString("status"), kind = task.optString("kind");
-        boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native-");
+        boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native");
         long total = "profile".equals(kind) ? task.optLong("profilesTotal") : "discovery".equals(kind) ? task.getJSONObject("params").optLong("target", 20) : task.optLong("total");
         long read = "profile".equals(kind) ? task.optLong("profilesDone") : "discovery".equals(kind) ? task.optLong("discoveredPosts") : task.optLong("comments");
         if ("profile".equals(kind)) card.addView(text("成功 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位 · 失败 " + task.optInt("profilesFailed") + " 位", 13, false));
@@ -925,6 +929,9 @@ public final class CollectorPanel {
         if ("comment".equals(kind)) {
             repliesView = muted(repliesLine(task), 12); card.addView(repliesView);
             driverView = muted(driverLine(task), 12); card.addView(driverView);
+            if (task.optInt("profilesTotal") > 0) {
+                card.addView(muted("资料采集：已完成 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位" + (task.optInt("profilesFailed") > 0 ? " · 失败 " + task.optInt("profilesFailed") : ""), 12));
+            }
             JSONObject params = task.optJSONObject("params");
             if (params != null) { String conditions = describe(params, true); if (!conditions.isEmpty()) card.addView(muted("筛选条件：" + conditions, 12)); }
         }
@@ -1084,9 +1091,30 @@ public final class CollectorPanel {
 
     private void countLine(String label, JSONObject data) {
         String unit = label.startsWith("用户") ? " 位" : " 条";
-        TextView count = text(label + " · " + data.optInt("total") + unit, 13, true);
-        count.setPadding(dp(16), dp(8), dp(16), dp(6)); count.setTextColor(secondary);
-        (dataContent != null ? dataContent : body).addView(count);
+        String extra = "";
+        if (data.has("pending") && data.optInt("pending") > 0) {
+            extra = "（命中 " + data.optInt("matched") + " · 待判定 " + data.optInt("pending") + "）";
+        }
+        LinearLayout row = horizontal();
+        row.setPadding(dp(16), dp(8), dp(16), dp(6));
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView count = text(label + " · " + data.optInt("total") + unit + extra, 13, true);
+        count.setTextColor(secondary);
+        row.addView(count, new LinearLayout.LayoutParams(0, -2, 1));
+        if (taskFilter > 0 && dataKind == DATA_COMMENTS) {
+            TextView backfill = linkText("补采本任务资料", () -> backfillTaskProfiles(taskFilter));
+            row.addView(backfill);
+        }
+        (dataContent != null ? dataContent : body).addView(row);
+    }
+
+    private void backfillTaskProfiles(long taskId) {
+        try {
+            JSONObject res = api("profile_queue_add", new JSONObject().put("taskId", taskId).put("backfillTask", true));
+            int added = res.optInt("added");
+            Toast.makeText(activity, added > 0 ? "已将 " + added + " 位待采集用户加入队列" : "该任务所有用户资料已采集", Toast.LENGTH_SHORT).show();
+            render();
+        } catch (Exception error) { error(error); }
     }
 
     private void comments() throws Exception {
@@ -1103,32 +1131,151 @@ public final class CollectorPanel {
         for (int i = 0; i < items.length(); i++) {
             LinearLayout card = card(page);
             JSONObject row = items.getJSONObject(i), user = row.optJSONObject("user");
-            String name = row.optString("nickname", row.optString("userId"));
+            String uid = row.optString("userId");
+            String name = row.optString("nickname");
+            if (name.isEmpty() && user != null) name = user.optString("nickname");
+            if (name.isEmpty()) name = uid;
+            if (name.isEmpty() || "null".equals(name)) name = "未知用户";
             boolean reply = row.optInt("level") == 2;
             if (reply) card.setPadding(dp(30), dp(14), dp(16), dp(14));
             LinearLayout line = horizontal();
+            line.setGravity(Gravity.CENTER_VERTICAL);
+
+            FrameLayout avatarBox = new FrameLayout(uiContext);
             ImageView avatar = thumbnail(row, "avatarUrl", "userAvatarUrl");
-            Runnable openUser = () -> userDetail(row.optString("userId"), name);
-            avatar.setOnClickListener(view -> openUser.run());
-            line.addView(avatar, new LinearLayout.LayoutParams(dp(36), dp(36)));
+            FrameLayout.LayoutParams avParams = new FrameLayout.LayoutParams(dp(36), dp(36));
+            avParams.gravity = Gravity.CENTER;
+            avatarBox.addView(avatar, avParams);
+            final String finalUid = uid, finalName = name;
+            final JSONObject finalRow = row, finalUser = user;
+            Runnable openUser = () -> {
+                if (finalUid.isEmpty() || "null".equals(finalUid)) {
+                    Toast.makeText(activity, "该评论未记录用户信息，请更新抓取", Toast.LENGTH_SHORT).show();
+                } else {
+                    userDetail(finalUid, finalName);
+                }
+            };
+            Motion.press(avatarBox);
+            avatarBox.setOnClickListener(view -> openUser.run());
+            line.addView(avatarBox, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
             LinearLayout authorBox = vertical();
-            authorBox.setPadding(dp(10), 0, 0, 0);
-            TextView author = text(name, 15, true); author.setOnClickListener(view -> userDetail(row.optString("userId"), name));
-            authorBox.addView(author);
-            String g = user == null ? "unknown" : user.optString("gender", "unknown");
-            if (!"unknown".equals(g)) { TextView tag = text(gender(g), 11, true); tag.setPadding(dp(6), dp(1), dp(6), dp(1)); tag.setBackground(round(surfaceVariant, 8)); authorBox.addView(tag); }
+            authorBox.setPadding(dp(8), 0, 0, 0);
+            LinearLayout authorLine = horizontal();
+            authorLine.setGravity(Gravity.CENTER_VERTICAL);
+            TextView author = text(name, 15, true);
+            Motion.press(author);
+            author.setOnClickListener(view -> openUser.run());
+            authorLine.addView(author);
+
+            boolean pending = row.optBoolean("profilePending");
+            TextView genderBadge;
+            if (pending) {
+                genderBadge = text("待采集", 11, true);
+                genderBadge.setTextColor(secondary);
+                genderBadge.setBackground(round(surfaceVariant, 8));
+            } else {
+                String g = row.optString("gender", user == null ? "unknown" : user.optString("gender", "unknown"));
+                String gText = "male".equals(g) ? "男" : "female".equals(g) ? "女" : "未知";
+                genderBadge = text(gText, 11, true);
+                genderBadge.setTextColor("male".equals(g) ? primary : "female".equals(g) ? errorColor : secondary);
+                genderBadge.setBackground(round(surfaceVariant, 8));
+            }
+            genderBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+            LinearLayout.LayoutParams gbParams = new LinearLayout.LayoutParams(-2, -2);
+            gbParams.leftMargin = dp(8);
+            authorLine.addView(genderBadge, gbParams);
+            authorBox.addView(authorLine);
             line.addView(authorBox, new LinearLayout.LayoutParams(0, -2, 1));
             card.addView(line);
-            String region = row.optString("ipRegion"); if (region.isEmpty() || "null".equals(region)) region = "未知";
-            card.addView(muted((reply ? "↳ 回复" : "评论") + " · IP " + region + " · " + date(row.optLong("created")), 12));
-            TextView content = text(row.optString("text"), 15, false); content.setTextIsSelectable(true); content.setPadding(0, dp(6), 0, dp(6)); card.addView(content);
+
+            String commentIp = row.optString("ipRegion");
+            if (commentIp.isEmpty() || "null".equals(commentIp)) commentIp = "未知";
+            String profileIp = user != null ? user.optString("profileIpRegion") : "";
+            if (profileIp.isEmpty()) profileIp = row.optString("profileIpRegion");
+            String mainIp = pending ? "待采集" : profileIp.isEmpty() || "null".equals(profileIp) ? "未知" : profileIp;
+            card.addView(muted((reply ? "↳ 回复" : "评论") + " · 评论 IP " + commentIp + " · 主页 IP " + mainIp + " · " + date(row.optLong("created")), 12));
+
+            String commentText = row.optString("text");
+            TextView content = text(commentText, 15, false);
+            content.setPadding(0, dp(6), 0, dp(6));
+            content.setOnLongClickListener(v -> {
+                ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("评论内容", commentText));
+                Toast.makeText(activity, "已复制评论内容", Toast.LENGTH_SHORT).show();
+                return true;
+            });
+            card.addView(content);
+
+            Motion.press(card);
+            card.setOnClickListener(v -> showCommentDetails(finalRow, finalUser, finalName));
+
             LinearLayout foot = horizontal();
             foot.addView(muted("赞 " + number(row, "likes") + " · 回复 " + number(row, "replies"), 12), new LinearLayout.LayoutParams(0, -2, 1));
-            foot.addView(linkText("帖子", () -> openPost(row.optString("photoId"))));
-            foot.addView(linkText("TA 的评论", () -> { userFilter = row.optString("userId"); userFilterName = name; offset = 0; render(); }));
+            foot.addView(linkText("帖子", () -> openPost(finalRow.optString("photoId"))));
+            foot.addView(linkText("TA 的评论", () -> { userFilter = finalUid; userFilterName = finalName; offset = 0; render(); }));
             card.addView(foot);
         }
         pageControls(data);
+    }
+
+    private void showCommentDetails(JSONObject row, JSONObject user, String name) {
+        String uid = row.optString("userId");
+        String text = row.optString("text");
+        String photoId = row.optString("photoId");
+        String cid = row.optString("commentId");
+        long taskId = row.optLong("taskId", taskFilter);
+        boolean pending = row.optBoolean("profilePending");
+        String commentIp = row.optString("ipRegion");
+        if (commentIp.isEmpty() || "null".equals(commentIp)) commentIp = "未知";
+        String profileIp = user != null ? user.optString("profileIpRegion") : "";
+        if (profileIp.isEmpty()) profileIp = row.optString("profileIpRegion");
+        String mainIp = pending ? "待采集" : profileIp.isEmpty() || "null".equals(profileIp) ? "未知" : profileIp;
+        String g = row.optString("gender", user == null ? "unknown" : user.optString("gender", "unknown"));
+        String gText = pending ? "待采集" : "male".equals(g) ? "男" : "female".equals(g) ? "女" : "未知";
+
+        LinearLayout box = vertical();
+        box.setPadding(dp(20), dp(10), dp(20), dp(10));
+
+        TextView textMsg = new TextView(uiContext);
+        textMsg.setText(text);
+        textMsg.setTextSize(16);
+        textMsg.setTextColor(sc.onSurface);
+        textMsg.setTextIsSelectable(true);
+        textMsg.setPadding(0, 0, 0, dp(12));
+        box.addView(textMsg);
+
+        LinearLayout info = vertical();
+        info.setBackground(round(surfaceVariant, 10));
+        info.setPadding(dp(12), dp(10), dp(12), dp(10));
+        info.addView(text("用户: " + name + (uid.isEmpty() ? "" : " (" + uid + ")"), 13, true));
+        info.addView(muted("性别: " + gText + " · 评论 IP: " + commentIp + " · 主页 IP: " + mainIp, 12));
+        info.addView(muted("时间: " + date(row.optLong("created")) + " · 赞: " + number(row, "likes") + " · 回复: " + number(row, "replies"), 12));
+        if (!cid.isEmpty()) info.addView(muted("评论 ID: " + cid, 11));
+        box.addView(info);
+
+        ScrollView scroll = new ScrollView(activity);
+        scroll.addView(box);
+
+        AlertDialog.Builder builder = alert().setTitle("评论详情").setView(scroll)
+            .setNeutralButton("复制评论", (d, w) -> {
+                ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("评论内容", text));
+                Toast.makeText(activity, "已复制评论", Toast.LENGTH_SHORT).show();
+            })
+            .setNegativeButton("关闭", null);
+
+        if (!uid.isEmpty() && !"null".equals(uid)) {
+            builder.setPositiveButton("立即采集资料", (d, w) -> {
+                try {
+                    api("profile_queue_add", new JSONObject().put("taskId", taskId).put("prioritizeUser", uid).put("secUid", row.optString("secUid")));
+                    Toast.makeText(activity, "已加入优先资料采集", Toast.LENGTH_SHORT).show();
+                    render();
+                } catch (Exception err) { error(err); }
+            });
+        }
+        AlertDialog dialog = builder.create();
+        dialog.show();
     }
 
     private void posts() throws Exception {
@@ -1457,8 +1604,14 @@ public final class CollectorPanel {
         try {
             JSONObject params = new JSONObject(filters.toString()).put("photoId", id).put("kind", "comment").put("auto", true).put("enqueue", enqueue).put("platform", hostPlatform());
             JSONObject result = api("start", params);
-            Toast.makeText(activity, result.optBoolean("duplicate") ? "该帖子已有任务 #" + result.optLong("taskId") : "已开始采集，返回" + hostName() + "继续", Toast.LENGTH_SHORT).show();
-            closePanel.run();
+            boolean isNative = "douyin".equals(hostPlatform()) || result.optString("pagingDriver").startsWith("native");
+            if (isNative) {
+                Toast.makeText(activity, result.optBoolean("duplicate") ? "该帖子已有任务 #" + result.optLong("taskId") : "已开始原生接口采集", Toast.LENGTH_SHORT).show();
+                render();
+            } else {
+                Toast.makeText(activity, result.optBoolean("duplicate") ? "该帖子已有任务 #" + result.optLong("taskId") : "已开始采集，返回" + hostName() + "继续", Toast.LENGTH_SHORT).show();
+                closePanel.run();
+            }
         } catch (Exception error) { error(error); }
     }
 
@@ -1509,7 +1662,23 @@ public final class CollectorPanel {
 
     private void profileTask(JSONArray users) {
         if (users.length() == 0) { error(new IllegalStateException("请先选择用户")); return; }
-        try { api("start", new JSONObject().put("kind", "profile").put("userIds", users).put("auto", true).put("enqueue", true).put("platform", hostPlatform())); closePanel.run(); }
+        try {
+            if (taskFilter > 0) {
+                JSONObject res = api("profile_queue_add", new JSONObject().put("taskId", taskFilter).put("userIds", users));
+                int added = res.optInt("added");
+                Toast.makeText(activity, "已加入资料采集队列（" + added + " 位）", Toast.LENGTH_SHORT).show();
+                render();
+                return;
+            }
+            api("start", new JSONObject().put("kind", "profile").put("userIds", users).put("auto", true).put("enqueue", true).put("platform", hostPlatform()));
+            boolean isNative = "douyin".equals(hostPlatform());
+            if (isNative) {
+                Toast.makeText(activity, "已开始资料采集", Toast.LENGTH_SHORT).show();
+                render();
+            } else {
+                closePanel.run();
+            }
+        }
         catch (Exception error) { error(error); }
     }
 
@@ -1543,13 +1712,18 @@ public final class CollectorPanel {
             }
             if (("resume".equals(operation) || "retry".equals(operation) || "refresh_task".equals(operation)) && showing()) {
                 if ("refresh_task".equals(operation)) Toast.makeText(activity, "已开始更新抓取", Toast.LENGTH_SHORT).show();
-                String targetPhoto = updated.optString("photoId");
-                String currentPhoto = photo.get();
-                if (currentPhoto == null) currentPhoto = "";
-                if ("comment".equals(updated.optString("kind")) && !targetPhoto.isEmpty() && !targetPhoto.equals(currentPhoto)) {
-                    openPost(targetPhoto);
+                boolean isNative = "douyin".equals(hostPlatform()) || updated.optString("pagingDriver").startsWith("native");
+                if (isNative) {
+                    render();
                 } else {
-                    open.get().dismiss();
+                    String targetPhoto = updated.optString("photoId");
+                    String currentPhoto = photo.get();
+                    if (currentPhoto == null) currentPhoto = "";
+                    if ("comment".equals(updated.optString("kind")) && !targetPhoto.isEmpty() && !targetPhoto.equals(currentPhoto)) {
+                        openPost(targetPhoto);
+                    } else {
+                        open.get().dismiss();
+                    }
                 }
             } else render();
         } catch (Exception error) { error(error); }

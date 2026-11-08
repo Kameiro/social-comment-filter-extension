@@ -159,6 +159,8 @@ final class DouyinProfiles {
     }
 
     private String text(Object target, String name) {
+        String val = ModelReader.text(target, name);
+        if (!val.isEmpty()) return val;
         try {
             Field f = target.getClass().getField(name);
             Object value = f.get(target);
@@ -181,7 +183,7 @@ final class DouyinProfiles {
         new Thread(() -> {
             try {
                 JSONObject task = CollectorClient.call(context, "status", new JSONObject());
-                if (!"profile".equals(task.optString("kind")) || !task.optString("status").startsWith("running")) return;
+                if (!task.optString("status").startsWith("running")) return;
                 JSONObject profile = profile(user, uid, region);
                 JSONObject data = new JSONObject().put("taskId", task.optLong("taskId")).put("generation", task.optLong("generation")).put("user", profile);
                 writer.execute(() -> { try { CollectorClient.call(context, "record_profile", data); } catch (Exception error) { Log.w(TAG, "douyin_profile_storage_failed"); } });
@@ -194,7 +196,9 @@ final class DouyinProfiles {
     }
 
     private JSONObject profile(Object user, String uid, String region) throws Exception {
-        String gender = switch (text(user, "gender")) { case "1" -> "male"; case "2" -> "female"; default -> "unknown"; };
+        Object gObj = ModelReader.get(user, "gender");
+        String gStr = gObj == null ? text(user, "gender") : String.valueOf(gObj).trim();
+        String gender = switch (gStr) { case "1" -> "male"; case "2" -> "female"; default -> "unknown"; };
         JSONObject out = new JSONObject().put("platform", "douyin").put("userId", uid).put("gender", gender)
             .put("profileCapturedAt", System.currentTimeMillis()).put("profileSource", "douyin_android.User").put("profileIpRegion", region);
         put(out, "nickname", text(user, "nickname"));
@@ -236,6 +240,7 @@ final class DouyinProfiles {
 
     private void tick() {
         new Thread(() -> {
+            long delay = 3000;
             try {
                 JSONObject task = CollectorClient.call(context, "status", new JSONObject());
                 String plat = task.optString("platform");
@@ -243,19 +248,59 @@ final class DouyinProfiles {
                     main.postDelayed(this::tick, 3000);
                     return;
                 }
-                if ("profile".equals(task.optString("kind")) && task.optString("status").startsWith("running")) {
-                    Activity host = activity.get();
-                    if (host != null && !host.isFinishing()) drive(task.optLong("taskId"), host);
+                String kind = task.optString("kind");
+                String status = task.optString("status");
+                boolean running = status.startsWith("running");
+                if (("comment".equals(kind) || "profile".equals(kind)) && running) {
+                    long taskId = task.optLong("taskId");
+                    JSONObject next = CollectorClient.call(context, "profile_queue_next", new JSONObject().put("taskId", taskId));
+                    if (!next.optBoolean("empty")) {
+                        String uid = next.optString("userId");
+                        String secUid = next.optString("secUid");
+                        if (DouyinNativePager.profileReady()) {
+                            Object resp = DouyinNativePager.fetchProfile(uid, secUid);
+                            if (resp != null) {
+                                String verify = ModelReader.text(resp, "secondVerifyType");
+                                if (!verify.isEmpty()) {
+                                    Log.w(TAG, "douyin_profile_verify_triggered uid=" + uid);
+                                    CollectorClient.call(context, "pause", new JSONObject().put("taskId", taskId).put("code", "platform_block"));
+                                    main.postDelayed(this::tick, 10000);
+                                    return;
+                                }
+                                Object u = ModelReader.get(resp, "user");
+                                if (u != null) {
+                                    String ip = ModelReader.text(u, "ipLocation").replaceFirst("^\\s*IP\\s*属地\\s*[:：]?\\s*", "").trim();
+                                    JSONObject prof = profile(u, uid, ip);
+                                    CollectorClient.call(context, "record_profile", new JSONObject().put("taskId", taskId).put("user", prof));
+                                    Log.i(TAG, "douyin_profile_native_recorded uid=" + uid + " ip=" + ip + " gender=" + prof.optString("gender"));
+                                    delay = 750;
+                                } else {
+                                    CollectorClient.call(context, "profile_queue_fail", new JSONObject().put("taskId", taskId).put("userId", uid).put("issue", "profile_no_user"));
+                                    delay = 600;
+                                }
+                            } else {
+                                CollectorClient.call(context, "profile_queue_fail", new JSONObject().put("taskId", taskId).put("userId", uid).put("issue", "profile_not_returned"));
+                                delay = 800;
+                            }
+                        } else {
+                            Activity host = activity.get();
+                            if (host != null && !host.isFinishing()) {
+                                drive(taskId, host, uid);
+                                delay = 4000;
+                            }
+                        }
+                    } else if ("running-profiles".equals(status)) {
+                        delay = 1500;
+                    }
                 }
             } catch (Throwable error) { Log.w(TAG, "douyin_profile_tick_failed", error); }
-            main.postDelayed(this::tick, 3000);
+            main.postDelayed(this::tick, delay);
         }, "douyin-profile-driver").start();
     }
 
-    private void drive(long taskId, Activity host) throws Exception {
-        JSONObject input = new JSONObject().put("taskId", taskId);
-        String uid = CollectorClient.call(context, "profile_next", input).optString("userId");
+    private void drive(long taskId, Activity host, String uid) throws Exception {
         if (uid.isEmpty()) return;
+        JSONObject input = new JSONObject().put("taskId", taskId);
         long now = SystemClock.elapsedRealtime();
         if (!uid.equals(openedUser)) {
             if (now - openedAt < 4000) return;
@@ -266,7 +311,7 @@ final class DouyinProfiles {
             });
             Log.i(TAG, "douyin_profile_open uid=" + uid);
         } else if (now - openedAt > 25000) {
-            CollectorClient.call(context, "profile_next", input.put("failedUserId", uid));
+            CollectorClient.call(context, "profile_queue_fail", input.put("userId", uid).put("issue", "profile_timeout"));
             openedUser = "";
             main.post(this::closeProfilePage);
         }
