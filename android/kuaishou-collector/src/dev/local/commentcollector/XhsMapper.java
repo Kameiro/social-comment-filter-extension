@@ -4,11 +4,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Maps Xiaohongshu's {@code com.xingin.entities.notedetail.NoteFeed} to the shared post JSON. Inner model classes are
- * obfuscated or renamed between versions, so every field is looked up by several plausible names.
+ * Maps Xiaohongshu's {@code com.xingin.entities.notedetail.NoteFeed} and {@code com.xingin.entities.NoteItemBean}
+ * to the shared post JSON. Inner model classes are obfuscated or renamed between versions, so every field is looked
+ * up by several plausible names.
  */
 final class XhsMapper {
     static final String NOTE_CLASS = "com.xingin.entities.notedetail.NoteFeed";
+    static final String NOTE_ITEM_CLASS = "com.xingin.entities.NoteItemBean";
 
     private XhsMapper() {}
 
@@ -16,21 +18,22 @@ final class XhsMapper {
         if (note == null) return null;
         String id = ModelReader.text(note, "id", "noteId", "sourceNoteId");
         if (id.isEmpty()) return null;
+        String source = note.getClass().getName().contains("NoteItemBean") ? "xhs_android.NoteItemBean" : "xhs_android.NoteFeed";
         JSONObject out = new JSONObject().put("platform", "xhs").put("postId", id)
-            .put("url", "https://www.xiaohongshu.com/explore/" + id).put("snapshotAt", System.currentTimeMillis()).put("source", "xhs_android.NoteFeed");
-        String title = ModelReader.text(note, "title");
-        String desc = ModelReader.text(note, "desc");
+            .put("url", "https://www.xiaohongshu.com/explore/" + id).put("snapshotAt", System.currentTimeMillis()).put("source", source);
+        String title = ModelReader.text(note, "title", "displayTitle");
+        String desc = ModelReader.text(note, "desc", "description");
         out.put("title", title.isEmpty() ? desc : (desc.isEmpty() ? title : title + "\n" + desc));
-        long created = number(ModelReader.get(note, "time"));
+        long created = number(ModelReader.get(note, "time", "createTime", "postTime", "lastUpdateTime"));
         if (created > 0) { if (created < 100000000000L) created *= 1000; out.put("created", created).put("publishedAt", created); }
         Object user = ModelReader.get(note, "user");
         put(out, "authorId", ModelReader.text(user, "userid", "userId", "id"));
         put(out, "authorName", ModelReader.text(user, "nickname", "name", "nickName"));
 
-        putNumber(out, "likes", ModelReader.get(note, "likedCount"));
-        putNumber(out, "favorites", ModelReader.get(note, "collectedCount"));
-        putNumber(out, "commentTotal", ModelReader.get(note, "commentsCount"));
-        putNumber(out, "shares", ModelReader.get(note, "sharedCount"));
+        putNumber(out, "likes", ModelReader.get(note, "likedCount", "likes", "likeCount"));
+        putNumber(out, "favorites", ModelReader.get(note, "collectedCount", "favCount", "collectCount"));
+        putNumber(out, "commentTotal", ModelReader.get(note, "commentsCount", "comments", "commentCount"));
+        putNumber(out, "shares", ModelReader.get(note, "sharedCount", "shareCount", "shares"));
 
         // Location: the author's tagged POI / user-set location first, else the note's IP属地 (province level).
         Object poi = ModelReader.get(note, "poi");
@@ -43,7 +46,7 @@ final class XhsMapper {
         if (!place.isEmpty()) out.put("location", place).put("locationSource", "xhs_android.NoteFeed.poi");
         else if (!ip.isEmpty()) out.put("location", "IP属地：" + ip).put("locationSource", "xhs_android.NoteFeed.ipLocation");
 
-        Object images = ModelReader.get(note, "imageList");
+        Object images = ModelReader.get(note, "imageList", "imagesList", "images");
         JSONArray urls = new JSONArray();
         if (images instanceof Iterable) {
             for (Object image : (Iterable<?>) images) {
@@ -52,9 +55,17 @@ final class XhsMapper {
                 if (!url.isEmpty()) urls.put(url);
             }
         }
+        if (urls.length() == 0) {
+            Object cover = ModelReader.get(note, "cover", "coverImage", "imageUrl");
+            if (cover != null) {
+                String coverUrl = ModelReader.url(ModelReader.get(cover, "urlSizeLarge", "originUrl", "url"));
+                if (coverUrl.isEmpty()) coverUrl = ModelReader.url(cover);
+                if (!coverUrl.isEmpty()) urls.put(coverUrl);
+            }
+        }
         if (urls.length() > 0) { out.put("imageUrls", urls); out.put("coverUrl", urls.getString(0)); }
 
-        Object video = ModelReader.get(note, "video");
+        Object video = ModelReader.get(note, "video", "videoInfo", "videoV2", "videoInfoV2");
         if (video != null) {
             String play = ModelReader.url(ModelReader.get(video, "url", "videoUrl", "h264Url", "originUrl"));
             if (play.isEmpty()) play = ModelReader.url(video);
@@ -62,7 +73,7 @@ final class XhsMapper {
             long duration = number(ModelReader.get(video, "duration"));
             if (duration > 0) out.put("duration", duration < 1000 ? duration * 1000 : duration);
         }
-        Object music = ModelReader.get(note, "music");
+        Object music = ModelReader.get(note, "music", "musicInfo", "soundInfo", "audioInfo");
         put(out, "musicName", ModelReader.text(music, "name", "title", "musicName"));
         put(out, "musicArtist", ModelReader.text(music, "author", "artist", "nickname"));
         String musicUrl = ModelReader.url(ModelReader.get(music, "url", "playUrl", "musicUrl"));

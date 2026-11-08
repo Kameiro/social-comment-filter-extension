@@ -34,6 +34,7 @@ final class XhsHooks {
     private volatile long lastNoteAt;
     private volatile WeakReference<Object> detailNote;
     private volatile long detailNoteAt;
+    private volatile String lastPostId = "";
     private final WeakIdentityMap<Boolean> recorded = new WeakIdentityMap<>();
     private final CurrentPostResolver resolver = new CurrentPostResolver();
     private DoubleTapDetector detector;
@@ -73,18 +74,26 @@ final class XhsHooks {
         });
         detector.install();
         hookCommentDialogs();
-        comments = new XhsComments(xposed, loader, () -> context, this::currentPostId);
+        comments = new XhsComments(xposed, loader, () -> context, () -> activity, this::currentPostId, id -> { if (id != null && !id.isEmpty()) lastPostId = id; });
         comments.install();
         Log.i(TAG, "xhs_hooks_installed");
     }
 
     private String currentPostId() {
         try {
+            Activity act = activity;
+            boolean inDetail = isDetailActivity(act);
             WeakReference<Object> ref = detailNote;
-            Object note = ref == null || System.currentTimeMillis() - detailNoteAt > 30_000 ? null : ref.get();
+            Object note = (ref == null || (!inDetail && System.currentTimeMillis() - detailNoteAt > 30_000)) ? null : ref.get();
             JSONObject post = XhsMapper.post(note);
-            return post == null ? "" : post.optString("postId");
-        } catch (Throwable ignored) { return ""; }
+            if (post != null && !post.optString("postId").isEmpty()) return post.optString("postId");
+            if (inDetail && act != null) {
+                Object resolved = resolver.resolveActivity(act, 0, 0);
+                JSONObject resolvedPost = XhsMapper.post(resolved);
+                if (resolvedPost != null && !resolvedPost.optString("postId").isEmpty()) return resolvedPost.optString("postId");
+            }
+            return lastPostId;
+        } catch (Throwable ignored) { return lastPostId; }
     }
 
     private boolean showPost(Activity host, float x, float y) {
@@ -126,6 +135,7 @@ final class XhsHooks {
             Class<?> item = loader.loadClass("com.xingin.entities.NoteItemBean");
             Method current = args.getDeclaredMethod("f", item);
             xposed.hook(current).intercept(chain -> {
+                rememberDetail(chain.getArg(0), "detail_args.arg0");
                 Object result = chain.proceed();
                 rememberDetail(result, "detail_args.f");
                 return result;
@@ -200,11 +210,17 @@ final class XhsHooks {
     }
 
     private void rememberDetail(Object note, String source) {
-        if (note == null || !XhsMapper.NOTE_CLASS.equals(note.getClass().getName())) return;
-        detailNote = new WeakReference<>(note);
-        detailNoteAt = System.currentTimeMillis();
-        Log.i(TAG, "xhs_current_note source=" + source + " id=" + ModelReader.text(note, "id"));
-        remember(note);
+        if (note == null) return;
+        try {
+            JSONObject post = XhsMapper.post(note);
+            if (post == null) return;
+            String id = post.optString("postId");
+            if (!id.isEmpty()) lastPostId = id;
+            detailNote = new WeakReference<>(note);
+            detailNoteAt = System.currentTimeMillis();
+            Log.i(TAG, "xhs_current_note source=" + source + " id=" + id);
+            remember(note);
+        } catch (Throwable ignored) {}
     }
 
     private static boolean isDetailActivity(Activity host) {
@@ -278,8 +294,16 @@ final class XhsHooks {
         if (context != null) return;
         context = app;
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
-            @Override public void onActivityResumed(Activity value) { activity = value; }
-            @Override public void onActivityPaused(Activity value) { if (activity == value) activity = null; }
+            @Override public void onActivityResumed(Activity value) {
+                activity = value;
+                CollectorPanel.attach(value, XhsHooks.this::currentPostId);
+                CollectorPanel.attachDouyinSettingsEntry(value, XhsHooks.this::currentPostId);
+                if (comments != null) comments.ensurePaging();
+            }
+            @Override public void onActivityPaused(Activity value) {
+                CollectorPanel.detach(value);
+                if (activity == value) activity = null;
+            }
             @Override public void onActivityCreated(Activity value, Bundle state) { if (detector != null) detector.hook(value.getClass()); }
             @Override public void onActivityStarted(Activity value) {}
             @Override public void onActivityStopped(Activity value) {}

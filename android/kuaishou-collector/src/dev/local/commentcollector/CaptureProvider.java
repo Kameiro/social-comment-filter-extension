@@ -294,7 +294,7 @@ public final class CaptureProvider extends ContentProvider {
             }
             if ("settings_get".equals(method) || "settings_save".equals(method)) {
                 String name = input.optString("name", "filters");
-                if (!name.matches("filters|analysis|ui|cloud")) throw new IllegalArgumentException("未知设置组");
+                if (!name.matches("filters|analysis|ui|cloud|video_info")) throw new IllegalArgumentException("未知设置组");
                 if ("settings_save".equals(method)) db.execSQL("INSERT OR REPLACE INTO settings VALUES (?,?)", new Object[]{name, input.getJSONObject("value").toString()});
                 String value = scalar("SELECT data FROM settings WHERE name=?", name);
                 out.putString("data", value.isEmpty() ? "{}" : value); return out;
@@ -497,7 +497,12 @@ public final class CaptureProvider extends ContentProvider {
             boolean newPage = db.insertWithOnConflict("pages", null, pageValues, SQLiteDatabase.CONFLICT_IGNORE) != -1;
             db.execSQL("UPDATE tasks SET photo=?,pages=pages+?,updated=? WHERE id=?", new Object[]{photo, newPage ? 1 : 0, System.currentTimeMillis(), id});
             String existing = scalar("SELECT data FROM posts WHERE id=?", photo);
-            JSONObject post = (existing.isEmpty() ? new JSONObject() : new JSONObject(existing)).put("platform", "kuaishou").put("postId", photo)
+            JSONObject existingPost = existing.isEmpty() ? new JSONObject() : new JSONObject(existing);
+            String pagePlatform = page.optString("platform");
+            if (pagePlatform.isEmpty() && rows.length() > 0) pagePlatform = rows.getJSONObject(0).optString("platform");
+            if (pagePlatform.isEmpty()) pagePlatform = existingPost.optString("platform");
+            if (pagePlatform.isEmpty()) pagePlatform = page.optString("source").startsWith("xhs") ? "xhs" : page.optString("source").startsWith("douyin") ? "douyin" : "kuaishou";
+            JSONObject post = existingPost.put("platform", pagePlatform).put("postId", photo)
                 .put("snapshotAt", System.currentTimeMillis()).put("source", page.optString("source"));
             if (!page.isNull("total")) post.put("commentTotal", page.opt("total"));
             db.execSQL("INSERT OR REPLACE INTO posts VALUES (?,?,?)", new Object[]{photo, post.toString(), System.currentTimeMillis()});
@@ -512,7 +517,7 @@ public final class CaptureProvider extends ContentProvider {
                 db.insertWithOnConflict("comments", null, values, SQLiteDatabase.CONFLICT_REPLACE);
                 String userId = row.optString("userId");
                 if (!userId.isEmpty()) {
-                    JSONObject user = new JSONObject().put("userId", userId).put("platform", "kuaishou").put("nickname", row.opt("nickname"))
+                    JSONObject user = new JSONObject().put("userId", userId).put("platform", row.optString("platform", pagePlatform)).put("nickname", row.opt("nickname"))
                         .put("lastCommentIpRegion", row.opt("ipRegion")).put("lastCommentAt", row.optLong("created")).put("lastCapturedAt", row.optLong("capturedAt"));
                     if (!"unknown".equals(row.optString("gender", "unknown"))) user.put("gender", row.optString("gender"));
                     mergeRecord("users", userId, user);

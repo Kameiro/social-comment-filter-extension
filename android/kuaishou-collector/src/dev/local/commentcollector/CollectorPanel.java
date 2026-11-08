@@ -120,26 +120,38 @@ public final class CollectorPanel {
         return card;
     }
 
-    /** Injects a "comso 模块设置" row into Douyin's Settings screen right below the top module card (or at the top of the settings list). */
+    /** Injects a "comso 模块设置" row into Douyin's and Xiaohongshu's Settings screen right below the top module card (or at the top of the settings list). */
     public static void attachDouyinSettingsEntry(Activity activity, Supplier<String> currentPhoto) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
         String name = activity.getClass().getName();
         if (!name.contains("DouYinSettingNewVersionActivity") && !name.contains("SettingActivity")) return;
+        try { activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); } catch (Throwable ignored) {}
         Runnable inject = () -> {
             try {
                 if (activity.isFinishing() || activity.isDestroyed()) return;
                 View decor = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
                 if (!(decor instanceof ViewGroup) || decor.findViewWithTag(SETTINGS_ENTRY_TAG) != null) return;
                 int[] indexOut = {0};
-                LinearLayout container = findDouyinSettingsContainer((ViewGroup) decor, indexOut);
+                ViewGroup container = findDouyinSettingsContainer((ViewGroup) decor, indexOut);
                 if (container == null) return;
                 float d = activity.getResources().getDisplayMetrics().density;
                 RelativeLayout card = createSettingsCard(activity, currentPhoto, SETTINGS_ENTRY_TAG);
 
                 int insertIndex = Math.max(0, Math.min(container.getChildCount(), indexOut[0]));
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Math.round(54 * d));
-                int marginH = Math.round(16 * d);
-                lp.setMargins(marginH, Math.round(10 * d), marginH, 0);
+                ViewGroup.MarginLayoutParams lp;
+                if (container instanceof LinearLayout) {
+                    lp = new LinearLayout.LayoutParams(-1, Math.round(54 * d));
+                    int marginH = Math.round(16 * d);
+                    lp.setMargins(marginH, Math.round(10 * d), marginH, 0);
+                } else if (container instanceof RelativeLayout) {
+                    lp = new RelativeLayout.LayoutParams(-1, Math.round(54 * d));
+                    int marginH = Math.round(16 * d);
+                    lp.setMargins(marginH, Math.round(56 * d), marginH, 0);
+                } else {
+                    lp = new FrameLayout.LayoutParams(-1, Math.round(54 * d));
+                    int marginH = Math.round(16 * d);
+                    lp.setMargins(marginH, Math.round(56 * d), marginH, 0);
+                }
                 container.addView(card, insertIndex, lp);
             } catch (Throwable ignored) {}
         };
@@ -150,12 +162,17 @@ public final class CollectorPanel {
         h.postDelayed(inject, 900);
     }
 
-    private static LinearLayout findDouyinSettingsContainer(ViewGroup root, int[] indexOut) {
-        TextView anchor = findTextViewByText(root, "账号");
+    private static ViewGroup findDouyinSettingsContainer(ViewGroup root, int[] indexOut) {
+        String[] anchors = {"账号", "模块设置", "账号与安全", "通用", "通用设置", "通知设置", "隐私", "帮助与客服"};
+        TextView anchor = null;
         boolean afterAnchor = false;
-        if (anchor == null) { anchor = findTextViewByText(root, "模块设置"); afterAnchor = true; }
-        if (anchor == null) { anchor = findTextViewByText(root, "账号与安全"); }
-        if (anchor == null) { anchor = findTextViewByText(root, "通用"); }
+        for (String a : anchors) {
+            anchor = findTextViewByText(root, a);
+            if (anchor != null) {
+                if ("模块设置".equals(a)) afterAnchor = true;
+                break;
+            }
+        }
         if (anchor != null) {
             View curr = anchor;
             while (curr.getParent() instanceof View) {
@@ -168,7 +185,36 @@ public final class CollectorPanel {
                         return ll;
                     }
                 }
+                if (parent.getClass().getName().contains("RecyclerView")) {
+                    View rv = parent;
+                    if (rv.getParent() instanceof ViewGroup) {
+                        ViewGroup rvParent = (ViewGroup) rv.getParent();
+                        int rvIdx = rvParent.indexOfChild(rv);
+                        indexOut[0] = Math.max(0, rvIdx);
+                        return rvParent;
+                    }
+                }
                 curr = parent;
+            }
+        }
+        View rv = findViewByClassName(root, "RecyclerView");
+        if (rv != null && rv.getParent() instanceof ViewGroup) {
+            ViewGroup rvParent = (ViewGroup) rv.getParent();
+            int rvIdx = rvParent.indexOfChild(rv);
+            indexOut[0] = Math.max(0, rvIdx);
+            return rvParent;
+        }
+        return null;
+    }
+
+    private static View findViewByClassName(View view, String name) {
+        if (view == null || view.getVisibility() != View.VISIBLE) return null;
+        if (view.getClass().getName().contains(name)) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) view;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                View found = findViewByClassName(g.getChildAt(i), name);
+                if (found != null) return found;
             }
         }
         return null;
@@ -234,7 +280,8 @@ public final class CollectorPanel {
 
     /** Adds the draggable green button plus the progress pill that appears beside it while a task runs. */
     public static void attach(Activity activity, Supplier<String> currentPhoto) {
-        if (activity.isFinishing() || activity.getClass().getName().contains(".login.")) return;
+        if (activity == null || activity.isFinishing() || activity.getClass().getName().contains(".login.")) return;
+        try { activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); } catch (Throwable ignored) {}
         View decor = activity.getWindow().getDecorView();
         if (!(decor instanceof FrameLayout) || decor.findViewWithTag(FLOATING_TAG) != null) return;
         M3.Scheme sc = M3.scheme(activity, dark(activity));
@@ -366,11 +413,8 @@ public final class CollectorPanel {
                         String text = label;
                         main.post(() -> {
                             busy.set(false);
-                            // Keep the screen on only while a task is active; collection needs the app in front and lit.
-                            int winFlags = activity.getWindow().getAttributes().flags;
-                            boolean keepOn = (winFlags & android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0;
-                            if (text != null && !keepOn) activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                            else if (text == null && keepOn) activity.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                            // Keep the screen on while CollectorPanel is attached
+                            try { activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); } catch (Throwable ignored) {}
                             syncFloatingButtonVisibility(activity, VideoInfoSettings.enabled(VideoInfoSettings.current(activity), "floating_button"));
                             boolean[] flags = pillFlags(pill);
                             flags[1] = text != null;
@@ -1205,7 +1249,7 @@ public final class CollectorPanel {
         } catch (Exception error) { error(error); }
     }
 
-    private static final Pattern POST_ID = Pattern.compile("(?:short-video/|photo/|photoId=|work/)([A-Za-z0-9_-]{6,40})");
+    private static final Pattern POST_ID = Pattern.compile("(?:short-video/|photo/|photoId=|work/|explore/|discovery/item/|item/|video/)([A-Za-z0-9_-]{6,40})");
 
     /** Paste several links or IDs (one per line or space-separated) to queue them with the current conditions. */
     private void batchDialog() {
@@ -1234,7 +1278,7 @@ public final class CollectorPanel {
             if (token.isEmpty()) continue;
             Matcher matcher = POST_ID.matcher(token);
             if (matcher.find()) ids.add(matcher.group(1));
-            else if (token.matches("[0-9]{8,25}")) ids.add(token);
+            else if (token.matches("[0-9]{8,25}|[0-9a-fA-F]{24}")) ids.add(token);
             if (ids.size() >= 100) break;
         }
         return new ArrayList<>(ids);
