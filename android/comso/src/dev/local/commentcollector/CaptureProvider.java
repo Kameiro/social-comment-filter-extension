@@ -480,7 +480,7 @@ public final class CaptureProvider extends ContentProvider {
                     }
                     db.execSQL("DELETE FROM settings WHERE name='platform_block'");
                     String plat = previous.optJSONObject("params") != null ? previous.optJSONObject("params").optString("platform") : "";
-                    String nextDriver = "douyin".equals(plat) ? "native-root" : "ui";
+                    String nextDriver = ("douyin".equals(plat) || "xhs".equals(plat)) ? "native-root" : "ui";
                     String nextState = "profile".equals(previous.optString("kind")) ? "running-profiles" : "running";
                     db.execSQL("UPDATE tasks SET status=?,pages=0,root_eof=0,root_evidence=NULL,issue=NULL,auto=1,paging_driver=?,generation=generation+1,updated=? WHERE id=?", new Object[]{nextState, nextDriver, now, targetId});
                     event(targetId, "refreshed");
@@ -589,7 +589,7 @@ public final class CaptureProvider extends ContentProvider {
                 values.put("photo", photo); values.put("status", id != 0 || !scalar("SELECT data FROM settings WHERE name='platform_block'").isEmpty() ? "queued" : "running");
                 String startPlat = input.optString("platform");
                 if (startPlat.isEmpty()) startPlat = photo.matches("[0-9a-fA-F]{24}") ? "xhs" : photo.matches("\\d{19}") ? "douyin" : "kuaishou";
-                String initialDriver = "auto".equals(input.optString("pagingMode", "auto")) ? ("douyin".equals(startPlat) ? "native-root" : "ui") : input.optString("pagingMode");
+                String initialDriver = "auto".equals(input.optString("pagingMode", "auto")) ? (("douyin".equals(startPlat) || "xhs".equals(startPlat)) ? "native-root" : "ui") : input.optString("pagingMode");
                 values.put("paging_driver", initialDriver);
                 values.put("auto", input.has("auto") ? (input.optBoolean("auto") ? 1 : 0) : extras != null && extras.containsKey("auto") ? (extras.getBoolean("auto") ? 1 : 0) : 1);
                 values.put("kind", kind); values.put("params", fingerprint); values.put("created", System.currentTimeMillis());

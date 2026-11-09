@@ -75,6 +75,11 @@ final class XhsHooks {
         });
         detector.install();
         hookCommentDialogs();
+        XhsNativePager.onPostCaptured = id -> { if (id != null && !id.isEmpty()) lastPostId = id; };
+        new Thread(() -> {
+            try { XhsNativePager.install(xposed, loader); }
+            catch (Throwable t) { Log.w(TAG, "xhs_native_install_failed", t); }
+        }, "xhs-native-install").start();
         comments = new XhsComments(xposed, loader, () -> context, () -> activity, this::activeRootView, this::currentPostId, id -> { if (id != null && !id.isEmpty()) lastPostId = id; });
         comments.install();
         Log.i(TAG, "xhs_hooks_installed");
@@ -82,6 +87,10 @@ final class XhsHooks {
 
     private String currentPostId() {
         try {
+            String nativePost = XhsNativePager.post();
+            if (!nativePost.isEmpty() && !"null".equals(nativePost)) return nativePost;
+            nativePost = XhsNativePager.lastCapturedPost();
+            if (!nativePost.isEmpty() && !"null".equals(nativePost)) return nativePost;
             Activity act = activity;
             boolean inDetail = isDetailActivity(act);
             WeakReference<Object> ref = detailNote;

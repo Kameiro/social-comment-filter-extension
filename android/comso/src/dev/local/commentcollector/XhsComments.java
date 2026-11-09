@@ -45,6 +45,8 @@ final class XhsComments {
     private final WeakIdentityMap<String> seen = new WeakIdentityMap<>();
     private final WeakIdentityMap<Long> clickedExpands = new WeakIdentityMap<>();
     private final Set<String> savedFingerprints = ConcurrentHashMap.newKeySet();
+    private final Map<String, String> furthest = new ConcurrentHashMap<>();
+    private final Set<String> replySkipped = ConcurrentHashMap.newKeySet();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Map<String, JSONObject> recentPages = new LinkedHashMap<>() {
         @Override protected boolean removeEldestEntry(Map.Entry<String, JSONObject> eldest) { return size() > 10; }
@@ -155,29 +157,107 @@ final class XhsComments {
                 task = CollectorClient.call(app, "status", new JSONObject());
             } catch (Throwable ignored) {}
             final JSONObject activeTask = task;
-            main.post(() -> {
-                if (!paging) return;
-                if (activeTask == null) { main.postDelayed(this::tick, 2000); return; }
-                String plat = activeTask.optString("platform");
-                boolean go = (plat.isEmpty() || "xhs".equals(plat))
-                    && "comment".equals(activeTask.optString("kind"))
-                    && activeTask.optString("status").startsWith("running")
-                    && activeTask.optBoolean("auto", true);
-                if (!go) { stopPaging("task_not_running"); return; }
+            if (activeTask == null) { main.postDelayed(this::tick, 2000); return; }
+            String plat = activeTask.optString("platform");
+            boolean go = (plat.isEmpty() || "xhs".equals(plat))
+                && "comment".equals(activeTask.optString("kind"))
+                && activeTask.optString("status").startsWith("running")
+                && activeTask.optBoolean("auto", true);
+            if (!go) { stopPaging("task_not_running"); return; }
 
-                String wanted = activeTask.optString("photoId");
-                List<JSONObject> toReplay = new ArrayList<>();
-                synchronized (recentPages) {
-                    for (Map.Entry<String, JSONObject> entry : recentPages.entrySet()) {
-                        if (entry.getKey().startsWith(wanted + ":")) {
-                            toReplay.add(entry.getValue());
-                        }
+            String wanted = activeTask.optString("photoId");
+            long taskId = activeTask.optLong("taskId");
+            long generation = activeTask.optLong("generation");
+            String status = activeTask.optString("status");
+            JSONObject params = activeTask.optJSONObject("params");
+            boolean isNative = params != null && !"ui".equals(params.optString("pagingMode", "auto")) && XhsNativePager.ready();
+
+            List<JSONObject> toReplay = new ArrayList<>();
+            synchronized (recentPages) {
+                for (Map.Entry<String, JSONObject> entry : recentPages.entrySet()) {
+                    if (entry.getKey().startsWith(wanted + ":")) {
+                        toReplay.add(entry.getValue());
                     }
                 }
-                for (JSONObject cached : toReplay) {
-                    savePage(app, activeTask, cached, null);
-                }
+            }
+            for (JSONObject cached : toReplay) {
+                savePage(app, activeTask, cached, null);
+            }
 
+            if (isNative) {
+                if ("running".equals(status)) {
+                    try {
+                        JSONObject pd = new JSONObject().put("taskId", taskId).put("generation", generation)
+                            .put("driver", "native-root").put("nativeLoad", true);
+                        CollectorClient.call(app, "paging_driver", pd);
+                    } catch (Throwable ignored) {}
+
+                    String key = taskId + ":" + generation + ":" + wanted;
+                    String cursor = furthest.getOrDefault(key, "");
+                    Object result = XhsNativePager.fetch(cursor, wanted);
+                    if (result != null) {
+                        observe(result, wanted);
+                        Object more = ModelReader.get(result, "hasMore");
+                        boolean hasMore = Boolean.TRUE.equals(more);
+                        String next = ModelReader.text(result, "cursor");
+                        if (!next.isEmpty()) {
+                            furthest.put(key, next);
+                        }
+                        if (!hasMore) {
+                            try {
+                                JSONObject eof = new JSONObject().put("taskId", taskId).put("generation", generation)
+                                    .put("stream", "root").put("evidence", "native_response_has_more_false");
+                                CollectorClient.call(app, "native_eof", eof);
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                    main.postDelayed(this::tick, 350);
+                    return;
+                } else if ("running-replies".equals(status)) {
+                    try {
+                        JSONObject pd = new JSONObject().put("taskId", taskId).put("generation", generation)
+                            .put("driver", "native-replies").put("nativeLoad", true);
+                        CollectorClient.call(app, "paging_driver", pd);
+                    } catch (Throwable ignored) {}
+
+                    JSONObject listing = null;
+                    try {
+                        listing = CollectorClient.call(app, "pending_reply_ids", new JSONObject().put("taskId", taskId).put("generation", generation));
+                    } catch (Throwable ignored) {}
+                    JSONArray ids = listing != null ? listing.optJSONArray("items") : null;
+                    String root = null;
+                    for (int i = 0; ids != null && i < ids.length(); i++) {
+                        String id = ids.optString(i);
+                        if (!id.isEmpty() && !replySkipped.contains(taskId + ":" + generation + ":" + id)) {
+                            root = id;
+                            break;
+                        }
+                    }
+                    if (root == null) {
+                        main.postDelayed(this::tick, 1000);
+                        return;
+                    }
+                    try {
+                        if (!fetchReplyGroup(app, root, wanted, taskId, generation)) {
+                            replySkipped.add(taskId + ":" + generation + ":" + root);
+                        }
+                    } catch (Throwable e) {
+                        Log.w(TAG, "xhs_fetch_reply_group_error", e);
+                        replySkipped.add(taskId + ":" + generation + ":" + root);
+                    }
+                    main.postDelayed(this::tick, 350);
+                    return;
+                }
+                main.postDelayed(this::tick, 1000);
+                return;
+            }
+
+            main.post(() -> {
+                if (!paging) return;
+                if ("running-profiles".equals(status)) {
+                    main.postDelayed(this::tick, 1000);
+                    return;
+                }
                 if (SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) {
                     lastPageAt = System.currentTimeMillis();
                     main.postDelayed(this::tick, 800);
@@ -388,11 +468,15 @@ final class XhsComments {
         return null;
     }
 
-    private void observe(Object response) {
+    void observe(Object response) {
+        observe(response, currentPost.get());
+    }
+
+    void observe(Object response, String fallbackPost) {
         try {
             Context app = context.get();
             if (app == null) return;
-            JSONObject page = XhsCommentMapper.page(response, currentPost.get());
+            JSONObject page = XhsCommentMapper.page(response, fallbackPost != null && !fallbackPost.isEmpty() ? fallbackPost : currentPost.get());
             if (page == null) return;
             String post = page.optString("photoId");
             if (!post.isEmpty() && onPostObserved != null) {
@@ -411,6 +495,13 @@ final class XhsComments {
             if (!wanted.isEmpty() && !wanted.equals(post)) {
                 Log.i(TAG, "xhs_comment_skipped other_post wanted=" + wanted + " got=" + post);
                 return;
+            }
+            if (page.optString("rootId").isEmpty()) {
+                String cur = page.optString("cursor");
+                if (!cur.isEmpty()) {
+                    String key = task.optLong("taskId") + ":" + task.optLong("generation") + ":" + post;
+                    furthest.put(key, cur);
+                }
             }
             savePage(app, task, page, response);
         } catch (Throwable error) {
@@ -457,5 +548,71 @@ final class XhsComments {
     private static String firstId(JSONArray rows) {
         if (rows == null || rows.length() == 0) return "";
         try { return rows.getJSONObject(0).optString("commentId"); } catch (Throwable ignored) { return ""; }
+    }
+
+    private boolean fetchReplyGroup(Context app, String root, String photo, long taskId, long generation) throws Exception {
+        String cursor = "";
+        for (int pageNumber = 0; pageNumber < 300; pageNumber++) {
+            Object result = null;
+            for (int attempt = 0; attempt < 3 && result == null; attempt++) {
+                result = XhsNativePager.fetchReplies(root, cursor, photo);
+                if (result == null) {
+                    try { Thread.sleep(600); } catch (InterruptedException e) { return false; }
+                }
+            }
+            if (result == null) {
+                Log.w(TAG, "xhs_reply_group_failed root=" + root);
+                return false;
+            }
+            JSONObject page = XhsCommentMapper.page(result, photo);
+            Object more = ModelReader.get(result, "hasMore");
+            boolean hasMore = Boolean.TRUE.equals(more);
+            if (page == null) {
+                JSONObject empty = new JSONObject().put("platform", "xhs").put("photoId", photo).put("postId", photo)
+                    .put("rootId", root).put("rows", new JSONArray())
+                    .put("groups", new JSONArray().put(new JSONObject().put("rootId", root).put("complete", true)))
+                    .put("hasMore", false).put("eofEvidence", "reply.empty").put("source", "xhs_android.CommentSubCommentPage");
+                return appendPage(app, empty, taskId, generation);
+            }
+            page.put("rootId", root);
+            if (!hasMore) {
+                page.put("hasMore", false);
+                JSONArray groups = page.optJSONArray("groups");
+                if (groups == null) { groups = new JSONArray(); page.put("groups", groups); }
+                groups.put(new JSONObject().put("rootId", root).put("complete", true));
+            }
+            if (!appendPage(app, page, taskId, generation)) return false;
+            if (!hasMore) return true;
+            String next = ModelReader.text(result, "cursor");
+            if (next.isEmpty() || next.equals(cursor)) {
+                JSONObject closeGroup = new JSONObject().put("platform", "xhs").put("photoId", photo).put("postId", photo)
+                    .put("rootId", root).put("rows", new JSONArray())
+                    .put("groups", new JSONArray().put(new JSONObject().put("rootId", root).put("complete", true)))
+                    .put("hasMore", false).put("eofEvidence", "reply.no_cursor").put("source", "xhs_android.CommentSubCommentPage");
+                appendPage(app, closeGroup, taskId, generation);
+                return true;
+            }
+            cursor = next;
+            try { Thread.sleep(350); } catch (InterruptedException e) { return false; }
+        }
+        return true;
+    }
+
+    private boolean appendPage(Context app, JSONObject page, long taskId, long generation) {
+        try {
+            Bundle args = new Bundle();
+            args.putString("page", page.toString());
+            args.putLong("taskId", taskId);
+            args.putLong("generation", generation);
+            Bundle result = CollectorClient.callRaw(app, "append", args);
+            if (result != null && result.containsKey("error")) {
+                Log.w(TAG, "xhs_reply_storage_failed " + result.getString("error"));
+                return false;
+            }
+            return true;
+        } catch (Throwable error) {
+            Log.w(TAG, "xhs_reply_storage_unavailable", error);
+            return false;
+        }
     }
 }
