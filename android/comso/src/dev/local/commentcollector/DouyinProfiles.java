@@ -129,7 +129,12 @@ final class DouyinProfiles {
             String poiCity = ModelReader.text(ModelReader.get(poi, "address"), "city", "province");
             String ip = ModelReader.text(aweme, "ipAttribution", "ip_attribution").replaceFirst("^\\s*IP\\s*属地\\s*[:：]?\\s*", "").trim();
             String city = !cityName.isEmpty() ? cityName : poiCity;
-            String location = !city.isEmpty() ? city : ip;
+            String location;
+            if (!ip.isEmpty() && !city.isEmpty()) {
+                location = !city.contains(ip) ? ip + " " + city : city;
+            } else {
+                location = !city.isEmpty() ? city : ip;
+            }
             if (location.isEmpty()) { reject("no_location uid=" + uid + " city=" + ModelReader.text(aweme, "city") + " ip=" + ip, aweme); return; }
             Latest current = latest.get(uid);
             if (current != null && current.created >= created) return;
@@ -202,6 +207,7 @@ final class DouyinProfiles {
         JSONObject out = new JSONObject().put("platform", "douyin").put("userId", uid).put("gender", gender)
             .put("profileCapturedAt", System.currentTimeMillis()).put("profileSource", "douyin_android.User").put("profileIpRegion", region);
         put(out, "nickname", text(user, "nickname"));
+        put(out, "avatarUrl", firstUrl(user, "avatarLarger", "avatarMedium", "avatarThumb", "avatar168x168", "avatar300x300", "avatarUrl"));
         put(out, "bio", text(user, "signature"));
         String sec = text(user, "secUid"); put(out, "secUid", sec);
         String city = firstNonEmpty(text(user, "cityName"), text(user, "city"));
@@ -210,17 +216,37 @@ final class DouyinProfiles {
         String place = city.isEmpty() ? province : province.isEmpty() || province.equals(city) ? city : province + " " + city;
         put(out, "location", district.isEmpty() || place.isEmpty() ? place : place + "·" + district);
         Object age = JSONObject.NULL;
-        String birthday = text(user, "birthday");
-        if (birthday.matches("(19|20)\\d\\d-\\d\\d-\\d\\d")) {
-            int years = Calendar.getInstance().get(Calendar.YEAR) - Integer.parseInt(birthday.substring(0, 4));
-            if (years > 0 && years <= 120) age = years;
+        Object ageObj = ModelReader.get(user, "userAge", "age");
+        if (ageObj instanceof Number) {
+            int a = ((Number) ageObj).intValue();
+            if (a > 0 && a <= 120) age = a;
+        } else if (ageObj != null) {
+            try {
+                int a = Integer.parseInt(String.valueOf(ageObj).trim());
+                if (a > 0 && a <= 120) age = a;
+            } catch (Throwable ignored) {}
+        }
+        if (age == JSONObject.NULL) {
+            String birthday = text(user, "birthday");
+            if (birthday.matches("(19|20)\\d\\d-\\d\\d-\\d\\d")) {
+                int years = Calendar.getInstance().get(Calendar.YEAR) - Integer.parseInt(birthday.substring(0, 4));
+                if (years > 0 && years <= 120) age = years;
+            }
         }
         out.put("age", age).put("ageVisibility", age == JSONObject.NULL ? "privacy_unspecified" : "public_or_unset");
         Latest post = latest.get(uid);
         if (post != null) { out.put("latestPostLocation", post.location).put("latestPostAt", post.created); if (!post.city.isEmpty()) out.put("latestPostCity", post.city); }
-        out.put("fieldSources", new JSONObject().put("gender", "user.gender").put("age", "user.birthday").put("location", "user.city")
+        out.put("fieldSources", new JSONObject().put("gender", "user.gender").put("age", ageObj != null ? "user.age" : "user.birthday").put("location", "user.city")
             .put("profileIpRegion", "user.ip_location"));
         return out;
+    }
+
+    private static String firstUrl(Object object, String... keys) {
+        for (String key : keys) {
+            String url = ModelReader.url(ModelReader.get(object, key));
+            if (!url.isEmpty()) return url;
+        }
+        return "";
     }
 
     private static String firstNonEmpty(String... values) { for (String v : values) if (v != null && !v.isEmpty()) return v; return ""; }

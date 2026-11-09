@@ -261,15 +261,22 @@ public final class CaptureProvider extends ContentProvider {
                         }
                     }
                     if (input.optBoolean("backfillTask")) {
-                        String sql = "SELECT DISTINCT json_extract(c.data, '$.userId'), coalesce(json_extract(c.data, '$.secUid'), '') " +
+                        JSONObject taskParams = status(targetTask).optJSONObject("params");
+                        java.util.Set<String> enqueued = new java.util.HashSet<>();
+                        String sql = "SELECT c.data, coalesce(json_extract(c.data, '$.secUid'), '') " +
                                      "FROM comments c LEFT JOIN users u ON json_extract(c.data, '$.userId') = u.id " +
                                      "WHERE c.task=? AND json_extract(c.data, '$.userId') IS NOT NULL AND json_extract(c.data, '$.userId') != '' " +
                                      "AND (u.data IS NULL OR json_extract(u.data, '$.profileCapturedAt') IS NULL)";
                         try (Cursor cursor = db.rawQuery(sql, new String[]{String.valueOf(targetTask)})) {
                             while (cursor.moveToNext()) {
-                                String uid = cursor.getString(0);
+                                String commentData = cursor.getString(0);
                                 String sec = cursor.getString(1);
-                                if (uid != null && !uid.isEmpty()) {
+                                if (commentData == null || commentData.isEmpty()) continue;
+                                JSONObject commentRow = new JSONObject(commentData);
+                                String uid = commentRow.optString("userId");
+                                if (uid.isEmpty() || enqueued.contains(uid)) continue;
+                                if (matchesCommentStage(taskParams, commentRow)) {
+                                    enqueued.add(uid);
                                     db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
                                         new Object[]{targetTask, uid, sec == null ? "" : sec, System.currentTimeMillis()});
                                     added++;
@@ -690,7 +697,7 @@ public final class CaptureProvider extends ContentProvider {
                     if (!userJson.isEmpty()) {
                         try { hasProfile = new JSONObject(userJson).has("profileCapturedAt"); } catch (Throwable ignored) {}
                     }
-                    if (!hasProfile) {
+                    if (!hasProfile && matchesCommentStage(before.optJSONObject("params"), row)) {
                         db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
                             new Object[]{id, userId, secUid, System.currentTimeMillis()});
                     }
@@ -878,6 +885,58 @@ public final class CaptureProvider extends ContentProvider {
         }
         return new JSONObject().put("items", items).put("total", total).put("matched", total - pending).put("pending", pending).put("limit", limit).put("offset", offset);
     }
+    static boolean matchesCommentStage(JSONObject params, JSONObject comment) {
+        if (params == null || comment == null) return true;
+        for (String term : terms(params.optString("excludeKeyword"))) {
+            if (!term.isEmpty() && comment.optString("text", "").contains(term)) return false;
+        }
+        int recentDays = params.optInt("recentDays");
+        if (recentDays > 0) {
+            long created = comment.optLong("created");
+            if (created < 100000000000L) created *= 1000L;
+            if (created < System.currentTimeMillis() - recentDays * 86400000L) return false;
+        }
+        List<String> kwTerms = terms(params.optString("keyword"));
+        boolean hasKeyword = !kwTerms.isEmpty();
+        boolean keywordMatch = false;
+        if (hasKeyword) {
+            String text = comment.optString("text", "");
+            for (String term : kwTerms) {
+                if (!term.isEmpty() && text.contains(term)) { keywordMatch = true; break; }
+            }
+        }
+        List<String> regionTerms;
+        try {
+            regionTerms = RegionFilter.values(params, "ipRegion", "ipRegions");
+        } catch (Throwable ignored) {
+            regionTerms = terms(params.optString("ipRegion"));
+        }
+        boolean hasRegion = regionTerms != null && !regionTerms.isEmpty();
+        String ipSource = params.optString("ipSource", "profile");
+        boolean regionDetermined = false;
+        boolean regionMatch = false;
+        if (hasRegion) {
+            if ("comment".equals(ipSource)) {
+                regionDetermined = true;
+                String commentIp = comment.optString("ipRegion", "");
+                for (String reg : regionTerms) {
+                    if (!reg.isEmpty() && commentIp.contains(reg)) { regionMatch = true; break; }
+                }
+            } else {
+                regionDetermined = false;
+            }
+        }
+        String relation = params.optString("relation", "and");
+        if ("or".equals(relation) && hasKeyword && hasRegion) {
+            if (keywordMatch) return true;
+            if (regionDetermined) return regionMatch;
+            return true;
+        }
+        if (hasKeyword && !keywordMatch) return false;
+        if (hasRegion && regionDetermined && !regionMatch) return false;
+        return true;
+    }
+
     /** Splits "a, b；c" style input into terms. */
     private static List<String> terms(String value) {
         List<String> out = new ArrayList<>();
