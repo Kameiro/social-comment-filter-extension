@@ -1,6 +1,6 @@
 # comso：快手 / 抖音 / 小红书 App 内评论采集模块
 
-适配基线：快手 Android `14.8.40.50567`、抖音 `com.ss.android.ugc.aweme`、小红书 `9.51.0`（`com.xingin.xhs`），Android 16/17 ARM64、Vector 3090 / libxposed API 102。
+适配基线：快手 Android `14.8.40.50567`（versionCode `50567`）、抖音 `40.7.0`（`com.ss.android.ugc.aweme`，versionCode `400701`）、小红书 `9.53.0`（`com.xingin.xhs`，versionCode `9530804`，向下兼容 `9.51.0`），Android 16/17 ARM64、Vector 3090 / libxposed API 102。详细版本清单及备份包下载见 [TARGET_APP_VERSIONS.md](../../docs/TARGET_APP_VERSIONS.md)。
 交付形式为 Vector 模块 APK（`comso.apk`），不重打包宿主应用，不修改登录、平台请求、签名或返回值。
 当前模块版本为 `0.1.3`（versionCode 4）；快手、抖音、小红书三平台双击作品信息弹窗、设置页内嵌入口及评论/回复自动采集已在连接的 PKX110 / Android 17 / Vector 真机环境完成现场验证。
 
