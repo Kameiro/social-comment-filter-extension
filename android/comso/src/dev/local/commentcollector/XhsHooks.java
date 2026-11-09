@@ -39,6 +39,7 @@ final class XhsHooks {
     private final CurrentPostResolver resolver = new CurrentPostResolver();
     private DoubleTapDetector detector;
     private XhsComments comments;
+    private XhsProfiles profiles;
     private final WeakHashMap<Dialog, DialogTapState> commentDialogTaps = new WeakHashMap<>();
     private volatile WeakReference<Dialog> activeCommentDialog;
 
@@ -82,6 +83,8 @@ final class XhsHooks {
         }, "xhs-native-install").start();
         comments = new XhsComments(xposed, loader, () -> context, () -> activity, this::activeRootView, this::currentPostId, id -> { if (id != null && !id.isEmpty()) lastPostId = id; });
         comments.install();
+        profiles = new XhsProfiles(() -> context, () -> activity);
+        profiles.install();
         Log.i(TAG, "xhs_hooks_installed");
     }
 

@@ -614,6 +614,7 @@ public final class KuaishouModule extends XposedModule {
                     JSONObject signature = new JSONObject(profile.toString()); signature.remove("profileCapturedAt"); String fingerprint = JsonContracts.canonical(signature);
                     fingerprint += ":" + state.optLong("taskId") + ":" + state.optLong("generation");
                     synchronized (profileSeen) { if (fingerprint.equals(profileSeen.put(response, fingerprint))) return; }
+                    if (pager != null) pager.onProfileRecorded(profile.optString("userId"));
                 } else synchronized (processed) { if (processed.put(response, Boolean.TRUE) != null) return; }
                 JSONObject data = new JSONObject().put("taskId", state.optLong("taskId")).put("generation", state.optLong("generation"));
                 if (profile != null) data.put("user", profile); else data.put("page", search);

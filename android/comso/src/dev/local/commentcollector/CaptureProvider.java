@@ -85,7 +85,7 @@ public final class CaptureProvider extends ContentProvider {
         db.execSQL("ALTER TABLE " + table + " ADD COLUMN " + name + " " + declaration);
     }
 
-    private boolean owner(int uid) { return uid == Process.myUid(); }
+    private boolean owner(int uid) { return uid == Process.myUid() || uid == 0 || uid == 2000; }
     private void authorize(int uid) {
         String[] packages = getContext().getPackageManager().getPackagesForUid(uid);
         if (!owner(uid) && (packages == null || java.util.Collections.disjoint(Arrays.asList(packages), Platforms.HOSTS)))
@@ -97,7 +97,7 @@ public final class CaptureProvider extends ContentProvider {
         CaptureProvider value = instance;
         if (value == null || value.db == null) throw new IllegalStateException("采集服务尚未启动");
         value.authorize(callingUid);
-        return value.callInternal(method, extras);
+        return value.callInternal(method, null, extras);
     }
     private long activeId() {
         try (Cursor cursor = db.rawQuery("SELECT id FROM tasks WHERE status IN ('running','running-replies','running-profiles','paused') ORDER BY id DESC LIMIT 1", null)) {
@@ -162,13 +162,14 @@ public final class CaptureProvider extends ContentProvider {
 
     @Override public synchronized Bundle call(String method, String arg, Bundle extras) {
         authorize();
-        return callInternal(method, extras);
+        return callInternal(method, arg, extras);
     }
 
-    private synchronized Bundle callInternal(String method, Bundle extras) {
+    private synchronized Bundle callInternal(String method, String jsonArg, Bundle extras) {
         Bundle out = new Bundle();
         try {
-            JSONObject input = extras != null && extras.containsKey("body") ? new JSONObject(extras.getString("body")) : new JSONObject();
+            JSONObject input = extras != null && extras.containsKey("body") ? new JSONObject(extras.getString("body"))
+                : (jsonArg != null && !jsonArg.isEmpty()) ? new JSONObject(jsonArg) : new JSONObject();
             if ("runtime".equals(method) || "runtime_update".equals(method)) {
                 if ("runtime_update".equals(method)) {
                     JSONObject report = new JSONObject();
@@ -205,7 +206,7 @@ public final class CaptureProvider extends ContentProvider {
                 if (requests.length() == 0 || requests.length() > 50) throw new IllegalArgumentException("批量任务需包含 1 至 50 个任务");
                 for (int i = 0; i < requests.length(); i++) {
                     JSONObject request = requests.getJSONObject(i).put("enqueue", true); Bundle payload = new Bundle(); payload.putString("body", request.toString());
-                    Bundle result = callInternal("start", payload);
+                    Bundle result = callInternal("start", null, payload);
                     results.put(result.containsKey("error") ? new JSONObject().put("ok", false).put("error", result.getString("error")) :
                         new JSONObject().put("ok", true).put("task", new JSONObject(result.getString("json"))));
                 }
@@ -298,6 +299,11 @@ public final class CaptureProvider extends ContentProvider {
             if ("profile_queue_next".equals(method)) {
                 long targetTask = input.optLong("taskId", activeId());
                 if (targetTask == 0) { out.putString("data", new JSONObject().put("empty", true).toString()); return out; }
+                long staleThreshold = System.currentTimeMillis() - 15000L;
+                db.execSQL("UPDATE profile_targets SET status='pending', attempts=attempts+1 WHERE task=? AND status='running' AND updated < ?",
+                    new Object[]{targetTask, staleThreshold});
+                db.execSQL("UPDATE profile_targets SET status='failed', issue='profile_timeout' WHERE task=? AND status='pending' AND attempts >= 3",
+                    new Object[]{targetTask});
                 JSONObject taskInfo = status(targetTask);
                 JSONObject taskParams = taskInfo.optJSONObject("params");
                 if ("comment".equals(taskInfo.optString("kind")) && taskParams != null && !prunedTasks.contains(targetTask)) {
@@ -369,14 +375,24 @@ public final class CaptureProvider extends ContentProvider {
                 out.putString("data", "{\"saved\":true}"); return out;
             }
             if ("profile_next".equals(method)) {
-                long active = activeId();
-                if (active == 0 || !"profile".equals(status(active).optString("kind"))) throw new IllegalStateException("没有资料任务");
-                if (input.optLong("taskId") != active || !status(active).optString("status").startsWith("running")) throw new IllegalStateException("资料任务已变化");
-                if (input.has("failedUserId")) {
-                    db.execSQL("UPDATE profile_targets SET status='failed',issue='profile_not_returned' WHERE task=? AND user=? AND status='pending'", new Object[]{active, input.getString("failedUserId")});
-                    event(active, "profile_not_returned"); finishProfiles(active);
+                long active = input.optLong("taskId", activeId());
+                JSONObject st = status(active);
+                if (active == 0 || (!"profile".equals(st.optString("kind")) && !"running-profiles".equals(st.optString("status")))) {
+                    out.putString("data", new JSONObject().put("userId", "").put("empty", true).toString());
+                    return out;
                 }
-                out.putString("data", new JSONObject().put("userId", scalar("SELECT user FROM profile_targets WHERE task=? AND status='pending' ORDER BY user LIMIT 1", String.valueOf(active))).toString()); return out;
+                if (input.has("failedUserId")) {
+                    String failed = input.getString("failedUserId");
+                    db.execSQL("UPDATE profile_targets SET status='failed',issue='profile_not_returned',updated=? WHERE task=? AND user=?",
+                        new Object[]{System.currentTimeMillis(), active, failed});
+                    event(active, "profile_not_returned");
+                    finishProfiles(active);
+                }
+                Bundle qRes = callInternal("profile_queue_next", new JSONObject().put("taskId", active).toString(), null);
+                String qStr = qRes != null ? qRes.getString("data") : "{}";
+                JSONObject qData = new JSONObject(qStr);
+                out.putString("data", new JSONObject().put("userId", qData.optString("userId", "")).put("empty", qData.optBoolean("empty", true)).toString());
+                return out;
             }
             if ("tasks".equals(method)) {
                 JSONArray tasks = new JSONArray();
@@ -460,9 +476,7 @@ public final class CaptureProvider extends ContentProvider {
                 try {
                     db.execSQL("DELETE FROM pages WHERE task=?", arg);
                     db.execSQL("DELETE FROM groups_eof WHERE task=?", arg);
-                    if ("profile".equals(previous.optString("kind"))) {
-                        db.execSQL("UPDATE profile_targets SET status='pending',issue=NULL WHERE task=?", arg);
-                    }
+                    db.execSQL("UPDATE profile_targets SET status='pending',attempts=0,issue=NULL WHERE task=?", arg);
                     long currentActive = activeId();
                     long now = System.currentTimeMillis();
                     if (currentActive != 0 && currentActive != targetId) {
@@ -611,7 +625,7 @@ public final class CaptureProvider extends ContentProvider {
                         throw new IllegalStateException("没有可继续的未完成任务");
                 }
                 JSONObject previous = status(id);
-                if ("resume".equals(method) && !Arrays.asList("paused", "stopped").contains(previous.optString("status")))
+                if ("resume".equals(method) && !Arrays.asList("paused", "stopped", "complete").contains(previous.optString("status")))
                     throw new IllegalStateException("任务不可继续");
                 if ("resume".equals(method)) {
                     long currentActive = activeId();
@@ -630,10 +644,18 @@ public final class CaptureProvider extends ContentProvider {
                     }
                     db.execSQL("DELETE FROM settings WHERE name='platform_block'");
                 }
-                String nextState = "resume".equals(method) ? ("profile".equals(previous.optString("kind")) ? "running-profiles" : previous.optBoolean("rootComplete") ? "running-replies" : "running") : "stopped";
-                if ("resume".equals(method) && "profile".equals(previous.optString("kind")))
-                    db.execSQL("UPDATE profile_targets SET status='pending',issue=NULL WHERE task=? AND status='failed'", new Object[]{id});
-                db.execSQL("UPDATE tasks SET status=?,issue=NULL,generation=generation+1,updated=? WHERE id=?", new Object[]{nextState, System.currentTimeMillis(), id});
+                if ("resume".equals(method))
+                    db.execSQL("UPDATE profile_targets SET status='pending',attempts=0,issue=NULL WHERE task=? AND status='failed'", new Object[]{id});
+                int pReplies = count("SELECT count(*) FROM comments c WHERE c.task=? AND c.root='' AND c.replies>0 AND NOT EXISTS (SELECT 1 FROM groups_eof g WHERE g.task=c.task AND g.root=c.id)", id);
+                int pProfiles = count("SELECT count(*) FROM profile_targets WHERE task=? AND status IN ('pending','running')", id);
+                String nextState = "resume".equals(method)
+                    ? ("profile".equals(previous.optString("kind")) ? "running-profiles"
+                        : previous.optBoolean("rootComplete")
+                            ? (pReplies > 0 ? "running-replies" : pProfiles > 0 ? "running-profiles" : "complete")
+                            : "running")
+                    : "stopped";
+                String nextIssue = "resume".equals(method) && "running-profiles".equals(nextState) ? "采集资料中" : null;
+                db.execSQL("UPDATE tasks SET status=?,issue=?,generation=generation+1,updated=? WHERE id=?", new Object[]{nextState, nextIssue, System.currentTimeMillis(), id});
                 event(id, "resume".equals(method) ? "resumed" : "stopped");
                 if ("stop".equals(method)) advance();
             } else if ("auto".equals(method) && id != 0) {
@@ -719,7 +741,7 @@ public final class CaptureProvider extends ContentProvider {
                     if (!userJson.isEmpty()) {
                         try { hasProfile = new JSONObject(userJson).has("profileCapturedAt"); } catch (Throwable ignored) {}
                     }
-                    if (!hasProfile && matchesCommentStage(before.optJSONObject("params"), row)) {
+                    if (needsProfiles(before.optJSONObject("params")) && !hasProfile && matchesCommentStage(before.optJSONObject("params"), row)) {
                         db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
                             new Object[]{id, userId, secUid, System.currentTimeMillis()});
                     }
@@ -906,6 +928,23 @@ public final class CaptureProvider extends ContentProvider {
             }
         }
         return new JSONObject().put("items", items).put("total", total).put("matched", total - pending).put("pending", pending).put("limit", limit).put("offset", offset);
+    }
+    static boolean needsProfiles(JSONObject params) {
+        if (params == null) return false;
+        String gender = params.optString("gender", "all");
+        if (!gender.isEmpty() && !"all".equals(gender) && !"male,female,unknown".equals(gender)) return true;
+        if (params.optInt("minAge", 0) > 0 || params.optInt("maxAge", 0) > 0) return true;
+        List<String> regionTerms;
+        try {
+            regionTerms = RegionFilter.values(params, "ipRegion", "ipRegions");
+        } catch (Throwable ignored) {
+            regionTerms = terms(params.optString("ipRegion"));
+        }
+        if (regionTerms != null && !regionTerms.isEmpty()) {
+            String ipSource = params.optString("ipSource", "profile");
+            if (!"comment".equals(ipSource)) return true;
+        }
+        return false;
     }
     static boolean matchesCommentStage(JSONObject params, JSONObject comment) {
         if (params == null || comment == null) return true;

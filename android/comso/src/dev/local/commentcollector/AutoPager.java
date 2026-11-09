@@ -103,7 +103,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                     pause("manual_verification_required"); return;
                 }
             }
-            if ("profile".equals(state.optString("kind"))) { profiles(state, foreground); return; }
+            if ("profile".equals(state.optString("kind")) || "running-profiles".equals(state.optString("status"))) { profiles(state, foreground); return; }
             if ("discovery".equals(state.optString("kind"))) {
                 if (!navigationRequested) {
                     launch(foreground, "kwai://search?keyword=" + Uri.encode(state.getJSONObject("params").optString("keyword")));
@@ -206,15 +206,40 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
     private void launch(Activity activity, String uri) { activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(uri)).setPackage("com.smile.gifmaker")); }
     private void profiles(JSONObject task, Activity activity) throws Exception {
         JSONObject input = new JSONObject().put("taskId", taskId);
-        JSONObject next = CollectorClient.call(context, "profile_next", input); String uid = next.optString("userId");
+        JSONObject next = CollectorClient.call(context, "profile_queue_next", input);
+        if (next == null || next.optBoolean("empty")) {
+            closeProfileActivity(activity);
+            profileUser = "";
+            return;
+        }
+        String uid = next.optString("userId");
         if (uid.isEmpty()) return;
         long now = SystemClock.elapsedRealtime();
         if (!uid.equals(profileUser)) {
-            if (now - navigatedAt < 6000) return;
-            profileUser = uid; navigatedAt = now; launch(activity, "kwai://profile/" + Uri.encode(uid));
-        } else if (now - navigatedAt > 25000) {
-            CollectorClient.call(context, "profile_next", input.put("failedUserId", uid)); profileUser = "";
+            if (now - navigatedAt < 3000) return;
+            profileUser = uid; navigatedAt = now; launch(activity, "kwai://profile/" + Uri.encode(uid)); actions++;
+        } else if (now - navigatedAt > 12000) {
+            CollectorClient.call(context, "profile_queue_fail", input.put("userId", uid).put("issue", "profile_timeout"));
+            closeProfileActivity(activity);
+            profileUser = "";
         }
+    }
+    void onProfileRecorded(String uid) {
+        if (uid != null && uid.equals(profileUser)) {
+            profileUser = "";
+            handler.postDelayed(() -> {
+                Activity act = activity.get();
+                closeProfileActivity(act);
+            }, 600);
+        }
+    }
+    private void closeProfileActivity(Activity act) {
+        if (act != null && isProfileActivity(act.getClass().getName()) && !act.isFinishing()) {
+            act.finish();
+        }
+    }
+    private static boolean isProfileActivity(String name) {
+        return name != null && (name.contains("UserProfileActivity") || name.contains("ProfileActivity") || name.contains(".profile."));
     }
     private boolean commentList(View view) {
         if (commentAncestor(view)) return true;

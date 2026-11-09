@@ -6,21 +6,27 @@ import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * Background native paging for Xiaohongshu (com.xingin.xhs) comments.
+ * Background native paging for Xiaohongshu (com.xingin.xhs) comments and user profiles.
  * The app's own Retrofit CommentService performs getCommentList and getSubCommentsV3;
- * we capture the proxy, method and arguments of real calls and replay them with new cursors.
+ * and UserServices performs getUserInfo.
+ * We capture the proxy, method and arguments of real calls and replay them with new cursors/userIds.
  * Returned RxJava2 Observables are resolved via blockingFirst() on worker threads, bypassing UI scrolling.
  */
 final class XhsNativePager {
     private static final String TAG = "CommentCollector";
     private static final String SERVICE_CLASS = "com.xingin.matrix.comment.model.service.CommentService";
+    private static final String USER_SERVICE_CLASS = "com.xingin.matrix.profile.services.UserServices";
 
     private static volatile Object proxy;
     private static volatile Method listMethod, replyMethod;
     private static volatile Object[] listArgs, replyArgs;
+    private static volatile Object userProxy;
+    private static volatile Method getUserInfoMethod;
     private static volatile boolean hooked;
     private static volatile String lastCapturedPost = "";
     static volatile Consumer<String> onPostCaptured;
@@ -32,6 +38,13 @@ final class XhsNativePager {
     static boolean ready() {
         if (proxy == null && cachedLoader != null) tryInitProxy(cachedLoader);
         return proxy != null && listMethod != null;
+    }
+
+    static boolean profileReady() {
+        if (cachedLoader != null && (userProxy == null || getUserInfoMethod == null)) {
+            tryInitUserProxy(cachedLoader);
+        }
+        return userProxy != null && getUserInfoMethod != null;
     }
 
     static String post() {
@@ -60,10 +73,14 @@ final class XhsNativePager {
             Log.i(TAG, "xhs_native_methods list=" + listMethod + " reply=" + replyMethod);
 
             tryInitProxy(loader);
+            tryInitUserProxy(loader);
 
             Class<?> handlerClass = null;
             if (proxy != null && Proxy.isProxyClass(proxy.getClass())) {
                 handlerClass = Proxy.getInvocationHandler(proxy).getClass();
+            }
+            if (handlerClass == null && userProxy != null && Proxy.isProxyClass(userProxy.getClass())) {
+                handlerClass = Proxy.getInvocationHandler(userProxy).getClass();
             }
             if (handlerClass == null) {
                 try { handlerClass = loader.loadClass("retrofit2.z$a"); } catch (Throwable ignored) {}
@@ -81,27 +98,36 @@ final class XhsNativePager {
                 Method invoke = handlerClass.getDeclaredMethod("invoke", Object.class, Method.class, Object[].class);
                 xposed.hook(invoke).intercept(chain -> {
                     Method called = (Method) chain.getArg(1);
-                    if (called != null && SERVICE_CLASS.equals(called.getDeclaringClass().getName())) {
-                        String name = called.getName();
-                        Object[] rawArgs = (Object[]) chain.getArg(2);
-                        if ("getCommentList".equals(name)) {
-                            proxy = chain.getArg(0);
-                            listMethod = called;
-                            if (rawArgs != null) listArgs = rawArgs.clone();
-                            if (replaying.get() == null && rawArgs != null && rawArgs.length > 0 && rawArgs[0] != null) {
-                                String current = String.valueOf(rawArgs[0]);
-                                if (!current.isEmpty() && !"null".equals(current)) {
-                                    lastCapturedPost = current;
-                                    Consumer<String> cb = onPostCaptured;
-                                    if (cb != null) cb.accept(current);
+                    if (called != null) {
+                        String declaring = called.getDeclaringClass().getName();
+                        if (SERVICE_CLASS.equals(declaring)) {
+                            String name = called.getName();
+                            Object[] rawArgs = (Object[]) chain.getArg(2);
+                            if ("getCommentList".equals(name)) {
+                                proxy = chain.getArg(0);
+                                listMethod = called;
+                                if (rawArgs != null) listArgs = rawArgs.clone();
+                                if (replaying.get() == null && rawArgs != null && rawArgs.length > 0 && rawArgs[0] != null) {
+                                    String current = String.valueOf(rawArgs[0]);
+                                    if (!current.isEmpty() && !"null".equals(current)) {
+                                        lastCapturedPost = current;
+                                        Consumer<String> cb = onPostCaptured;
+                                        if (cb != null) cb.accept(current);
+                                    }
                                 }
+                                Log.i(TAG, "xhs_native_captured getCommentList post=" + lastCapturedPost);
+                            } else if ("getSubCommentsV3".equals(name)) {
+                                proxy = chain.getArg(0);
+                                replyMethod = called;
+                                if (rawArgs != null) replyArgs = rawArgs.clone();
+                                Log.i(TAG, "xhs_native_captured getSubCommentsV3");
                             }
-                            Log.i(TAG, "xhs_native_captured getCommentList post=" + lastCapturedPost);
-                        } else if ("getSubCommentsV3".equals(name)) {
-                            proxy = chain.getArg(0);
-                            replyMethod = called;
-                            if (rawArgs != null) replyArgs = rawArgs.clone();
-                            Log.i(TAG, "xhs_native_captured getSubCommentsV3");
+                        } else if (USER_SERVICE_CLASS.equals(declaring)) {
+                            userProxy = chain.getArg(0);
+                            if ("getUserInfo".equals(called.getName())) {
+                                getUserInfoMethod = called;
+                            }
+                            Log.i(TAG, "xhs_native_captured UserServices " + called.getName());
                         }
                     }
                     return chain.proceed();
@@ -133,23 +159,110 @@ final class XhsNativePager {
                 }
             } catch (Throwable ignored) {}
 
-            // 2. Try singleton getter via hba.c.a.b(CommentService.class)
-            try {
-                Class<?> hbaClass = loader.loadClass("hba.c");
-                Field aField = hbaClass.getDeclaredField("a");
-                aField.setAccessible(true);
-                Object aInstance = aField.get(null);
-                if (aInstance != null) {
-                    Method bMethod = aInstance.getClass().getMethod("b", Class.class);
-                    Object instance = bMethod.invoke(aInstance, serviceClass);
-                    if (instance != null && serviceClass.isInstance(instance)) {
-                        proxy = instance;
-                        Log.i(TAG, "xhs_native_found_hba_service " + instance);
-                        return;
+            // 2. Try singleton getter via hba.c / gka.c
+            for (String candidate : new String[]{"hba.c", "gka.c"}) {
+                try {
+                    Class<?> apiClass = loader.loadClass(candidate);
+                    Field aField = apiClass.getDeclaredField("a");
+                    aField.setAccessible(true);
+                    Object aInstance = aField.get(null);
+                    if (aInstance != null) {
+                        for (String method : new String[]{"b", "d"}) {
+                            try {
+                                Method m = aInstance.getClass().getMethod(method, Class.class);
+                                Object instance = m.invoke(aInstance, serviceClass);
+                                if (instance != null && serviceClass.isInstance(instance)) {
+                                    proxy = instance;
+                                    Log.i(TAG, "xhs_native_found_api_service via=" + candidate + "." + method + " instance=" + instance);
+                                    return;
+                                }
+                            } catch (Throwable ignored) {}
+                        }
                     }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void tryInitUserProxy(ClassLoader loader) {
+        if (userProxy != null && getUserInfoMethod != null) return;
+        try {
+            Class<?> userServicesClass = loader.loadClass(USER_SERVICE_CLASS);
+            for (Method m : userServicesClass.getDeclaredMethods()) {
+                if ("getUserInfo".equals(m.getName())) {
+                    getUserInfoMethod = m;
+                    break;
+                }
+            }
+            Log.i(TAG, "xhs_native_user_services method=" + getUserInfoMethod);
+
+            // 1. Direct sub.d.Companion.c("main" | "edith", UserServices.class)
+            // Guaranteed to throw if the network library is not ready, avoiding dummy fallback proxies.
+            try {
+                Class<?> subDClass = loader.loadClass("sub.d");
+                Field companionField = subDClass.getField("Companion");
+                Object companion = companionField.get(null);
+                Method cMethod = companion.getClass().getMethod("c", String.class, Class.class);
+                for (String domain : new String[]{"main", "edith"}) {
+                    try {
+                        Object instance = cMethod.invoke(companion, domain, userServicesClass);
+                        if (instance != null && userServicesClass.isInstance(instance)) {
+                            userProxy = instance;
+                            Log.i(TAG, "xhs_native_found_user_service via=sub.d." + domain + " instance=" + instance);
+                            return;
+                        }
+                    } catch (Throwable ignored) {}
                 }
             } catch (Throwable ignored) {}
-        } catch (Throwable ignored) {}
+
+            // 2. Try static getter in mp9.a.a()
+            try {
+                Class<?> mp9 = loader.loadClass("mp9.a");
+                Method a = mp9.getDeclaredMethod("a");
+                Object instance = a.invoke(null);
+                if (instance != null && userServicesClass.isInstance(instance)) {
+                    userProxy = instance;
+                    Log.i(TAG, "xhs_native_found_user_service via=mp9.a instance=" + instance);
+                    return;
+                }
+            } catch (Throwable ignored) {}
+
+            // 3. Try singleton getters in gka.c / hba.c ONLY IF sub.d has client registered
+            for (String candidate : new String[]{"gka.c", "hba.c"}) {
+                try {
+                    Class<?> apiClass = loader.loadClass(candidate);
+                    Field aField = apiClass.getDeclaredField("a");
+                    aField.setAccessible(true);
+                    Object aInstance = aField.get(null);
+                    if (aInstance != null) {
+                        for (String method : new String[]{"d", "b"}) {
+                            try {
+                                Method m = aInstance.getClass().getMethod(method, Class.class);
+                                Object instance = m.invoke(aInstance, userServicesClass);
+                                if (instance != null && userServicesClass.isInstance(instance)) {
+                                    boolean hasRealClient = false;
+                                    try {
+                                        Class<?> subDClass = loader.loadClass("sub.d");
+                                        Field bField = subDClass.getField("b");
+                                        java.util.Map<?, ?> map = (java.util.Map<?, ?>) bField.get(null);
+                                        hasRealClient = map != null && (map.containsKey("main") || map.containsKey("edith"));
+                                    } catch (Throwable t) { hasRealClient = true; }
+                                    if (hasRealClient) {
+                                        userProxy = instance;
+                                        Log.i(TAG, "xhs_native_found_user_service via=" + candidate + "." + method + " instance=" + instance);
+                                        return;
+                                    }
+                                }
+                            } catch (Throwable ignored) {}
+                        }
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "xhs_native_user_api_failed candidate=" + candidate, t);
+                }
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "xhs_native_user_services_failed", t);
+        }
     }
 
     /** Replays getCommentList on worker thread and blocks synchronously via blockingFirst(). */
@@ -202,6 +315,43 @@ final class XhsNativePager {
         } catch (Throwable error) {
             Throwable cause = error.getCause() != null ? error.getCause() : error;
             Log.w(TAG, "xhs_native_fetch_replies_failed " + cause.getMessage());
+            return null;
+        }
+    }
+
+    /** Replays getUserInfo on worker thread and blocks synchronously via blockingFirst(). */
+    static Object fetchProfile(String userId) {
+        if (!profileReady() || userId == null || userId.isEmpty()) return null;
+        Object p = userProxy;
+        Method m = getUserInfoMethod;
+        if (p == null || m == null) return null;
+        try {
+            Map<String, String> params = new LinkedHashMap<>();
+            params.put("user_id", userId);
+            params.put("profile_page_head_exp", "1");
+            params.put("cny_source", "note_detail_r10");
+            params.put("new_page_exp", "0");
+            params.put("load_widgets_opt_exp", "0");
+            params.put("ext_params", "");
+
+            replaying.set(Boolean.TRUE);
+            Object observable;
+            try {
+                observable = m.invoke(p, params);
+            } finally {
+                replaying.set(null);
+            }
+            if (observable == null) return null;
+            Method blockingFirst = observable.getClass().getMethod("blockingFirst");
+            Object response = blockingFirst.invoke(observable);
+            Log.i(TAG, "xhs_native_fetch_profile userId=" + userId + " result=" + (response == null ? "null" : response.getClass().getName()));
+            return response;
+        } catch (Throwable error) {
+            Throwable cause = error.getCause() != null ? error.getCause() : error;
+            Log.w(TAG, "xhs_native_fetch_profile_failed " + cause.getMessage(), cause);
+            if (cause.getMessage() != null && cause.getMessage().contains("Network library has not been initialized")) {
+                userProxy = null;
+            }
             return null;
         }
     }
