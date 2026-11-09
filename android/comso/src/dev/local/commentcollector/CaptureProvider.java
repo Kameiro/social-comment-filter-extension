@@ -40,6 +40,8 @@ public final class CaptureProvider extends ContentProvider {
         db.execSQL("CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, data TEXT, updated INTEGER)");
         db.execSQL("CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, data TEXT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS profile_targets (task INTEGER, user TEXT, status TEXT, issue TEXT, PRIMARY KEY(task,user))");
+        db.execSQL("CREATE INDEX IF NOT EXISTS profile_targets_by_task_status ON profile_targets(task,status)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS groups_eof_by_task ON groups_eof(task)");
         db.execSQL("CREATE TABLE IF NOT EXISTS discovered (task INTEGER, post TEXT, PRIMARY KEY(task,post))");
         column("kind", "TEXT DEFAULT 'comment'");
         column("params", "TEXT DEFAULT '{}'");
@@ -614,7 +616,8 @@ public final class CaptureProvider extends ContentProvider {
                     JSONArray targets = input.getJSONArray("userIds");
                     for (int i = 0; i < targets.length(); i++) {
                         String uid = targets.getString(i);
-                        db.execSQL("INSERT OR IGNORE INTO profile_targets VALUES (?,?,'pending',NULL)", new Object[]{id, uid});
+                        db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, '', 0, ?)",
+                            new Object[]{id, uid, System.currentTimeMillis()});
                     }
                 }
                 event(id, "created");

@@ -52,6 +52,7 @@ public final class KuaishouModule extends XposedModule {
     private long downAt;
     private float downX, downY;
     private AutoPager pager;
+    private KuaishouProfiles profileDriver;
     private final CommentPageCache recentPages = new CommentPageCache();
     private final NativeCommentPager nativePager = new NativeCommentPager();
     private final WeakIdentityMap<Boolean> processed = new WeakIdentityMap<>();
@@ -374,6 +375,8 @@ public final class KuaishouModule extends XposedModule {
             capture(sub);
         });
         pager = new AutoPager(app, () -> lastPhoto, this::replayCached, nativePager);
+        profileDriver = new KuaishouProfiles(() -> context, () -> activeActivity);
+        profileDriver.install();
         app.registerActivityLifecycleCallbacks(pager);
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
             @Override public void onActivityResumed(Activity value) {

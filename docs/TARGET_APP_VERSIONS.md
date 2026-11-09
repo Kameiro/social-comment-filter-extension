@@ -15,7 +15,7 @@
 | **小红书** | `com.xingin.xhs` | `9.53.0` | `9530804` | 36 (Android 16) | Split APKs (App Bundle) |  已验证通过（兼容 9.51.0） |
 | **快手** | `com.smile.gifmaker` | `14.8.40.50567` | `50567` | 30 (Android 11) | 单 APK (`base.apk`) |  已验证通过 |
 | **抖音** | `com.ss.android.ugc.aweme` | `40.7.0` | `400701` | 34 (Android 14) | 单 APK (`base.apk`) |  已验证通过 |
-| **comso 采集模块** | `dev.local.commentcollector` | `0.1.3` | `4` | 36 (Android 16) | Vector / LSPosed 模块 APK |  已验证通过 |
+| **comso 采集模块** | `dev.local.commentcollector` | `0.1.4` | `5` | 36 (Android 16) | Vector / LSPosed 模块 APK |  已验证通过 |
 
 ---
 
@@ -38,8 +38,11 @@
 ### 2.2 快手 (Kuaishou)
 - **适配版本**：`14.8.40.50567`（versionCode `50567`）
 - **核心适配实现**：
-  - **评论翻页与展开**：`AutoPager` 自动探测评论列表 RecyclerView、模拟平滑滚动，并支持折叠回复自动点击展开。
-  - **二级筛选主页资料采集**：适配 `running-profiles` 阶段，通过现代 `profile_queue_next` 队列顺序调起 `kwai://profile/<uid>`；通过 Hook `UserProfile.getKUserInfo` 抓取真实 IP 属地、性别、年龄后，通过 `onProfileRecorded` 自动延时关闭个人页返回评论，完成队列流转。
+  - **评论翻页与展开**：`NativeCommentPager` 深度绑定 `KmpCommentFeaturePageList` 原生模型调度，并支持折叠回复自动点击展开。
+  - **原生静默主页资料采集**：通过 `KuaishouProfiles` 后台线程调用快手原生 Retrofit 接口 `com.yxcorp.gifshow.profile.util.m1.v` (`/rest/n/user/profile/v2`，返回 `Observable<t4n.d<UserProfileResponse>>`)，使用 `PublicMapper.profile()` 解析实体得到真实 IP 属地、性别、年龄、昵称，**彻底替换了过去通过 UI 跳页面 (`kwai://profile/<uid>`) 打开关闭主页的低效模式，实现零 UI 交互、零 Activity 跳跃、毫秒级静默并发采集**。
+  - **全面消除卡顿与掉帧**：
+    - 在 `AutoPager.tick()` 中优先执行 `nativePager.pump()`，在原生翻页与资料抓取时跳过主线程递归遍历数千个 View 的 `flatten(root, nodes)` 操作，杜绝 UI 掉帧。
+    - 在 `CaptureProvider` 中为 `profile_targets(task, status)` 及 `groups_eof(task)` 建立联合索引，消除高频 `status()` 轮询造成的 SQLite 全表扫描。
   - **原生嵌入**：在快手原生 `SettingsActivity` 嵌入 `comso 模块设置`，支持双击作品弹出信息浮窗。
 - **安装方法**：
   ```bash
@@ -58,7 +61,7 @@
   ```
 
 ### 2.4 comso 采集模块
-- **版本号**：`0.1.3`（versionCode `4`）
+- **版本号**：`0.1.4`（versionCode `5`）
 - **源码路径**：`android/comso/`
 - **构建输出**：`android/runtime/collector/comso.apk`（软链接/分发于 `outputs/comso.apk`）
 - **构建与测试**：
@@ -79,6 +82,6 @@
 | `xiaohongshu-v9.53.0-split-apks.zip` | ~187 MB | `7060cd4d46b0b9b741b742570774d00be3a48865d311c45b6a8295acdaa9b375` | 小红书 v9.53.0 完整分包（base + arm64_v8a + xxxhdpi） |
 | `kuaishou-v14.8.40.50567.apk` | ~179 MB | `1aea3180f86d97a92ebbf0418c71d7ffa9c1e56808d8a573ac14f4c66422dcae` | 快手 v14.8.40.50567 单 APK |
 | `douyin-v40.7.0.apk` | ~343 MB | `51d9fd191904c3112e895bdeaf25ff5bb3b61fa65af1519a617b769e73235f0a` | 抖音 v40.7.0 单 APK |
-| `comso-v0.1.3.apk` | ~257 KB | `d78f1fa377ae1488d26ed6807017fcb2b804a96ebb5b18731c3705637c0b489f` | 采集模块 Vector / LSPosed 插件 APK (0.1.3) |
+| `comso-v0.1.3.apk` | ~257 KB | `d78f1fa377ae1488d26ed6807017fcb2b804a96ebb5b18731c3705637c0b489f` | 采集模块 Vector / LSPosed 插件 APK (0.1.3 基准归档) |
 
 如需排查新版本兼容性问题，可重新下载上述 APK 覆盖安装以还原验证基准。

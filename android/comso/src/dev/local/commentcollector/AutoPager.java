@@ -93,6 +93,15 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 foreground.getClass().getName().matches(".*(?:\\.login\\.|LoginActivity).*")) {
                 pause("manual_login_required"); return;
             }
+            if ("profile".equals(state.optString("kind")) || "running-profiles".equals(state.optString("status"))) {
+                closeProfileActivity(foreground);
+                lastProgress = SystemClock.elapsedRealtime();
+                return;
+            }
+            if ("comment".equals(state.optString("kind")) && nativePager.pump(state)) {
+                lastProgress = SystemClock.elapsedRealtime();
+                return;
+            }
             View root = window();
             if (root == null) return;
             List<View> nodes = new ArrayList<>(); flatten(root, nodes);
@@ -103,7 +112,6 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                     pause("manual_verification_required"); return;
                 }
             }
-            if ("profile".equals(state.optString("kind")) || "running-profiles".equals(state.optString("status"))) { profiles(state, foreground); return; }
             if ("discovery".equals(state.optString("kind"))) {
                 if (!navigationRequested) {
                     launch(foreground, "kwai://search?keyword=" + Uri.encode(state.getJSONObject("params").optString("keyword")));
@@ -205,24 +213,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
     }
     private void launch(Activity activity, String uri) { activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(uri)).setPackage("com.smile.gifmaker")); }
     private void profiles(JSONObject task, Activity activity) throws Exception {
-        JSONObject input = new JSONObject().put("taskId", taskId);
-        JSONObject next = CollectorClient.call(context, "profile_queue_next", input);
-        if (next == null || next.optBoolean("empty")) {
-            closeProfileActivity(activity);
-            profileUser = "";
-            return;
-        }
-        String uid = next.optString("userId");
-        if (uid.isEmpty()) return;
-        long now = SystemClock.elapsedRealtime();
-        if (!uid.equals(profileUser)) {
-            if (now - navigatedAt < 3000) return;
-            profileUser = uid; navigatedAt = now; launch(activity, "kwai://profile/" + Uri.encode(uid)); actions++;
-        } else if (now - navigatedAt > 12000) {
-            CollectorClient.call(context, "profile_queue_fail", input.put("userId", uid).put("issue", "profile_timeout"));
-            closeProfileActivity(activity);
-            profileUser = "";
-        }
+        closeProfileActivity(activity);
     }
     void onProfileRecorded(String uid) {
         if (uid != null && uid.equals(profileUser)) {
