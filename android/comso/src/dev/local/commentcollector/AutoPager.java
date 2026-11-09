@@ -94,7 +94,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 pause("manual_login_required"); return;
             }
             if ("profile".equals(state.optString("kind")) || "running-profiles".equals(state.optString("status"))) {
-                closeProfileActivity(foreground);
+                if (profileUser != null && !profileUser.isEmpty()) closeProfileActivity(foreground);
                 lastProgress = SystemClock.elapsedRealtime();
                 return;
             }

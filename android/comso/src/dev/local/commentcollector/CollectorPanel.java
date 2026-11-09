@@ -461,8 +461,6 @@ public final class CollectorPanel {
                         String text = label;
                         main.post(() -> {
                             busy.set(false);
-                            // Keep the screen on while CollectorPanel is attached
-                            try { activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); } catch (Throwable ignored) {}
                             syncFloatingButtonVisibility(activity, VideoInfoSettings.enabled(VideoInfoSettings.current(activity), "floating_button"));
                             boolean[] flags = pillFlags(pill);
                             flags[1] = text != null;
