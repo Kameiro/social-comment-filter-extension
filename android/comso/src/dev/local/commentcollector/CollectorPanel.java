@@ -251,6 +251,7 @@ public final class CollectorPanel {
         boolean allPlatforms;
         String userFilter, userFilterName, postFilter, search, anchorId;
         int scrollY;
+        WeakReference<Activity> sourceActivity;
         String activityClass;
         int activityHash;
         long savedAt;
@@ -315,16 +316,19 @@ public final class CollectorPanel {
         if (!(decor instanceof FrameLayout)) return;
 
         long now = System.currentTimeMillis();
-        if (pendingReturn != null && !showing()
-                && activity.getClass().getName().equals(pendingReturn.activityClass)
-                && (now - pendingReturn.savedAt < 30 * 60 * 1000L)) {
-            ReturnState s = pendingReturn;
-            pendingReturn = null;
-            decor.postDelayed(() -> {
-                if (!activity.isFinishing() && !activity.isDestroyed() && !showing()) {
-                    show(activity, currentPhoto, s);
-                }
-            }, 350);
+        if (pendingReturn != null) {
+            Activity src = pendingReturn.sourceActivity != null ? pendingReturn.sourceActivity.get() : null;
+            if (src == null || src.isFinishing() || src.isDestroyed() || (now - pendingReturn.savedAt >= 30 * 60 * 1000L)) {
+                pendingReturn = null;
+            } else if (!showing() && src == activity) {
+                ReturnState s = pendingReturn;
+                pendingReturn = null;
+                decor.postDelayed(() -> {
+                    if (!activity.isFinishing() && !activity.isDestroyed() && !showing()) {
+                        show(activity, currentPhoto, s);
+                    }
+                }, 350);
+            }
         }
 
         if (decor.findViewWithTag(FLOATING_TAG) != null) return;
@@ -2419,11 +2423,12 @@ public final class CollectorPanel {
         s.search = search;
         s.anchorId = anchorId;
         s.scrollY = currentScroll != null ? currentScroll.getScrollY() : 0;
+        s.sourceActivity = new WeakReference<>(activity);
         s.activityClass = activity.getClass().getName();
         s.activityHash = System.identityHashCode(activity);
         s.savedAt = System.currentTimeMillis();
         pendingReturn = s;
-        Log.i("CommentCollector", "panel_return_saved anchor=" + anchorId + " page=" + page + " kind=" + dataKind + " scrollY=" + s.scrollY + " activity=" + s.activityClass);
+        Log.i("CommentCollector", "panel_return_saved anchor=" + anchorId + " page=" + page + " kind=" + dataKind + " scrollY=" + s.scrollY + " activity=" + s.activityClass + " hash=" + s.activityHash);
     }
     private void restoreScroll(ReturnState s) {
         if (s == null || currentScroll == null) return;
