@@ -255,6 +255,8 @@ public final class CollectorPanel {
     /** When non-zero, the comments page is scoped to one capture task. */
     private long taskFilter;
     private boolean allTasks;
+    private boolean multiSelectMode;
+    private final Set<Long> selectedTasks = new LinkedHashSet<>();
     private ScrollView currentScroll;
     /** Data-page scroll container; the header and result list share one scroll surface. */
     private ScrollView dataScroll;
@@ -707,6 +709,70 @@ public final class CollectorPanel {
         }
 
         JSONArray items = api("tasks", new JSONObject()).getJSONArray("items");
+        List<Long> visibleTaskIds = new ArrayList<>();
+        for (int i = 0; i < items.length(); i++) {
+            JSONObject task = items.getJSONObject(i);
+            long tid = task.optLong("taskId");
+            if (tid == active.optLong("taskId") && (state.startsWith("running") || "paused".equals(state) || "queued".equals(state))) continue;
+            visibleTaskIds.add(tid);
+        }
+
+        if (multiSelectMode) {
+            LinearLayout actionBar = horizontal();
+            actionBar.setPadding(dp(12), dp(8), dp(12), dp(8));
+            actionBar.setBackground(round(surfaceVariant, M3.SHAPE_MEDIUM));
+            actionBar.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, -2);
+            barParams.setMargins(0, dp(12), 0, dp(4));
+
+            TextView countText = text("已选 " + selectedTasks.size() + " 项", 14, true);
+            actionBar.addView(countText, new LinearLayout.LayoutParams(0, -2, 1));
+
+            boolean allSelected = !visibleTaskIds.isEmpty() && selectedTasks.containsAll(visibleTaskIds);
+            TextView selectAll = text(allSelected ? "取消全选" : "全选", 13, false);
+            selectAll.setTextColor(primary);
+            selectAll.setPadding(dp(8), dp(4), dp(8), dp(4));
+            selectAll.setOnClickListener(v -> {
+                if (allSelected) {
+                    selectedTasks.removeAll(visibleTaskIds);
+                } else {
+                    selectedTasks.addAll(visibleTaskIds);
+                }
+                render();
+            });
+            actionBar.addView(selectAll);
+
+            TextView exitBtn = text("退出多选", 13, false);
+            exitBtn.setTextColor(secondary);
+            exitBtn.setPadding(dp(8), dp(4), dp(8), dp(4));
+            exitBtn.setOnClickListener(v -> {
+                multiSelectMode = false;
+                selectedTasks.clear();
+                render();
+            });
+            actionBar.addView(exitBtn);
+
+            Button batchDelBtn = new Button(uiContext);
+            batchDelBtn.setText("批量删除 (" + selectedTasks.size() + ")");
+            batchDelBtn.setTextSize(12);
+            batchDelBtn.setTypeface(batchDelBtn.getTypeface(), Typeface.BOLD);
+            batchDelBtn.setTextColor(Color.WHITE);
+            batchDelBtn.setBackground(round(errorColor, 8));
+            batchDelBtn.setPadding(dp(10), dp(2), dp(10), dp(2));
+            batchDelBtn.setEnabled(!selectedTasks.isEmpty());
+            batchDelBtn.setAlpha(selectedTasks.isEmpty() ? 0.45f : 1f);
+            batchDelBtn.setOnClickListener(v -> {
+                if (!selectedTasks.isEmpty()) {
+                    confirmDeleteTasks(new ArrayList<>(selectedTasks));
+                }
+            });
+            LinearLayout.LayoutParams delParams = new LinearLayout.LayoutParams(-2, dp(34));
+            delParams.leftMargin = dp(6);
+            actionBar.addView(batchDelBtn, delParams);
+
+            list.addView(actionBar, barParams);
+        }
+
         LinearLayout heading = horizontal(); heading.setPadding(dp(4), dp(14), 0, dp(6));
         heading.addView(text(allTasks ? "全部任务" : "最近任务", 15, true), new LinearLayout.LayoutParams(0, -2, 1));
         if (items.length() > 4) { TextView toggle = text(allTasks ? "收起" : "全部 ›", 13, false); toggle.setTextColor(primary); toggle.setPadding(dp(12), dp(6), dp(4), dp(6));
@@ -723,6 +789,9 @@ public final class CollectorPanel {
 
     /** Compact one-line task row; swipe left for refresh & delete actions, tap to expand into the full card. */
     private void taskRow(LinearLayout parent, JSONObject task) {
+        long tid = task.optLong("taskId");
+        boolean selected = selectedTasks.contains(tid);
+
         FrameLayout swipeWrap = new FrameLayout(activity);
         swipeWrap.setBackground(round(surfaceVariant, M3.SHAPE_LARGE));
         swipeWrap.setClipToOutline(true);
@@ -733,47 +802,81 @@ public final class CollectorPanel {
 
         int actionWidth = dp(168);
         LinearLayout actions = horizontal();
-        FrameLayout.LayoutParams actionParams = new FrameLayout.LayoutParams(actionWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.END);
-        swipeWrap.addView(actions, actionParams);
+        if (!multiSelectMode) {
+            FrameLayout.LayoutParams actionParams = new FrameLayout.LayoutParams(actionWidth, FrameLayout.LayoutParams.MATCH_PARENT, Gravity.END);
+            swipeWrap.addView(actions, actionParams);
+        }
 
         LinearLayout row = vertical();
         row.setPadding(dp(16), dp(12), dp(16), dp(12));
-        row.setBackground(round(surfaceContainer, M3.SHAPE_LARGE));
+        if (multiSelectMode && selected) {
+            GradientDrawable selBg = round(surfaceContainer, M3.SHAPE_LARGE);
+            selBg.setStroke(dp(2), primary);
+            row.setBackground(selBg);
+        } else {
+            row.setBackground(round(surfaceContainer, M3.SHAPE_LARGE));
+        }
         swipeWrap.addView(row, new FrameLayout.LayoutParams(-1, -2));
 
-        Button refreshBtn = new Button(uiContext);
-        refreshBtn.setText("更新抓取");
-        refreshBtn.setTextColor(sc.onPrimary);
-        refreshBtn.setTextSize(13);
-        refreshBtn.setTypeface(refreshBtn.getTypeface(), Typeface.BOLD);
-        refreshBtn.setBackgroundColor(primary);
-        refreshBtn.setGravity(Gravity.CENTER);
-        refreshBtn.setPadding(0, 0, 0, 0);
-        refreshBtn.setOnClickListener(v -> {
-            row.animate().translationX(0f).setDuration(160).start();
-            openSwipeRow = null;
-            taskAction("refresh_task", task.optLong("taskId"));
-        });
-        actions.addView(refreshBtn, new LinearLayout.LayoutParams(dp(92), -1));
+        if (!multiSelectMode) {
+            Button refreshBtn = new Button(uiContext);
+            refreshBtn.setText("更新抓取");
+            refreshBtn.setTextColor(sc.onPrimary);
+            refreshBtn.setTextSize(13);
+            refreshBtn.setTypeface(refreshBtn.getTypeface(), Typeface.BOLD);
+            refreshBtn.setBackgroundColor(primary);
+            refreshBtn.setGravity(Gravity.CENTER);
+            refreshBtn.setPadding(0, 0, 0, 0);
+            refreshBtn.setOnClickListener(v -> {
+                row.animate().translationX(0f).setDuration(160).start();
+                openSwipeRow = null;
+                taskAction("refresh_task", tid);
+            });
+            actions.addView(refreshBtn, new LinearLayout.LayoutParams(dp(92), -1));
 
-        Button deleteBtn = new Button(uiContext);
-        deleteBtn.setText("删除");
-        deleteBtn.setTextColor(Color.WHITE);
-        deleteBtn.setTextSize(13);
-        deleteBtn.setTypeface(deleteBtn.getTypeface(), Typeface.BOLD);
-        deleteBtn.setBackgroundColor(errorColor);
-        deleteBtn.setGravity(Gravity.CENTER);
-        deleteBtn.setPadding(0, 0, 0, 0);
-        deleteBtn.setOnClickListener(v -> {
-            row.animate().translationX(0f).setDuration(160).start();
-            openSwipeRow = null;
-            deleteTask(task.optLong("taskId"));
-        });
-        actions.addView(deleteBtn, new LinearLayout.LayoutParams(dp(76), -1));
+            Button deleteBtn = new Button(uiContext);
+            deleteBtn.setText("删除");
+            deleteBtn.setTextColor(Color.WHITE);
+            deleteBtn.setTextSize(13);
+            deleteBtn.setTypeface(deleteBtn.getTypeface(), Typeface.BOLD);
+            deleteBtn.setBackgroundColor(errorColor);
+            deleteBtn.setGravity(Gravity.CENTER);
+            deleteBtn.setPadding(0, 0, 0, 0);
+            deleteBtn.setOnClickListener(v -> {
+                row.animate().translationX(0f).setDuration(160).start();
+                openSwipeRow = null;
+                deleteTask(tid);
+            });
+            actions.addView(deleteBtn, new LinearLayout.LayoutParams(dp(76), -1));
+        }
 
         LinearLayout line = horizontal();
+        line.setGravity(Gravity.CENTER_VERTICAL);
+        if (multiSelectMode) {
+            TextView check = new TextView(uiContext);
+            check.setTextSize(14);
+            check.setTypeface(Typeface.DEFAULT_BOLD);
+            check.setGravity(Gravity.CENTER);
+            int size = dp(22);
+            LinearLayout.LayoutParams checkParams = new LinearLayout.LayoutParams(size, size);
+            checkParams.rightMargin = dp(10);
+            checkParams.gravity = Gravity.CENTER_VERTICAL;
+            GradientDrawable circle = new GradientDrawable();
+            circle.setShape(GradientDrawable.OVAL);
+            if (selected) {
+                circle.setColor(primary);
+                check.setText("✓");
+                check.setTextColor(sc.onPrimary);
+            } else {
+                circle.setColor(Color.TRANSPARENT);
+                circle.setStroke(dp(2), sc.outline);
+                check.setText("");
+            }
+            check.setBackground(circle);
+            line.addView(check, checkParams);
+        }
         String kind = task.optString("kind"), state = task.optString("status");
-        TextView title = text("#" + task.optLong("taskId") + " " + kindName(kind), 14, true);
+        TextView title = text("#" + tid + " " + kindName(kind), 14, true);
         line.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         TextView badge = text(state(state), 12, true); badge.setPadding(dp(8), dp(2), dp(8), dp(2));
         badge.setTextColor("paused".equals(state) || "stopped".equals(state) ? errorColor : "complete".equals(state) ? primary : secondary);
@@ -785,7 +888,19 @@ public final class CollectorPanel {
 
         row.setOnTouchListener(new View.OnTouchListener() {
             private float downRawX, downRawY, startTx;
-            private boolean swiping;
+            private boolean swiping, longPressed;
+            private final Runnable longPressRunnable = () -> {
+                if (swiping || row.getTranslationX() < -dp(8)) return;
+                longPressed = true;
+                row.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS);
+                multiSelectMode = true;
+                selectedTasks.add(tid);
+                if (openSwipeRow != null) {
+                    openSwipeRow.animate().translationX(0f).setDuration(160).start();
+                    openSwipeRow = null;
+                }
+                render();
+            };
 
             @Override public boolean onTouch(View v, MotionEvent event) {
                 switch (event.getActionMasked()) {
@@ -794,10 +909,18 @@ public final class CollectorPanel {
                         downRawY = event.getRawY();
                         startTx = row.getTranslationX();
                         swiping = false;
+                        longPressed = false;
+                        if (!multiSelectMode) {
+                            handler.postDelayed(longPressRunnable, 500);
+                        }
                         return true;
                     case MotionEvent.ACTION_MOVE:
                         float dx = event.getRawX() - downRawX;
                         float dy = event.getRawY() - downRawY;
+                        if (Math.abs(dx) > dp(8) || Math.abs(dy) > dp(8)) {
+                            handler.removeCallbacks(longPressRunnable);
+                        }
+                        if (multiSelectMode) return false;
                         if (!swiping && Math.abs(dx) > dp(8) && Math.abs(dx) > Math.abs(dy) * 1.15f) {
                             swiping = true;
                             if (row.getParent() != null) row.getParent().requestDisallowInterceptTouchEvent(true);
@@ -813,6 +936,16 @@ public final class CollectorPanel {
                         return false;
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
+                        handler.removeCallbacks(longPressRunnable);
+                        if (longPressed) return true;
+                        if (multiSelectMode) {
+                            if (event.getActionMasked() == MotionEvent.ACTION_UP && Math.abs(event.getRawX() - downRawX) < dp(8) && Math.abs(event.getRawY() - downRawY) < dp(8)) {
+                                if (selectedTasks.contains(tid)) selectedTasks.remove(tid);
+                                else selectedTasks.add(tid);
+                                render();
+                            }
+                            return true;
+                        }
                         if (swiping) {
                             float dx2 = event.getRawX() - downRawX;
                             if (row.getTranslationX() < -actionWidth * 0.35f || (dx2 < -dp(24) && startTx == 0)) {
@@ -1711,10 +1844,40 @@ public final class CollectorPanel {
     }
 
     private void deleteTask(long id) {
+        confirmDeleteTasks(java.util.Collections.singletonList(id));
+    }
+
+    private void confirmDeleteTasks(List<Long> taskIds) {
+        if (taskIds == null || taskIds.isEmpty()) return;
+        String title = taskIds.size() == 1 ? "删除任务 #" + taskIds.get(0) : "批量删除 (" + taskIds.size() + "个任务)";
+        String[] options = {
+            "仅删除任务与评论数据\n（保留用户画像，跨任务可复用）",
+            "连同专有评论用户数据一起删除\n（彻底清理仅在该任务出现的专有用户记录）"
+        };
+        int[] chosen = {0};
+        alert().setTitle(title)
+            .setSingleChoiceItems(options, 0, (dialog, which) -> chosen[0] = which)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确认删除", (dialog, which) -> deleteTasks(taskIds, chosen[0] == 1))
+            .show();
+    }
+
+    private void deleteTasks(List<Long> taskIds, boolean deleteUsers) {
         try {
-            api("delete_task", new JSONObject().put("taskId", id));
-            if (taskFilter == id) taskFilter = 0;
-            Toast.makeText(activity, "已删除任务 #" + id, Toast.LENGTH_SHORT).show();
+            JSONArray arr = new JSONArray();
+            for (Long tid : taskIds) {
+                arr.put(tid);
+                if (taskFilter == tid) taskFilter = 0;
+            }
+            JSONObject input = new JSONObject().put("taskIds", arr).put("deleteUsers", deleteUsers);
+            if (taskIds.size() == 1) input.put("taskId", taskIds.get(0));
+            api("delete_task", input);
+            selectedTasks.clear();
+            multiSelectMode = false;
+            String msg = deleteUsers
+                ? "已删除 " + taskIds.size() + " 个任务并清理专有用户"
+                : "已删除 " + taskIds.size() + " 个任务";
+            Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show();
             render();
         } catch (Exception error) { error(error); }
     }

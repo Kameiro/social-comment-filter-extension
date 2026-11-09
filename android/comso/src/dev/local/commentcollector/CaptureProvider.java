@@ -416,23 +416,37 @@ public final class CaptureProvider extends ContentProvider {
                 out.putString("data", new JSONObject().put("token", value).toString()); return out;
             }
             if ("delete_task".equals(method)) {
-                long targetId = input.getLong("taskId");
+                List<Long> targetIds = new ArrayList<>();
+                if (input.has("taskIds")) {
+                    JSONArray arr = input.getJSONArray("taskIds");
+                    for (int i = 0; i < arr.length(); i++) targetIds.add(arr.getLong(i));
+                } else if (input.has("taskId")) {
+                    targetIds.add(input.getLong("taskId"));
+                }
+                boolean deleteUsers = input.optBoolean("deleteUsers", false);
                 db.beginTransaction();
                 try {
-                    String[] arg = new String[]{String.valueOf(targetId)};
-                    db.execSQL("DELETE FROM comments WHERE task=?", arg);
-                    db.execSQL("DELETE FROM pages WHERE task=?", arg);
-                    db.execSQL("DELETE FROM groups_eof WHERE task=?", arg);
-                    db.execSQL("DELETE FROM events WHERE task=?", arg);
-                    db.execSQL("DELETE FROM profile_targets WHERE task=?", arg);
-                    db.execSQL("DELETE FROM discovered WHERE task=?", arg);
-                    db.execSQL("DELETE FROM tasks WHERE id=?", arg);
+                    for (long targetId : targetIds) {
+                        String[] arg = new String[]{String.valueOf(targetId)};
+                        db.execSQL("DELETE FROM comments WHERE task=?", arg);
+                        db.execSQL("DELETE FROM pages WHERE task=?", arg);
+                        db.execSQL("DELETE FROM groups_eof WHERE task=?", arg);
+                        db.execSQL("DELETE FROM events WHERE task=?", arg);
+                        db.execSQL("DELETE FROM profile_targets WHERE task=?", arg);
+                        db.execSQL("DELETE FROM discovered WHERE task=?", arg);
+                        db.execSQL("DELETE FROM tasks WHERE id=?", arg);
+                        prunedTasks.remove(targetId);
+                    }
+                    if (deleteUsers) {
+                        db.execSQL("DELETE FROM users WHERE id NOT IN (SELECT DISTINCT json_extract(c.data, '$.userId') FROM comments c WHERE json_extract(c.data, '$.userId') IS NOT NULL AND json_extract(c.data, '$.userId') != '')");
+                    }
                     db.setTransactionSuccessful();
                 } finally { db.endTransaction(); }
                 advance();
                 long current = activeId();
                 writeStatus(status(current));
-                JSONObject res = new JSONObject().put("deleted", true).put("taskId", targetId);
+                JSONObject res = new JSONObject().put("deleted", true).put("count", targetIds.size()).put("cleanedUsers", deleteUsers);
+                if (targetIds.size() == 1) res.put("taskId", targetIds.get(0));
                 out.putString("data", res.toString());
                 out.putString("json", res.toString());
                 return out;
