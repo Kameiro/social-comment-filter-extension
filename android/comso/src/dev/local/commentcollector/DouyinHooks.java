@@ -320,6 +320,9 @@ final class DouyinHooks {
         }
         if (act != null) {
             String actName = act.getClass().getName();
+            if (actName.contains("UserProfile") || actName.contains("Setting")) {
+                return "";
+            }
             boolean isSearch = actName.contains("Search");
             boolean isFlow = actName.contains("FlowPageActivity");
             Object aweme = null;

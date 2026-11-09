@@ -362,6 +362,13 @@ public final class KuaishouModule extends XposedModule {
             name.endsWith("KwaiRnActivity");
     }
 
+    private String resolveCurrentPhoto() {
+        Activity act = activeActivity;
+        if (act == null || act.isFinishing() || act.isDestroyed()) return "";
+        if (!isFeedActivity(act.getClass().getName())) return "";
+        return lastPhoto == null ? "" : lastPhoto;
+    }
+
     private void attach(Application app) {
         if (context != null) return;
         context = app;
@@ -374,7 +381,7 @@ public final class KuaishouModule extends XposedModule {
             replyContext.put(sub, metadata);
             capture(sub);
         });
-        pager = new AutoPager(app, () -> lastPhoto, this::replayCached, nativePager);
+        pager = new AutoPager(app, this::resolveCurrentPhoto, this::replayCached, nativePager);
         profileDriver = new KuaishouProfiles(() -> context, () -> activeActivity);
         profileDriver.install();
         app.registerActivityLifecycleCallbacks(pager);
@@ -487,7 +494,7 @@ public final class KuaishouModule extends XposedModule {
             String tag = "comment_collector_native_settings_activity";
             if (parent.findViewWithTag(tag) != null) return;
             float d = activity.getResources().getDisplayMetrics().density;
-            View card = CollectorPanel.createSettingsCard(activity, () -> lastPhoto, tag);
+            View card = CollectorPanel.createSettingsCard(activity, this::resolveCurrentPhoto, tag);
             int insertIndex = Math.max(0, parent.indexOfChild(list));
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Math.round(54 * d));
             int marginH = Math.round(16 * d);
@@ -507,7 +514,7 @@ public final class KuaishouModule extends XposedModule {
             Activity activity = (Activity) SnapshotMapper.invoke(fragment, "getActivity", new Class<?>[0]);
             if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
             float d = activity.getResources().getDisplayMetrics().density;
-            View card = CollectorPanel.createSettingsCard(activity, () -> lastPhoto, tag);
+            View card = CollectorPanel.createSettingsCard(activity, this::resolveCurrentPhoto, tag);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, Math.round(54 * d));
             int marginH = Math.round(16 * d);
             lp.setMargins(marginH, Math.round(12 * d), marginH, Math.round(4 * d));

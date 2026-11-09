@@ -41,6 +41,7 @@ final class XhsHooks {
     private XhsComments comments;
     private XhsProfiles profiles;
     private final WeakHashMap<Dialog, DialogTapState> commentDialogTaps = new WeakHashMap<>();
+    private final WeakHashMap<Activity, WeakReference<Object>> activityNotes = new WeakHashMap<>();
     private volatile WeakReference<Dialog> activeCommentDialog;
 
     XhsHooks(XposedInterface xposed) { this.xposed = xposed; }
@@ -90,23 +91,104 @@ final class XhsHooks {
 
     private String currentPostId() {
         try {
-            String nativePost = XhsNativePager.post();
-            if (!nativePost.isEmpty() && !"null".equals(nativePost)) return nativePost;
-            nativePost = XhsNativePager.lastCapturedPost();
-            if (!nativePost.isEmpty() && !"null".equals(nativePost)) return nativePost;
             Activity act = activity;
-            boolean inDetail = isDetailActivity(act);
-            WeakReference<Object> ref = detailNote;
-            Object note = (ref == null || (!inDetail && System.currentTimeMillis() - detailNoteAt > 30_000)) ? null : ref.get();
-            JSONObject post = XhsMapper.post(note);
-            if (post != null && !post.optString("postId").isEmpty()) return post.optString("postId");
-            if (inDetail && act != null) {
-                Object resolved = resolver.resolveActivity(act, 0, 0);
-                JSONObject resolvedPost = XhsMapper.post(resolved);
-                if (resolvedPost != null && !resolvedPost.optString("postId").isEmpty()) return resolvedPost.optString("postId");
+            if (act == null || act.isFinishing() || act.isDestroyed() || !isDetailActivity(act)) {
+                return "";
             }
-            return lastPostId;
-        } catch (Throwable ignored) { return lastPostId; }
+            synchronized (activityNotes) {
+                WeakReference<Object> ref = activityNotes.get(act);
+                if (ref != null) {
+                    Object note = ref.get();
+                    if (note != null) {
+                        JSONObject post = XhsMapper.post(note);
+                        if (post != null) {
+                            String pid = post.optString("postId");
+                            if (!pid.isEmpty() && !"null".equals(pid)) return pid;
+                        }
+                    }
+                }
+            }
+            WeakReference<Object> ref = detailNote;
+            Object note = (ref != null && System.currentTimeMillis() - detailNoteAt < 60_000) ? ref.get() : null;
+            if (note != null) {
+                JSONObject post = XhsMapper.post(note);
+                if (post != null) {
+                    String pid = post.optString("postId");
+                    if (!pid.isEmpty() && !"null".equals(pid)) return pid;
+                }
+            }
+            Object resolved = resolver.resolveActivity(act, 0, 0);
+            if (resolved != null) {
+                JSONObject resolvedPost = XhsMapper.post(resolved);
+                if (resolvedPost != null) {
+                    String pid = resolvedPost.optString("postId");
+                    if (!pid.isEmpty() && !"null".equals(pid)) {
+                        synchronized (activityNotes) { activityNotes.put(act, new WeakReference<>(resolved)); }
+                        return pid;
+                    }
+                }
+            }
+            String intentPost = resolvePostFromIntent(act);
+            if (!intentPost.isEmpty()) return intentPost;
+            return "";
+        } catch (Throwable ignored) { return ""; }
+    }
+
+    private static String resolvePostFromIntent(Activity act) {
+        if (act == null) return "";
+        try {
+            android.content.Intent intent = act.getIntent();
+            if (intent == null) return "";
+            android.net.Uri data = intent.getData();
+            if (data != null) {
+                String path = data.getPath();
+                if (path != null && path.contains("/item/")) {
+                    String id = path.substring(path.indexOf("/item/") + 6);
+                    int slash = id.indexOf('/');
+                    if (slash >= 0) id = id.substring(0, slash);
+                    if (!id.isEmpty()) return id;
+                }
+                String host = data.getHost();
+                if ("item".equals(host)) {
+                    String path2 = data.getPath();
+                    if (path2 != null && path2.startsWith("/")) path2 = path2.substring(1);
+                    if (path2 != null && !path2.isEmpty()) return path2;
+                }
+            }
+            android.os.Bundle extras = intent.getExtras();
+            if (extras != null) {
+                for (String key : new String[]{"noteId", "note_id", "feed_id", "id", "current_note_id"}) {
+                    Object val = extras.get(key);
+                    if (val instanceof String) {
+                        String id = (String) val;
+                        if (!id.isEmpty() && !"null".equals(id)) return id;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {}
+        return "";
+    }
+
+    private void refreshDetailNote(Activity act) {
+        if (act == null || !isDetailActivity(act)) return;
+        try {
+            synchronized (activityNotes) {
+                WeakReference<Object> ref = activityNotes.get(act);
+                if (ref != null && ref.get() != null) return;
+            }
+            WeakReference<Object> ref = detailNote;
+            Object note = ref != null ? ref.get() : null;
+            if (note != null && System.currentTimeMillis() - detailNoteAt < 15_000) {
+                synchronized (activityNotes) { activityNotes.put(act, new WeakReference<>(note)); }
+                return;
+            }
+            Object resolved = resolver.resolveActivity(act, 0, 0);
+            if (resolved != null) {
+                synchronized (activityNotes) { activityNotes.put(act, new WeakReference<>(resolved)); }
+                detailNote = new WeakReference<>(resolved);
+                detailNoteAt = System.currentTimeMillis();
+            }
+        } catch (Throwable ignored) {}
     }
 
     private boolean showPost(Activity host, float x, float y) {
@@ -118,6 +200,11 @@ final class XhsHooks {
             if (!isDetailActivity(host)) { Log.i(TAG, "xhs_double_tap_ignored non_detail_activity"); return false; }
             if (isCommentLayer(host, x, y)) { Log.i(TAG, "xhs_double_tap_ignored comment_layer"); return true; }
             Object note = resolver.resolveActivity(host, x, y);
+            if (note == null) {
+                WeakReference<Object> ref;
+                synchronized (activityNotes) { ref = activityNotes.get(host); }
+                if (ref != null) note = ref.get();
+            }
             if (note == null) {
                 WeakReference<Object> ref = detailNote;
                 note = ref == null || System.currentTimeMillis() - detailNoteAt > 2_000 ? null : ref.get();
@@ -253,6 +340,12 @@ final class XhsHooks {
             if (!id.isEmpty()) lastPostId = id;
             detailNote = new WeakReference<>(note);
             detailNoteAt = System.currentTimeMillis();
+            Activity act = activity;
+            if (act != null && isDetailActivity(act)) {
+                synchronized (activityNotes) {
+                    activityNotes.put(act, new WeakReference<>(note));
+                }
+            }
             Log.i(TAG, "xhs_current_note source=" + source + " id=" + id);
             remember(note);
         } catch (Throwable ignored) {}
@@ -321,6 +414,9 @@ final class XhsHooks {
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
             @Override public void onActivityResumed(Activity value) {
                 activity = value;
+                if (isDetailActivity(value)) {
+                    refreshDetailNote(value);
+                }
                 CollectorPanel.attach(value, XhsHooks.this::currentPostId);
                 CollectorPanel.attachDouyinSettingsEntry(value, XhsHooks.this::currentPostId);
                 if (comments != null) comments.ensurePaging();
@@ -333,7 +429,11 @@ final class XhsHooks {
             @Override public void onActivityStarted(Activity value) {}
             @Override public void onActivityStopped(Activity value) {}
             @Override public void onActivitySaveInstanceState(Activity value, Bundle state) {}
-            @Override public void onActivityDestroyed(Activity value) {}
+            @Override public void onActivityDestroyed(Activity value) {
+                synchronized (activityNotes) {
+                    activityNotes.remove(value);
+                }
+            }
         });
         Log.i(TAG, "xhs_application_attached");
     }
