@@ -884,14 +884,17 @@ public final class CollectorPanel {
             swipeWrap.addView(actions, actionParams);
         }
 
+        PlatformStyle style = platformStyle(task);
         LinearLayout row = vertical();
-        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        row.setPadding(dp(14), dp(12), dp(16), dp(12));
         if (multiSelectMode && selected) {
             GradientDrawable selBg = round(surfaceContainer, M3.SHAPE_LARGE);
             selBg.setStroke(dp(2), primary);
             row.setBackground(selBg);
         } else {
-            row.setBackground(round(surfaceContainer, M3.SHAPE_LARGE));
+            GradientDrawable cardBg = round(surfaceContainer, M3.SHAPE_LARGE);
+            cardBg.setStroke(dp(1), style.cardStroke);
+            row.setBackground(cardBg);
         }
         swipeWrap.addView(row, new FrameLayout.LayoutParams(-1, -2));
 
@@ -952,6 +955,23 @@ public final class CollectorPanel {
             check.setBackground(circle);
             line.addView(check, checkParams);
         }
+
+        View colorBar = new View(uiContext);
+        colorBar.setBackground(round(style.primary, 2));
+        LinearLayout.LayoutParams barP = new LinearLayout.LayoutParams(dp(3), dp(14));
+        barP.rightMargin = dp(8);
+        line.addView(colorBar, barP);
+
+        TextView channelBadge = text(style.label, 11, true);
+        channelBadge.setTextColor(style.badgeText);
+        GradientDrawable badgeShape = round(style.badgeBg, 6);
+        badgeShape.setStroke(dp(1), style.cardStroke);
+        channelBadge.setBackground(badgeShape);
+        channelBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+        LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
+        cbP.rightMargin = dp(8);
+        line.addView(channelBadge, cbP);
+
         String kind = task.optString("kind"), state = task.optString("status");
         TextView title = text("#" + tid + " " + kindName(kind), 14, true);
         line.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
@@ -1075,10 +1095,87 @@ public final class CollectorPanel {
         return prefix + "已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（帖子显示共 " + task.optLong("total") + " 条）") + profSummary + (issue.isEmpty() ? "" : " · " + issue(issue));
     }
 
+    static final class PlatformStyle {
+        final String key;
+        final String label;
+        final int primary;
+        final int badgeBg;
+        final int badgeText;
+        final int cardStroke;
+
+        PlatformStyle(String key, String label, int primary, int badgeBg, int badgeText, int cardStroke) {
+            this.key = key;
+            this.label = label;
+            this.primary = primary;
+            this.badgeBg = badgeBg;
+            this.badgeText = badgeText;
+            this.cardStroke = cardStroke;
+        }
+    }
+
+    private PlatformStyle platformStyle(JSONObject task) {
+        String plat = task != null ? task.optString("platform") : "";
+        if (plat.isEmpty() && task != null) {
+            JSONObject pObj = task.optJSONObject("params");
+            if (pObj != null) plat = pObj.optString("platform");
+        }
+        if (plat.isEmpty() && task != null) {
+            String pId = task.optString("photoId");
+            if (!pId.isEmpty()) {
+                plat = pId.matches("[0-9a-fA-F]{24}") ? "xhs" : pId.matches("\\d{19}") ? "douyin" : "kuaishou";
+            }
+        }
+        if (plat.isEmpty()) plat = hostPlatform();
+
+        boolean dark = darkModeAtCreate;
+        if ("xhs".equals(plat) || "xiaohongshu".equals(plat)) {
+            int primary = Color.rgb(0xFF, 0x24, 0x42);
+            int badgeBg = dark ? Color.argb(0x38, 0xFF, 0x24, 0x42) : Color.argb(0x1F, 0xFF, 0x24, 0x42);
+            int badgeText = dark ? Color.rgb(0xFF, 0x64, 0x7C) : Color.rgb(0xE1, 0x1D, 0x48);
+            int stroke = dark ? Color.argb(0x4D, 0xFF, 0x24, 0x42) : Color.argb(0x33, 0xFF, 0x24, 0x42);
+            return new PlatformStyle("xhs", "小红书", primary, badgeBg, badgeText, stroke);
+        } else if ("douyin".equals(plat)) {
+            int primary = Color.rgb(0x02, 0x84, 0xC7);
+            int badgeBg = dark ? Color.argb(0x38, 0x02, 0x84, 0xC7) : Color.argb(0x1F, 0x02, 0x84, 0xC7);
+            int badgeText = dark ? Color.rgb(0x38, 0xBD, 0xF8) : Color.rgb(0x02, 0x84, 0xC7);
+            int stroke = dark ? Color.argb(0x4D, 0x02, 0x84, 0xC7) : Color.argb(0x33, 0x02, 0x84, 0xC7);
+            return new PlatformStyle("douyin", "抖音", primary, badgeBg, badgeText, stroke);
+        } else {
+            int primary = Color.rgb(0xFF, 0x66, 0x00);
+            int badgeBg = dark ? Color.argb(0x38, 0xFF, 0x66, 0x00) : Color.argb(0x1F, 0xFF, 0x66, 0x00);
+            int badgeText = dark ? Color.rgb(0xFB, 0x92, 0x3C) : Color.rgb(0xC2, 0x41, 0x0C);
+            int stroke = dark ? Color.argb(0x4D, 0xFF, 0x66, 0x00) : Color.argb(0x33, 0xFF, 0x66, 0x00);
+            return new PlatformStyle("kuaishou", "快手", primary, badgeBg, badgeText, stroke);
+        }
+    }
+
     private void taskCard(LinearLayout parent, JSONObject task, boolean live) throws Exception {
         LinearLayout card = card(parent);
+        PlatformStyle style = platformStyle(task);
+        GradientDrawable cardBg = round(surfaceContainer, M3.SHAPE_LARGE);
+        cardBg.setStroke(dp(1), style.cardStroke);
+        card.setBackground(cardBg);
+
         String kind = task.optString("kind"), state = task.optString("status");
         LinearLayout line = horizontal();
+        line.setGravity(Gravity.CENTER_VERTICAL);
+
+        View colorBar = new View(uiContext);
+        colorBar.setBackground(round(style.primary, 2));
+        LinearLayout.LayoutParams barP = new LinearLayout.LayoutParams(dp(3), dp(16));
+        barP.rightMargin = dp(8);
+        line.addView(colorBar, barP);
+
+        TextView channelBadge = text(style.label, 11, true);
+        channelBadge.setTextColor(style.badgeText);
+        GradientDrawable badgeShape = round(style.badgeBg, 6);
+        badgeShape.setStroke(dp(1), style.cardStroke);
+        channelBadge.setBackground(badgeShape);
+        channelBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+        LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
+        cbP.rightMargin = dp(8);
+        line.addView(channelBadge, cbP);
+
         line.addView(text("#" + task.optLong("taskId") + " " + kindName(kind), 15, true), new LinearLayout.LayoutParams(0, -2, 1));
         boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native");
         TextView badge = text(waitingForPage ? "等待返回应用" : state(state), 12, true);
