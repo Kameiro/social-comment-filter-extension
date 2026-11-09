@@ -9,14 +9,15 @@ import android.os.Binder;
 import android.os.Bundle;
 import android.os.Process;
 import android.util.AtomicFile;
+import android.util.Base64;
+import android.util.Log;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.ArrayList;
-import java.util.List;
 import java.security.SecureRandom;
-import android.util.Base64;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -297,6 +298,12 @@ public final class CaptureProvider extends ContentProvider {
             if ("profile_queue_next".equals(method)) {
                 long targetTask = input.optLong("taskId", activeId());
                 if (targetTask == 0) { out.putString("data", new JSONObject().put("empty", true).toString()); return out; }
+                JSONObject taskInfo = status(targetTask);
+                JSONObject taskParams = taskInfo.optJSONObject("params");
+                if ("comment".equals(taskInfo.optString("kind")) && taskParams != null && !prunedTasks.contains(targetTask)) {
+                    prunePendingProfiles(targetTask, taskParams);
+                    prunedTasks.add(targetTask);
+                }
                 String user = null;
                 String secUid = "";
                 try (Cursor cursor = db.rawQuery("SELECT user, coalesce(sec_uid,'') FROM profile_targets WHERE task=? AND status='pending' ORDER BY updated ASC, user ASC LIMIT 1",
@@ -307,6 +314,7 @@ public final class CaptureProvider extends ContentProvider {
                     }
                 }
                 if (user == null || user.isEmpty()) {
+                    finishProfiles(targetTask);
                     out.putString("data", new JSONObject().put("empty", true).toString());
                     return out;
                 }
@@ -912,29 +920,60 @@ public final class CaptureProvider extends ContentProvider {
             regionTerms = terms(params.optString("ipRegion"));
         }
         boolean hasRegion = regionTerms != null && !regionTerms.isEmpty();
-        String ipSource = params.optString("ipSource", "profile");
-        boolean regionDetermined = false;
-        boolean regionMatch = false;
+        boolean commentRegionMatch = false;
         if (hasRegion) {
-            if ("comment".equals(ipSource)) {
-                regionDetermined = true;
-                String commentIp = comment.optString("ipRegion", "");
-                for (String reg : regionTerms) {
-                    if (!reg.isEmpty() && commentIp.contains(reg)) { regionMatch = true; break; }
-                }
-            } else {
-                regionDetermined = false;
+            String commentIp = comment.optString("ipRegion", "");
+            for (String reg : regionTerms) {
+                if (!reg.isEmpty() && commentIp.contains(reg)) { commentRegionMatch = true; break; }
             }
         }
+        String ipSource = params.optString("ipSource", "profile");
         String relation = params.optString("relation", "and");
         if ("or".equals(relation) && hasKeyword && hasRegion) {
-            if (keywordMatch) return true;
-            if (regionDetermined) return regionMatch;
-            return true;
+            return keywordMatch || commentRegionMatch;
         }
         if (hasKeyword && !keywordMatch) return false;
-        if (hasRegion && regionDetermined && !regionMatch) return false;
+        if (hasRegion && "comment".equals(ipSource) && !commentRegionMatch) return false;
         return true;
+    }
+
+    private final java.util.Set<Long> prunedTasks = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+    private void prunePendingProfiles(long taskId, JSONObject taskParams) {
+        if (taskId == 0 || taskParams == null) return;
+        try {
+            java.util.Set<String> validUsers = new java.util.HashSet<>();
+            try (Cursor cursor = db.rawQuery("SELECT data FROM comments WHERE task=?", new String[]{String.valueOf(taskId)})) {
+                while (cursor.moveToNext()) {
+                    String data = cursor.getString(0);
+                    if (data == null || data.isEmpty()) continue;
+                    JSONObject comment = new JSONObject(data);
+                    String uid = comment.optString("userId");
+                    if (!uid.isEmpty() && !validUsers.contains(uid)) {
+                        if (matchesCommentStage(taskParams, comment)) validUsers.add(uid);
+                    }
+                }
+            }
+            List<String> toDelete = new ArrayList<>();
+            try (Cursor cursor = db.rawQuery("SELECT user FROM profile_targets WHERE task=? AND status='pending'", new String[]{String.valueOf(taskId)})) {
+                while (cursor.moveToNext()) {
+                    String u = cursor.getString(0);
+                    if (!validUsers.contains(u)) toDelete.add(u);
+                }
+            }
+            if (!toDelete.isEmpty()) {
+                db.beginTransaction();
+                try {
+                    for (String u : toDelete) {
+                        db.execSQL("DELETE FROM profile_targets WHERE task=? AND user=?", new Object[]{taskId, u});
+                    }
+                    db.setTransactionSuccessful();
+                    Log.i("CommentCollector", "pruned_invalid_profiles task=" + taskId + " count=" + toDelete.size());
+                } finally { db.endTransaction(); }
+            }
+        } catch (Throwable error) {
+            Log.w("CommentCollector", "prunePendingProfiles failed", error);
+        }
     }
 
     /** Splits "a, b；c" style input into terms. */
