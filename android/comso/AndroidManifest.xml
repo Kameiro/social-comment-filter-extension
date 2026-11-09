@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <queries>
         <package android:name="com.smile.gifmaker" />
         <package android:name="com.ss.android.ugc.aweme" />
@@ -26,6 +27,7 @@
         <receiver android:name=".BridgeReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="dev.local.commentcollector.BRIDGE" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
         <provider android:name=".CaptureProvider" android:authorities="dev.local.commentcollector.capture"

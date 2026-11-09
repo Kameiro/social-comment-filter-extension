@@ -35,7 +35,7 @@ mkdirSync(join(out, 'dex'), { recursive: true });
 run(join(java, 'bin/javac'), ['-encoding', 'UTF-8', '--release', '17', '-cp', `${android}:${api}:${nano}`,
   '-d', join(out, 'classes'), ...sources(join(project, 'src'))]);
 run(join(java, 'bin/jar'), ['--create', '--file', join(out, 'code.jar'), '-C', join(out, 'classes'), '.']);
-run(join(tools, 'd8'), ['--min-api', '29', '--lib', android, '--classpath', api,
+run(join(tools, 'd8'), ['--release', '--min-api', '29', '--lib', android, '--classpath', api,
   '--output', join(out, 'dex'), join(out, 'code.jar'), nano]);
 run(join(tools, 'aapt2'), ['compile', '--dir', join(project, 'res'), '-o', join(out, 'res.zip')]);
 const raw = join(out, 'unsigned.apk');

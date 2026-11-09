@@ -2587,14 +2587,7 @@ public final class CollectorPanel {
                 });
             } else {
                 handler.post(() -> {
-                    try {
-                        activity.startActivity(new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION));
-                        Toast.makeText(activity, "正在尝试兜底唤醒…", Toast.LENGTH_SHORT).show();
-                        handler.postDelayed(this::render, 1500);
-                    } catch (Exception error) {
-                        Toast.makeText(activity, "唤醒失败：" + error.getMessage(), Toast.LENGTH_LONG).show();
-                    }
+                    Toast.makeText(activity, "唤醒未完成：服务已被系统深度冻结。请打开一次“comso”应用，或为 comso 开启自启动/关联启动权限。", Toast.LENGTH_LONG).show();
                 });
             }
         }, "collector-manual-wake").start();

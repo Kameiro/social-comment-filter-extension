@@ -2,6 +2,8 @@ package dev.local.commentcollector;
 
 import android.content.ContentProvider;
 import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.net.Uri;
@@ -28,6 +30,17 @@ public final class CaptureProvider extends ContentProvider {
 
     @Override public boolean onCreate() {
         instance = this;
+        try {
+            Context ctx = getContext();
+            if (ctx != null) {
+                Intent sIntent = new Intent(ctx, CaptureService.class);
+                if (android.os.Build.VERSION.SDK_INT >= 26) {
+                    ctx.startForegroundService(sIntent);
+                } else {
+                    ctx.startService(sIntent);
+                }
+            }
+        } catch (Throwable ignored) {}
         db = getContext().openOrCreateDatabase("capture.db", 0, null);
         db.execSQL("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, photo TEXT, status TEXT, pages INTEGER DEFAULT 0, total INTEGER, root_eof INTEGER DEFAULT 0, auto INTEGER, updated INTEGER, issue TEXT)");
         db.execSQL("CREATE TABLE IF NOT EXISTS comments (task INTEGER, id TEXT, root TEXT, replies INTEGER, data TEXT, PRIMARY KEY(task,id))");

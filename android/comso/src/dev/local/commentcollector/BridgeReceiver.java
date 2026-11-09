@@ -10,9 +10,20 @@ public final class BridgeReceiver extends BroadcastReceiver {
     static final String ACTION = "dev.local.commentcollector.BRIDGE";
 
     @Override public void onReceive(Context context, Intent intent) {
-        if (!ACTION.equals(intent.getAction())) return;
-        try { context.startForegroundService(new Intent(context, CaptureService.class)); }
-        catch (Throwable e) { try { context.startService(new Intent(context, CaptureService.class)); } catch (Throwable ignored) {} }
+        if (intent == null) return;
+        String action = intent.getAction();
+        if (!ACTION.equals(action) && !Intent.ACTION_BOOT_COMPLETED.equals(action)) return;
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 26) {
+                context.startForegroundService(new Intent(context, CaptureService.class));
+            } else {
+                context.startService(new Intent(context, CaptureService.class));
+            }
+        } catch (Throwable ignored) {}
+        if (Intent.ACTION_BOOT_COMPLETED.equals(action)) {
+            Log.i("CommentCollector", "broadcast_boot_completed_wake_done");
+            return;
+        }
 
         final String operation = intent.getStringExtra("operation");
         final PendingResult pending = goAsync();
