@@ -87,45 +87,54 @@ public final class DouyinUserMapperTest {
 
     private static boolean matchesCommentStage(JSONObject params, JSONObject comment) {
         if (params == null || comment == null) return true;
+        String text = comment.optString("text", "");
+
+        // 1. 排除关键词：最高优先级一票否决
+        // 只要出现排除关键词，即使同时出现了包含关键词，该评论也必须被排除！
         for (String term : terms(params.optString("excludeKeyword"))) {
-            if (!term.isEmpty() && comment.optString("text", "").contains(term)) return false;
+            if (!term.isEmpty() && text.contains(term)) return false;
         }
+
+        // 2. 评论时间范围：满足近 N 天内
         int recentDays = params.optInt("recentDays");
         if (recentDays > 0) {
             long created = comment.optLong("created");
             if (created < 100000000000L) created *= 1000L;
             if (created < System.currentTimeMillis() - recentDays * 86400000L) return false;
         }
+
+        // 3. 包含关键词（多词逗号/空格分隔，满足任意一个即算命中包含）
         List<String> kwTerms = terms(params.optString("keyword"));
         boolean hasKeyword = !kwTerms.isEmpty();
         boolean keywordMatch = false;
         if (hasKeyword) {
-            String text = comment.optString("text", "");
             for (String term : kwTerms) {
                 if (!term.isEmpty() && text.contains(term)) { keywordMatch = true; break; }
             }
         }
-        List<String> regionTerms;
-        try {
-            regionTerms = RegionFilter.values(params, "ipRegion", "ipRegions");
-        } catch (Throwable ignored) {
-            regionTerms = terms(params.optString("ipRegion"));
+
+        // 4. 评论 IP 属地（初筛，直接取自评论自身的 ipRegion）
+        String commentRegionVal = params.optString("commentIpRegion").trim();
+        if (commentRegionVal.isEmpty() && "comment".equals(params.optString("ipSource"))) {
+            commentRegionVal = params.optString("ipRegion").trim();
         }
-        boolean hasRegion = regionTerms != null && !regionTerms.isEmpty();
+        List<String> commentRegionTerms = terms(commentRegionVal);
+        boolean hasCommentRegion = !commentRegionTerms.isEmpty();
         boolean commentRegionMatch = false;
-        if (hasRegion) {
+        if (hasCommentRegion) {
             String commentIp = comment.optString("ipRegion", "");
-            for (String reg : regionTerms) {
+            for (String reg : commentRegionTerms) {
                 if (!reg.isEmpty() && commentIp.contains(reg)) { commentRegionMatch = true; break; }
             }
         }
-        String ipSource = params.optString("ipSource", "profile");
+
+        // 5. 结合关系（AND 或 OR，但排除词始终一票否决）
         String relation = params.optString("relation", "and");
-        if ("or".equals(relation) && hasKeyword && hasRegion) {
+        if ("or".equals(relation) && hasKeyword && hasCommentRegion) {
             return keywordMatch || commentRegionMatch;
         }
         if (hasKeyword && !keywordMatch) return false;
-        if (hasRegion && "comment".equals(ipSource) && !commentRegionMatch) return false;
+        if (hasCommentRegion && !commentRegionMatch) return false;
         return true;
     }
 
@@ -182,9 +191,13 @@ public final class DouyinUserMapperTest {
         // 6a. Null params
         check(matchesCommentStage(null, comment), "Null params matches all");
 
-        // 6b. Exclude keyword
+        // 6b. Exclude keyword & Conflict rule (一票否决)
         JSONObject pExclude = new JSONObject().put("excludeKeyword", "广告, 报价, 价格");
         check(!matchesCommentStage(pExclude, comment), "Exclude keyword '价格' should reject comment");
+
+        // Conflict test: comment matches BOTH include keyword AND exclude keyword -> MUST REJECT!
+        JSONObject pConflict = new JSONObject().put("keyword", "买, 价格").put("excludeKeyword", "广告, 价格");
+        check(!matchesCommentStage(pConflict, comment), "Conflict: exclude keyword must reject comment even when include keyword matches");
 
         // 6c. Recent days
         JSONObject pRecentOk = new JSONObject().put("recentDays", 3);
@@ -199,23 +212,35 @@ public final class DouyinUserMapperTest {
         JSONObject pKwFail = new JSONObject().put("keyword", "投诉, 质量");
         check(!matchesCommentStage(pKwFail, comment), "Comment does not contain keyword should fail (AND)");
 
-        // 6e. IP Region & ipSource = comment
-        JSONObject pRegionCommentOk = new JSONObject().put("ipRegion", "广东, 浙江").put("ipSource", "comment");
-        check(matchesCommentStage(pRegionCommentOk, comment), "Comment IP '广东' matches '广东, 浙江'");
-        JSONObject pRegionCommentFail = new JSONObject().put("ipRegion", "北京, 上海").put("ipSource", "comment");
-        check(!matchesCommentStage(pRegionCommentFail, comment), "Comment IP '广东' does not match '北京, 上海'");
+        // 6e. Comment IP Region in 初次筛选 (commentIpRegion)
+        JSONObject pCommentIpOk = new JSONObject().put("commentIpRegion", "广东, 浙江");
+        check(matchesCommentStage(pCommentIpOk, comment), "Comment IP '广东' matches commentIpRegion '广东, 浙江'");
+        JSONObject pCommentIpFail = new JSONObject().put("commentIpRegion", "北京, 上海");
+        check(!matchesCommentStage(pCommentIpFail, comment), "Comment IP '广东' does not match commentIpRegion '北京, 上海'");
 
-        // 6f. IP Region & ipSource = profile (undetermined at comment stage)
-        JSONObject pRegionProfile = new JSONObject().put("ipRegion", "北京, 上海").put("ipSource", "profile");
-        check(matchesCommentStage(pRegionProfile, comment), "Profile IP source cannot be rejected at comment stage");
+        // 6f. Legacy IP Region & ipSource = comment
+        JSONObject pLegacyCommentOk = new JSONObject().put("ipRegion", "广东, 浙江").put("ipSource", "comment");
+        check(matchesCommentStage(pLegacyCommentOk, comment), "Legacy comment IP matches");
+        JSONObject pLegacyCommentFail = new JSONObject().put("ipRegion", "北京, 上海").put("ipSource", "comment");
+        check(!matchesCommentStage(pLegacyCommentFail, comment), "Legacy comment IP does not match");
 
-        // 6g. Relation = OR
-        JSONObject pOrPassKw = new JSONObject().put("keyword", "想买").put("ipRegion", "北京").put("ipSource", "profile").put("relation", "or");
-        check(matchesCommentStage(pOrPassKw, comment), "Relation OR passes when keyword matches even if comment region doesn't");
-        JSONObject pOrPassRegion = new JSONObject().put("keyword", "不存在的词").put("ipRegion", "广东").put("ipSource", "profile").put("relation", "or");
-        check(matchesCommentStage(pOrPassRegion, comment), "Relation OR passes when comment region matches even if keyword doesn't");
-        JSONObject pOrFailBoth = new JSONObject().put("keyword", "不存在的词").put("ipRegion", "北京").put("ipSource", "profile").put("relation", "or");
-        check(!matchesCommentStage(pOrFailBoth, comment), "Relation OR fails when keyword misses and comment region misses, even with ipSource=profile");
+        // 6g. Profile IP & Post IP (二次筛选, not rejected at comment stage)
+        JSONObject pProfileOnly = new JSONObject().put("profileIpRegion", "北京, 上海");
+        check(matchesCommentStage(pProfileOnly, comment), "profileIpRegion cannot be rejected at comment stage");
+        JSONObject pPostOnly = new JSONObject().put("postIpRegion", "杭州");
+        check(matchesCommentStage(pPostOnly, comment), "postIpRegion cannot be rejected at comment stage");
+
+        // 6h. Relation = OR (keyword OR commentIpRegion)
+        JSONObject pOrPassKw = new JSONObject().put("keyword", "想买").put("commentIpRegion", "北京").put("relation", "or");
+        check(matchesCommentStage(pOrPassKw, comment), "Relation OR passes when keyword matches even if comment region misses");
+        JSONObject pOrPassRegion = new JSONObject().put("keyword", "不存在的词").put("commentIpRegion", "广东").put("relation", "or");
+        check(matchesCommentStage(pOrPassRegion, comment), "Relation OR passes when comment region matches even if keyword misses");
+        JSONObject pOrFailBoth = new JSONObject().put("keyword", "不存在的词").put("commentIpRegion", "北京").put("relation", "or");
+        check(!matchesCommentStage(pOrFailBoth, comment), "Relation OR fails when both keyword and comment region miss");
+
+        // 6i. Conflict with Relation = OR (exclude keyword still vetoes everything)
+        JSONObject pOrConflict = new JSONObject().put("keyword", "想买").put("commentIpRegion", "广东").put("excludeKeyword", "价格").put("relation", "or");
+        check(!matchesCommentStage(pOrConflict, comment), "Relation OR must still reject if exclude keyword matches");
 
         System.out.println("PASS: DouyinUserMapperTest passed all assertions");
     }

@@ -1505,7 +1505,10 @@ public final class CollectorPanel {
             String profileIp = user != null ? user.optString("profileIpRegion") : "";
             if (profileIp.isEmpty()) profileIp = row.optString("profileIpRegion");
             String mainIp = pending ? "待采集" : profileIp.isEmpty() || "null".equals(profileIp) ? "未知" : profileIp;
-            card.addView(muted((reply ? "↳ 回复" : "评论") + " · 评论 IP " + commentIp + " · 主页 IP " + mainIp + " · " + date(row.optLong("created")), 12));
+            String postLoc = row.optString("latestPostLocation");
+            if (postLoc.isEmpty() && user != null) postLoc = user.optString("latestPostLocation");
+            String postLocText = postLoc.isEmpty() || "null".equals(postLoc) ? "" : " · 发帖地 " + postLoc;
+            card.addView(muted((reply ? "↳ 回复" : "评论") + " · 评论 IP " + commentIp + " · 主页 IP " + mainIp + postLocText + " · " + date(row.optLong("created")), 12));
 
             String commentText = row.optString("text");
             TextView content = text(commentText, 15, false);
@@ -1565,8 +1568,11 @@ public final class CollectorPanel {
         LinearLayout info = vertical();
         info.setBackground(round(surfaceVariant, 10));
         info.setPadding(dp(12), dp(10), dp(12), dp(10));
+        String postLoc = row.optString("latestPostLocation");
+        if (postLoc.isEmpty() && user != null) postLoc = user.optString("latestPostLocation");
+        String postLocText = postLoc.isEmpty() || "null".equals(postLoc) ? "" : " · 发帖地: " + postLoc;
         info.addView(text("用户: " + name + (uid.isEmpty() ? "" : " (" + uid + ")"), 13, true));
-        info.addView(muted("性别: " + gText + " · 评论 IP: " + commentIp + " · 主页 IP: " + mainIp, 12));
+        info.addView(muted("性别: " + gText + " · 评论 IP: " + commentIp + " · 主页 IP: " + mainIp + postLocText, 12));
         info.addView(muted("时间: " + date(row.optLong("created")) + " · 赞: " + number(row, "likes") + " · 回复: " + number(row, "replies"), 12));
         if (!cid.isEmpty()) info.addView(muted("评论 ID: " + cid, 11));
         box.addView(info);
@@ -1979,7 +1985,14 @@ public final class CollectorPanel {
             if (!search.isEmpty()) flow.addView(chip("搜索：" + search, true, () -> { search = ""; offset = 0; render(); }));
         }
         String[][] parts = conditionParts(filters, forCollect);
-        for (String[] part : parts) flow.addView(chip(part[1], true, () -> { filters.remove(part[0]); if ("ipRegion".equals(part[0])) { filters.remove("relation"); filters.remove("ipSource"); } saveFilters(); render(); }));
+        for (String[] part : parts) flow.addView(chip(part[1], true, () -> {
+            filters.remove(part[0]);
+            if ("commentIpRegion".equals(part[0])) { filters.remove("commentIpRegion"); filters.remove("ipRegion"); filters.remove("relation"); }
+            if ("profileIpRegion".equals(part[0])) { filters.remove("profileIpRegion"); filters.remove("ipRegion"); }
+            if ("postIpRegion".equals(part[0])) { filters.remove("postIpRegion"); filters.remove("ipRegion"); }
+            if ("ipRegion".equals(part[0])) { filters.remove("ipRegion"); filters.remove("relation"); filters.remove("ipSource"); }
+            saveFilters(); render();
+        }));
         flow.addView(chip(parts.length == 0 ? "+ 添加条件" : "编辑条件", false, () -> filterSheet(forCollect)));
         return flow;
     }
@@ -1990,7 +2003,22 @@ public final class CollectorPanel {
         if (!f.optString("keyword").isEmpty()) out.add(new String[]{"keyword", "[初筛] 含 " + f.optString("keyword")});
         if (!f.optString("excludeKeyword").isEmpty()) out.add(new String[]{"excludeKeyword", "[初筛] 排除 " + f.optString("excludeKeyword")});
         if (f.optInt("recentDays") > 0) out.add(new String[]{"recentDays", "[初筛] 近 " + f.optInt("recentDays") + " 天"});
-        if (!f.optString("ipRegion").isEmpty()) out.add(new String[]{"ipRegion", "[补充] " + ("or".equals(f.optString("relation")) && !f.optString("keyword").isEmpty() ? "或 " : "") + ipSourceName(f.optString("ipSource", "profile")) + " " + f.optString("ipRegion")});
+
+        String commentIp = f.optString("commentIpRegion").trim();
+        if (commentIp.isEmpty() && "comment".equals(f.optString("ipSource"))) commentIp = f.optString("ipRegion").trim();
+        if (!commentIp.isEmpty()) {
+            boolean isOr = "or".equals(f.optString("relation")) && !f.optString("keyword").isEmpty();
+            out.add(new String[]{"commentIpRegion", "[初筛] " + (isOr ? "或 " : "") + "评论IP " + commentIp});
+        }
+
+        String profileIp = f.optString("profileIpRegion").trim();
+        if (profileIp.isEmpty() && !"comment".equals(f.optString("ipSource")) && !"post".equals(f.optString("ipSource"))) profileIp = f.optString("ipRegion").trim();
+        if (!profileIp.isEmpty()) out.add(new String[]{"profileIpRegion", "[补充] 主页IP " + profileIp});
+
+        String postIp = f.optString("postIpRegion").trim();
+        if (postIp.isEmpty() && "post".equals(f.optString("ipSource"))) postIp = f.optString("ipRegion").trim();
+        if (!postIp.isEmpty()) out.add(new String[]{"postIpRegion", "[补充] 发帖地 " + postIp});
+
         String g = f.optString("gender", "all");
         if (!"all".equals(g)) out.add(new String[]{"gender", "[补充] 性别: " + genderFilterName(g)});
         if (f.has("minAge") || f.has("maxAge")) out.add(new String[]{"minAge", "[补充] " + (f.has("minAge") ? f.optString("minAge") : "") + "–" + (f.has("maxAge") ? f.optString("maxAge") : "") + " 岁"});
@@ -2019,20 +2047,29 @@ public final class CollectorPanel {
 
         // Block 1: ① 初次筛选（评论直接可用）
         sectionBlock(fields, "① 初次筛选（评论直接可用）", "抓取评论时实时初筛；只有满足初筛的评论，才会进入二次主页采集");
-        EditText keyword = input("包含关键词，多个用逗号分隔", filters.optString("keyword"), false); fields.addView(keyword);
-        EditText exclude = input("排除关键词，多个用逗号分隔", filters.optString("excludeKeyword"), false); fields.addView(exclude);
-        EditText days = input("只看最近多少天内（空为不限）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
+        EditText keyword = input("包含关键词，多个用逗号分隔（如：词1, 词2）", filters.optString("keyword"), false); fields.addView(keyword);
+        EditText exclude = input("排除关键词，多个用逗号分隔（如：词4, 词5）", filters.optString("excludeKeyword"), false); fields.addView(exclude);
+        fields.addView(muted("若同时命中包含词与排除词，排除词一票否决（该评论必定排除）", 11));
+
+        EditText days = input("只看最近多少天内评论（空为不限，如：30）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
+
+        String initCommentIp = filters.optString("commentIpRegion");
+        if (initCommentIp.isEmpty() && "comment".equals(filters.optString("ipSource"))) initCommentIp = filters.optString("ipRegion");
+        EditText commentIp = input("评论 IP 属地（如：浙江、杭州，多个用逗号分隔）", initCommentIp, false); fields.addView(commentIp);
+
         int[] relation = {"or".equals(filters.optString("relation")) ? 1 : 0};
         fields.addView(segmented(new String[]{"同时满足 (AND)", "满足其一 (OR)"}, relation[0], index -> relation[0] = index));
-        fields.addView(muted("评论关键词和地区的关系：同时满足两个条件，或满足任意一个", 11));
+        fields.addView(muted("包含关键词与评论 IP 的关系：同时满足两个条件，或满足其一（排除词始终一票否决）", 11));
 
         // Block 2: ② 二次筛选（补充主页资料后）
-        sectionBlock(fields, "② 二次筛选（补充主页资料后）", "初筛命中后，自动调取主页资料补充头像、现在主页IP、发帖地点及年龄");
-        EditText region = input("IP 属地（北京、河北）", filters.optString("ipRegion"), false); fields.addView(region);
-        String[] ipSources = {"profile", "comment", "post"};
-        int[] ipSource = {0}; for (int i = 0; i < ipSources.length; i++) if (ipSources[i].equals(filters.optString("ipSource", "profile"))) ipSource[0] = i;
-        fields.addView(segmented(new String[]{"主页 IP", "评论 IP", "最新发帖地点"}, ipSource[0], index -> ipSource[0] = index));
-        fields.addView(muted("按哪个 IP 判断地区；最新发帖地点在抖音精确到省+市，小红书为省IP", 11));
+        sectionBlock(fields, "② 二次筛选（补充主页资料后）", "初筛命中后，自动调取主页资料补充主页IP、最近发帖地点及性别年龄");
+        String initProfileIp = filters.optString("profileIpRegion");
+        if (initProfileIp.isEmpty() && !"comment".equals(filters.optString("ipSource")) && !"post".equals(filters.optString("ipSource"))) initProfileIp = filters.optString("ipRegion");
+        EditText profileIp = input("主页 IP 属地（如：北京、河北，多个用逗号分隔）", initProfileIp, false); fields.addView(profileIp);
+
+        String initPostIp = filters.optString("postIpRegion");
+        if (initPostIp.isEmpty() && "post".equals(filters.optString("ipSource"))) initPostIp = filters.optString("ipRegion");
+        EditText postIp = input("最近发帖地（如：杭州；抖音精确到省市，小红书/快手为省）", initPostIp, false); fields.addView(postIp);
 
         String[] genderKeys = {"female", "male", "unknown"};
         boolean[] genderOn = new boolean[3];
@@ -2072,8 +2109,12 @@ public final class CollectorPanel {
             .setPositiveButton("应用", (dialog, which) -> {
                 try {
                     JSONObject next = new JSONObject()
-                        .put("keyword", keyword.getText().toString().trim()).put("excludeKeyword", exclude.getText().toString().trim())
-                        .put("ipRegion", region.getText().toString().trim()).put("ipSource", ipSources[ipSource[0]]).put("relation", relation[0] == 1 ? "or" : "and")
+                        .put("keyword", keyword.getText().toString().trim())
+                        .put("excludeKeyword", exclude.getText().toString().trim())
+                        .put("commentIpRegion", commentIp.getText().toString().trim())
+                        .put("profileIpRegion", profileIp.getText().toString().trim())
+                        .put("postIpRegion", postIp.getText().toString().trim())
+                        .put("relation", relation[0] == 1 ? "or" : "and")
                         .put("gender", genderValue(genderKeys, genderOn)).put("sort", sortKeys[sorts.getSelectedItemPosition()])
                         .put("pagingMode", pagingKeys[pagingIndex[0]]);
                     putNumber(next, "minAge", min); putNumber(next, "maxAge", max);

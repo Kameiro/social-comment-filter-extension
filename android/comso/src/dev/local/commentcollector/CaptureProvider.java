@@ -864,22 +864,67 @@ public final class CaptureProvider extends ContentProvider {
         platformClause(where, args, query, "c.data");
         match(where, args, query, "photoId", "json_extract(c.data,'$.photoId')", false);
         match(where, args, query, "userId", "json_extract(c.data,'$.userId')", false);
-        // Keyword and region combine with AND (default) or OR, like the desktop "条件关系".
-        StringBuilder regionClause = new StringBuilder(); List<String> regionArgs = new ArrayList<>();
-        RegionFilter.append(regionClause, regionArgs, query, "ipRegion", "ipRegions", ipExpression(query.optString("ipSource"), "json_extract(c.data,'$.ipRegion')", "u"));
-        StringBuilder keywordClause = new StringBuilder(); List<String> keywordArgs = new ArrayList<>();
-        keywordTerms(keywordClause, keywordArgs, query.optString("keyword"), "json_extract(c.data,'$.text')");
-        if ("or".equals(query.optString("relation")) && regionClause.length() > 0 && keywordClause.length() > 0) {
-            where.append(" AND (").append(regionClause.substring(5)).append(" OR ").append(keywordClause.substring(5)).append(')');
-            args.addAll(regionArgs); args.addAll(keywordArgs);
-        } else { where.append(regionClause).append(keywordClause); args.addAll(regionArgs); args.addAll(keywordArgs); }
+        // 1. 排除关键词：最高优先级一票否决
         for (String term : terms(query.optString("excludeKeyword"))) {
-            where.append(" AND coalesce(json_extract(c.data,'$.text'),'') NOT LIKE ? ESCAPE '\\'"); args.add("%" + like(term) + "%");
+            where.append(" AND coalesce(json_extract(c.data,'$.text'),'') NOT LIKE ? ESCAPE '\\'");
+            args.add("%" + like(term) + "%");
         }
+        // 2. 评论时间范围
         if (query.optInt("recentDays") > 0) {
-            // created may be seconds or milliseconds depending on the source.
             where.append(" AND (CASE WHEN CAST(json_extract(c.data,'$.created') AS INTEGER) < 100000000000 THEN CAST(json_extract(c.data,'$.created') AS INTEGER)*1000 ELSE CAST(json_extract(c.data,'$.created') AS INTEGER) END) >= ?");
             args.add(String.valueOf(System.currentTimeMillis() - query.optInt("recentDays") * 86400000L));
+        }
+        // 3. 初次筛选：包含关键词 & 评论 IP 属地
+        StringBuilder commentIpClause = new StringBuilder(); List<String> commentIpArgs = new ArrayList<>();
+        String commentRegionVal = query.optString("commentIpRegion").trim();
+        if (commentRegionVal.isEmpty() && "comment".equals(query.optString("ipSource"))) {
+            commentRegionVal = query.optString("ipRegion").trim();
+        }
+        if (!commentRegionVal.isEmpty()) {
+            JSONObject cIpQuery = new JSONObject().put("cIp", commentRegionVal);
+            RegionFilter.append(commentIpClause, commentIpArgs, cIpQuery, "cIp", "cIps", "coalesce(json_extract(c.data,'$.ipRegion'),'')");
+        }
+
+        StringBuilder keywordClause = new StringBuilder(); List<String> keywordArgs = new ArrayList<>();
+        keywordTerms(keywordClause, keywordArgs, query.optString("keyword"), "json_extract(c.data,'$.text')");
+
+        if ("or".equals(query.optString("relation")) && commentIpClause.length() > 0 && keywordClause.length() > 0) {
+            where.append(" AND (").append(commentIpClause.substring(5)).append(" OR ").append(keywordClause.substring(5)).append(')');
+            args.addAll(commentIpArgs); args.addAll(keywordArgs);
+        } else {
+            if (commentIpClause.length() > 0) { where.append(commentIpClause); args.addAll(commentIpArgs); }
+            if (keywordClause.length() > 0) { where.append(keywordClause); args.addAll(keywordArgs); }
+        }
+
+        // 4. 二次筛选：主页 IP
+        String profileRegionVal = query.optString("profileIpRegion").trim();
+        if (profileRegionVal.isEmpty() && !query.optString("ipRegion").trim().isEmpty()
+                && !"comment".equals(query.optString("ipSource")) && !"post".equals(query.optString("ipSource"))) {
+            profileRegionVal = query.optString("ipRegion").trim();
+        }
+        if (!profileRegionVal.isEmpty()) {
+            StringBuilder pClause = new StringBuilder(); List<String> pArgs = new ArrayList<>();
+            JSONObject pQuery = new JSONObject().put("pIp", profileRegionVal);
+            RegionFilter.append(pClause, pArgs, pQuery, "pIp", "pIps", "coalesce(json_extract(u.data,'$.profileIpRegion'),'')");
+            if (pClause.length() > 0) {
+                where.append(" AND (").append(pClause.substring(5)).append(" OR json_extract(u.data,'$.profileCapturedAt') IS NULL)");
+                args.addAll(pArgs);
+            }
+        }
+
+        // 5. 二次筛选：最近发帖地
+        String postRegionVal = query.optString("postIpRegion").trim();
+        if (postRegionVal.isEmpty() && !query.optString("ipRegion").trim().isEmpty() && "post".equals(query.optString("ipSource"))) {
+            postRegionVal = query.optString("ipRegion").trim();
+        }
+        if (!postRegionVal.isEmpty()) {
+            StringBuilder postClause = new StringBuilder(); List<String> postArgs = new ArrayList<>();
+            JSONObject postQuery = new JSONObject().put("postIp", postRegionVal);
+            RegionFilter.append(postClause, postArgs, postQuery, "postIp", "postIps", "coalesce(json_extract(u.data,'$.latestPostLocation'),'')");
+            if (postClause.length() > 0) {
+                where.append(" AND (").append(postClause.substring(5)).append(" OR json_extract(u.data,'$.profileCapturedAt') IS NULL)");
+                args.addAll(postArgs);
+            }
         }
         String search = query.optString("search").trim();
         if (!search.isEmpty()) {
@@ -924,9 +969,11 @@ public final class CaptureProvider extends ContentProvider {
                     if (profileCaptured) {
                         row.put("gender", user.optString("gender", "unknown"));
                         row.put("profileIpRegion", user.optString("profileIpRegion", ""));
+                        row.put("latestPostLocation", user.optString("latestPostLocation", ""));
                     } else {
                         row.put("gender", "pending");
                         row.put("profileIpRegion", "");
+                        row.put("latestPostLocation", "");
                     }
                     if (row.optString("avatarUrl").isEmpty() && !user.optString("avatarUrl").isEmpty()) row.put("avatarUrl", user.optString("avatarUrl"));
                     if (row.optString("nickname").isEmpty() && !user.optString("nickname").isEmpty()) row.put("nickname", user.optString("nickname"));
@@ -948,9 +995,11 @@ public final class CaptureProvider extends ContentProvider {
                 if (profileCaptured) {
                     row.put("gender", user.optString("gender", "unknown"));
                     row.put("profileIpRegion", user.optString("profileIpRegion", ""));
+                    row.put("latestPostLocation", user.optString("latestPostLocation", ""));
                 } else {
                     row.put("gender", "pending");
                     row.put("profileIpRegion", "");
+                    row.put("latestPostLocation", "");
                 }
                 if (row.optString("avatarUrl").isEmpty() && !user.optString("avatarUrl").isEmpty()) row.put("avatarUrl", user.optString("avatarUrl"));
                 if (row.optString("nickname").isEmpty() && !user.optString("nickname").isEmpty()) row.put("nickname", user.optString("nickname"));
@@ -964,13 +1013,10 @@ public final class CaptureProvider extends ContentProvider {
         String gender = params.optString("gender", "all");
         if (!gender.isEmpty() && !"all".equals(gender) && !"male,female,unknown".equals(gender)) return true;
         if (params.optInt("minAge", 0) > 0 || params.optInt("maxAge", 0) > 0) return true;
-        List<String> regionTerms;
-        try {
-            regionTerms = RegionFilter.values(params, "ipRegion", "ipRegions");
-        } catch (Throwable ignored) {
-            regionTerms = terms(params.optString("ipRegion"));
-        }
-        if (regionTerms != null && !regionTerms.isEmpty()) {
+        if (!params.optString("profileIpRegion").trim().isEmpty()) return true;
+        if (!params.optString("postIpRegion").trim().isEmpty()) return true;
+        String legacyIp = params.optString("ipRegion").trim();
+        if (!legacyIp.isEmpty()) {
             String ipSource = params.optString("ipSource", "profile");
             if (!"comment".equals(ipSource)) return true;
         }
@@ -978,45 +1024,54 @@ public final class CaptureProvider extends ContentProvider {
     }
     static boolean matchesCommentStage(JSONObject params, JSONObject comment) {
         if (params == null || comment == null) return true;
+        String text = comment.optString("text", "");
+
+        // 1. 排除关键词：最高优先级一票否决
+        // 只要出现排除关键词，即使同时出现了包含关键词，该评论也必须被排除！
         for (String term : terms(params.optString("excludeKeyword"))) {
-            if (!term.isEmpty() && comment.optString("text", "").contains(term)) return false;
+            if (!term.isEmpty() && text.contains(term)) return false;
         }
+
+        // 2. 评论时间范围：满足近 N 天内
         int recentDays = params.optInt("recentDays");
         if (recentDays > 0) {
             long created = comment.optLong("created");
             if (created < 100000000000L) created *= 1000L;
             if (created < System.currentTimeMillis() - recentDays * 86400000L) return false;
         }
+
+        // 3. 包含关键词（多词逗号/空格分隔，满足任意一个即算命中包含）
         List<String> kwTerms = terms(params.optString("keyword"));
         boolean hasKeyword = !kwTerms.isEmpty();
         boolean keywordMatch = false;
         if (hasKeyword) {
-            String text = comment.optString("text", "");
             for (String term : kwTerms) {
                 if (!term.isEmpty() && text.contains(term)) { keywordMatch = true; break; }
             }
         }
-        List<String> regionTerms;
-        try {
-            regionTerms = RegionFilter.values(params, "ipRegion", "ipRegions");
-        } catch (Throwable ignored) {
-            regionTerms = terms(params.optString("ipRegion"));
+
+        // 4. 评论 IP 属地（初筛，直接取自评论自身的 ipRegion）
+        String commentRegionVal = params.optString("commentIpRegion").trim();
+        if (commentRegionVal.isEmpty() && "comment".equals(params.optString("ipSource"))) {
+            commentRegionVal = params.optString("ipRegion").trim();
         }
-        boolean hasRegion = regionTerms != null && !regionTerms.isEmpty();
+        List<String> commentRegionTerms = terms(commentRegionVal);
+        boolean hasCommentRegion = !commentRegionTerms.isEmpty();
         boolean commentRegionMatch = false;
-        if (hasRegion) {
+        if (hasCommentRegion) {
             String commentIp = comment.optString("ipRegion", "");
-            for (String reg : regionTerms) {
+            for (String reg : commentRegionTerms) {
                 if (!reg.isEmpty() && commentIp.contains(reg)) { commentRegionMatch = true; break; }
             }
         }
-        String ipSource = params.optString("ipSource", "profile");
+
+        // 5. 结合关系（AND 或 OR，但排除词始终一票否决）
         String relation = params.optString("relation", "and");
-        if ("or".equals(relation) && hasKeyword && hasRegion) {
+        if ("or".equals(relation) && hasKeyword && hasCommentRegion) {
             return keywordMatch || commentRegionMatch;
         }
         if (hasKeyword && !keywordMatch) return false;
-        if (hasRegion && "comment".equals(ipSource) && !commentRegionMatch) return false;
+        if (hasCommentRegion && !commentRegionMatch) return false;
         return true;
     }
 
@@ -1085,8 +1140,37 @@ public final class CaptureProvider extends ContentProvider {
         List<String> args = new ArrayList<>(); StringBuilder where = new StringBuilder("1=1");
         platformClause(where, args, query, "data");
         match(where, args, query, "keyword", "json_extract(data,'$.nickname')", true);
-        RegionFilter.append(where, args, query, "ipRegion", "ipRegions", ipExpression(query.optString("ipSource"), "json_extract(data,'$.lastCommentIpRegion')", ""));
-        match(where, args, query, "profileIpRegion", "json_extract(data,'$.profileIpRegion')", true);
+
+        // commentIpRegion (初筛)
+        String commentRegionVal = query.optString("commentIpRegion").trim();
+        if (commentRegionVal.isEmpty() && "comment".equals(query.optString("ipSource"))) {
+            commentRegionVal = query.optString("ipRegion").trim();
+        }
+        if (!commentRegionVal.isEmpty()) {
+            JSONObject cQuery = new JSONObject().put("cIp", commentRegionVal);
+            RegionFilter.append(where, args, cQuery, "cIp", "cIps", "coalesce(json_extract(data,'$.lastCommentIpRegion'),'')");
+        }
+
+        // profileIpRegion (二次筛选)
+        String profileRegionVal = query.optString("profileIpRegion").trim();
+        if (profileRegionVal.isEmpty() && !query.optString("ipRegion").trim().isEmpty()
+                && !"comment".equals(query.optString("ipSource")) && !"post".equals(query.optString("ipSource"))) {
+            profileRegionVal = query.optString("ipRegion").trim();
+        }
+        if (!profileRegionVal.isEmpty()) {
+            JSONObject pQuery = new JSONObject().put("pIp", profileRegionVal);
+            RegionFilter.append(where, args, pQuery, "pIp", "pIps", "coalesce(json_extract(data,'$.profileIpRegion'),'')");
+        }
+
+        // postIpRegion (二次筛选：最近发帖地)
+        String postRegionVal = query.optString("postIpRegion").trim();
+        if (postRegionVal.isEmpty() && !query.optString("ipRegion").trim().isEmpty() && "post".equals(query.optString("ipSource"))) {
+            postRegionVal = query.optString("ipRegion").trim();
+        }
+        if (!postRegionVal.isEmpty()) {
+            JSONObject postQuery = new JSONObject().put("postIp", postRegionVal);
+            RegionFilter.append(where, args, postQuery, "postIp", "postIps", "coalesce(json_extract(data,'$.latestPostLocation'),'')");
+        }
         String userSearch = query.optString("search").trim();
         if (!userSearch.isEmpty()) { where.append(" AND (coalesce(json_extract(data,'$.nickname'),'') LIKE ? ESCAPE '\\' OR id=?)"); args.add("%" + like(userSearch) + "%"); args.add(userSearch); }
         genderClause(where, args, "coalesce(json_extract(data,'$.gender'),'unknown')", query.optString("gender", "all"));
