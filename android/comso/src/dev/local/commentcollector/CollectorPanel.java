@@ -1673,9 +1673,12 @@ public final class CollectorPanel {
                     }
                     content.addView(muted(locDetail, 12));
                     if (user.has("bio") && !user.optString("bio").isEmpty()) {
-                        TextView bio = text(user.optString("bio"), 13, false);
-                        bio.setPadding(0, dp(4), 0, dp(4));
-                        content.addView(bio);
+                        String cleanBio = XhsProfileMapper.cleanBio(user.optString("bio"));
+                        if (!cleanBio.isEmpty()) {
+                            TextView bio = text(cleanBio, 13, false);
+                            bio.setPadding(0, dp(4), 0, dp(4));
+                            content.addView(bio);
+                        }
                     }
                     TextView total = text("在 " + byPost.size() + " 个帖子下发表了 " + (comments == null ? 0 : comments.length()) + " 条评论", 14, true);
                     total.setPadding(0, dp(10), 0, dp(4)); content.addView(total);

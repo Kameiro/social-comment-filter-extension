@@ -56,6 +56,7 @@ public final class CaptureProvider extends ContentProvider {
         column("profile_targets", "attempts", "INTEGER DEFAULT 0");
         column("profile_targets", "updated", "INTEGER DEFAULT 0");
         backfillRecords();
+        cleanDirtyUserBios();
         if ("true".equals(scalar("SELECT data FROM settings WHERE name='api_enabled'")))
             new Thread(() -> { try { LocalApi.enable(getContext()); } catch (Exception ignored) {} }, "collector-api-start").start();
         return true;
@@ -78,6 +79,25 @@ public final class CaptureProvider extends ContentProvider {
             }
             db.execSQL("INSERT INTO settings VALUES ('schema_v2','done')"); db.setTransactionSuccessful();
         } finally { db.endTransaction(); }
+    }
+    private void cleanDirtyUserBios() {
+        if (!scalar("SELECT data FROM settings WHERE name='clean_user_bios_v1'").isEmpty()) return;
+        try (Cursor cursor = db.rawQuery("SELECT id, data FROM users WHERE data LIKE '%UserDescInfo%'", null)) {
+            while (cursor.moveToNext()) {
+                String id = cursor.getString(0);
+                String dataStr = cursor.getString(1);
+                try {
+                    JSONObject u = new JSONObject(dataStr);
+                    if (u.has("bio")) {
+                        String clean = XhsProfileMapper.cleanBio(u.optString("bio"));
+                        if (clean.isEmpty()) u.remove("bio");
+                        else u.put("bio", clean);
+                        db.execSQL("UPDATE users SET data=? WHERE id=?", new Object[]{u.toString(), id});
+                    }
+                } catch (Throwable ignored) {}
+            }
+        } catch (Throwable ignored) {}
+        db.execSQL("INSERT OR REPLACE INTO settings VALUES ('clean_user_bios_v1','1')");
     }
     private void column(String name, String declaration) { column("tasks", name, declaration); }
     private void column(String table, String name, String declaration) {
@@ -826,7 +846,14 @@ public final class CaptureProvider extends ContentProvider {
             if ("lastCommentAt".equals(key) && merged.optLong(key) > incoming.optLong(key)) continue;
             if (value != null && value != JSONObject.NULL && !(value instanceof String && ((String) value).isEmpty())) merged.put(key, value);
         }
-        if ("users".equals(table) && !merged.has("gender")) merged.put("gender", "unknown");
+        if ("users".equals(table)) {
+            if (!merged.has("gender")) merged.put("gender", "unknown");
+            if (merged.has("bio")) {
+                String b = XhsProfileMapper.cleanBio(merged.optString("bio"));
+                if (b.isEmpty()) merged.remove("bio");
+                else merged.put("bio", b);
+            }
+        }
         db.execSQL("INSERT OR REPLACE INTO " + table + " VALUES (?,?,?)", new Object[]{id, merged.toString(), System.currentTimeMillis()});
     }
     private JSONObject comments(JSONObject query) throws Exception { return comments(query, null, 0); }
