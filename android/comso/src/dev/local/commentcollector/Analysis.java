@@ -29,13 +29,34 @@ public final class Analysis {
         try {
             String uid = row.optString("userId"); if (uid.isEmpty() || "null".equals(uid)) return;
             JSONObject user = users.get(uid);
+            JSONObject profile = row.optJSONObject("user");
             if (user == null) {
-                JSONObject profile = row.optJSONObject("user");
                 user = new JSONObject().put("userId", uid).put("nickname", row.opt("nickname")).put("commentCount", 0).put("likesReceived", 0)
                     .put("replyCount", 0).put("unknownLikes", 0).put("unknownReplies", 0).put("firstCommentAt", 0).put("lastCommentAt", 0)
                     .put("excluded", profile != null && !exclude.isEmpty() && profile.optString("bio").contains(exclude));
                 users.put(uid, user); posts.put(uid, new HashSet<>());
             }
+            if (user.optString("avatarUrl").isEmpty()) {
+                String av = row.optString("avatarUrl");
+                if (av.isEmpty() && profile != null) av = profile.optString("avatarUrl");
+                if (!av.isEmpty()) user.put("avatarUrl", av);
+            }
+            if (user.optString("nickname").isEmpty() || "null".equals(user.optString("nickname"))) {
+                String nick = row.optString("nickname");
+                if ((nick.isEmpty() || "null".equals(nick)) && profile != null) nick = profile.optString("nickname");
+                if (!nick.isEmpty()) user.put("nickname", nick);
+            }
+            boolean pending = row.optBoolean("profilePending", profile == null || !profile.has("profileCapturedAt"));
+            user.put("profilePending", pending);
+            String gender = profile != null && profile.has("profileCapturedAt") ? profile.optString("gender", "unknown") : row.optString("gender", "pending");
+            user.put("gender", gender);
+            if (profile != null && profile.optInt("age", 0) > 0) user.put("age", profile.optInt("age"));
+            String profileIp = profile != null ? profile.optString("profileIpRegion", row.optString("profileIpRegion", "")) : row.optString("profileIpRegion", "");
+            if (!profileIp.isEmpty()) user.put("profileIpRegion", profileIp);
+            String commentIp = profile != null && !profile.optString("lastCommentIpRegion").isEmpty() ? profile.optString("lastCommentIpRegion") : row.optString("ipRegion", "");
+            if (!commentIp.isEmpty()) user.put("lastCommentIpRegion", commentIp);
+            if (profile != null && !profile.optString("latestPostLocation").isEmpty()) user.put("latestPostLocation", profile.optString("latestPostLocation"));
+            if (profile != null && !profile.optString("location").isEmpty()) user.put("location", profile.optString("location"));
             user.put("commentCount", user.getInt("commentCount") + 1); posts.get(uid).add(row.optString("photoId"));
             for (String key : new String[]{"likes", "replies"}) {
                 String target = "likes".equals(key) ? "likesReceived" : "replyCount", unknown = "likes".equals(key) ? "unknownLikes" : "unknownReplies";

@@ -20,11 +20,13 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.util.Log;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.inputmethod.EditorInfo;
@@ -238,8 +240,21 @@ public final class CollectorPanel {
     }
     private static final int R_FLAGS = 0x7f0f0002; // view tag key for the capsule state flags
     private static final int R_SHAPES = 0x7f0f0001; // view tag key for the capsule re-shape callback
+    private static final int R_ANCHOR = 0x7f0f0003; // view tag key for restored list item scroll anchor
     private static final int PAGE_COLLECT = 0, PAGE_DATA = 1, PAGE_ANALYSIS = 2, PAGE_ME = 3;
     private static final int DATA_COMMENTS = 0, DATA_POSTS = 1, DATA_USERS = 2;
+
+    private static final class ReturnState {
+        int page, dataKind, offset;
+        long taskFilter;
+        boolean allPlatforms;
+        String userFilter, userFilterName, postFilter, search, anchorId;
+        int scrollY;
+        String activityClass;
+        int activityHash;
+        long savedAt;
+    }
+    private static ReturnState pendingReturn;
 
     private final Activity activity;
     private final Context uiContext;
@@ -252,9 +267,11 @@ public final class CollectorPanel {
     private JSONObject filters = new JSONObject();
     private int page = PAGE_COLLECT, dataKind = DATA_COMMENTS, offset;
     private String userFilter = "", userFilterName = "", postFilter = "", search = "";
+    private String lastClickedAnchor = "";
     /** When non-zero, the comments page is scoped to one capture task. */
     private long taskFilter;
     private boolean allTasks;
+    private boolean allPlatforms;
     private boolean multiSelectMode;
     private final Set<Long> selectedTasks = new LinkedHashSet<>();
     private ScrollView currentScroll;
@@ -269,6 +286,7 @@ public final class CollectorPanel {
     private View openSwipeRow;
     private boolean autoSyncRunning;
     private volatile String cloudStatusHint = "";
+    private ReturnState pendingRestoreState;
     private final Set<String> selectedPosts = new LinkedHashSet<>(), selectedUsers = new LinkedHashSet<>();
     private final List<TextView> navLabels = new ArrayList<>();
     private final List<ImageView> navIcons = new ArrayList<>();
@@ -290,10 +308,25 @@ public final class CollectorPanel {
 
     /** Adds the draggable green button plus the progress pill that appears beside it while a task runs. */
     public static void attach(Activity activity, Supplier<String> currentPhoto) {
-        if (activity == null || activity.isFinishing() || activity.getClass().getName().contains(".login.")) return;
+        if (activity == null || activity.isFinishing() || activity.isDestroyed() || activity.getClass().getName().contains(".login.")) return;
         try { activity.getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); } catch (Throwable ignored) {}
         View decor = activity.getWindow().getDecorView();
-        if (!(decor instanceof FrameLayout) || decor.findViewWithTag(FLOATING_TAG) != null) return;
+        if (!(decor instanceof FrameLayout)) return;
+
+        long now = System.currentTimeMillis();
+        if (pendingReturn != null && !showing()
+                && activity.getClass().getName().equals(pendingReturn.activityClass)
+                && (now - pendingReturn.savedAt < 30 * 60 * 1000L)) {
+            ReturnState s = pendingReturn;
+            pendingReturn = null;
+            decor.postDelayed(() -> {
+                if (!activity.isFinishing() && !activity.isDestroyed() && !showing()) {
+                    show(activity, currentPhoto, s);
+                }
+            }, 350);
+        }
+
+        if (decor.findViewWithTag(FLOATING_TAG) != null) return;
         M3.Scheme sc = M3.scheme(activity, dark(activity));
         int size = dp(activity, 48);
 
@@ -498,6 +531,14 @@ public final class CollectorPanel {
     }
 
     public static void show(Activity activity, Supplier<String> currentPhoto, int initialPage) {
+        showInternal(activity, currentPhoto, initialPage, null);
+    }
+
+    public static void show(Activity activity, Supplier<String> currentPhoto, ReturnState returnState) {
+        showInternal(activity, currentPhoto, returnState != null ? returnState.page : PAGE_COLLECT, returnState);
+    }
+
+    private static void showInternal(Activity activity, Supplier<String> currentPhoto, int initialPage, ReturnState returnState) {
         if (showing()) return;
         Dialog stale = open.get(); if (stale != null) stale.dismiss(); open.clear();
         FrameLayout frame = new FrameLayout(activity);
@@ -507,6 +548,9 @@ public final class CollectorPanel {
         Dialog dialog = new Dialog(activity, dark(activity) ? android.R.style.Theme_Material_NoActionBar : android.R.style.Theme_Material_Light_NoActionBar) {
             private boolean closing;
             @Override public void dismiss() {
+                if (pendingReturn != null && (System.currentTimeMillis() - pendingReturn.savedAt > 2000L)) {
+                    pendingReturn = null;
+                }
                 View sheet = sheetRef[0];
                 if (closing || !isShowing() || sheet == null || sheet.getWindowToken() == null) { super.dismiss(); return; }
                 closing = true;
@@ -514,7 +558,9 @@ public final class CollectorPanel {
             }
         };
         dialog.setOwnerActivity(activity);
-        CollectorPanel panel = new CollectorPanel(activity, currentPhoto, dialog::dismiss, initialPage);
+        CollectorPanel panel = returnState != null
+            ? new CollectorPanel(activity, currentPhoto, dialog::dismiss, returnState)
+            : new CollectorPanel(activity, currentPhoto, dialog::dismiss, initialPage);
         sheetRef[0] = panel.root;
         int height = (int) (activity.getResources().getDisplayMetrics().heightPixels * .9f);
         panel.root.setBackground(panel.topRounded(panel.surface, 28));
@@ -523,7 +569,13 @@ public final class CollectorPanel {
         frame.addView(scrim, new FrameLayout.LayoutParams(-1, -1));
         frame.addView(panel.root, new FrameLayout.LayoutParams(-1, height, Gravity.BOTTOM));
         dialog.setContentView(frame);
-        dialog.setOnDismissListener(value -> { panel.handler.removeCallbacksAndMessages(null); if (open.get() == dialog) open.clear(); });
+        dialog.setOnDismissListener(value -> {
+            if (pendingReturn != null && (System.currentTimeMillis() - pendingReturn.savedAt > 2000L)) {
+                pendingReturn = null;
+            }
+            panel.handler.removeCallbacksAndMessages(null);
+            if (open.get() == dialog) open.clear();
+        });
         Window window = dialog.getWindow();
         if (window != null) {
             window.setFormat(PixelFormat.TRANSLUCENT); // see PostInfoPanel: an opaque full-screen surface ghosts on close
@@ -540,6 +592,10 @@ public final class CollectorPanel {
         open = new WeakReference<>(dialog);
         Motion.enter(panel.root, scrim, false, dim);
         panel.poll();
+        if (returnState != null && returnState.page != PAGE_ANALYSIS) {
+            panel.restoreScroll(returnState);
+            panel.pendingRestoreState = null;
+        }
     }
 
     /** Full-screen variant used by the collector app's own launcher activity. */
@@ -557,7 +613,27 @@ public final class CollectorPanel {
     }
 
     private CollectorPanel(Activity activity, Supplier<String> photo, Runnable close, int initialPage) {
+        this(activity, photo, close, initialPage, null);
+    }
+
+    private CollectorPanel(Activity activity, Supplier<String> photo, Runnable close, ReturnState returnState) {
+        this(activity, photo, close, returnState != null ? returnState.page : PAGE_COLLECT, returnState);
+    }
+
+    private CollectorPanel(Activity activity, Supplier<String> photo, Runnable close, int initialPage, ReturnState returnState) {
         this.activity = activity; this.photo = photo; this.closePanel = close; this.page = initialPage;
+        if (returnState != null) {
+            this.page = returnState.page;
+            this.dataKind = returnState.dataKind;
+            this.offset = returnState.offset;
+            this.taskFilter = returnState.taskFilter;
+            this.allPlatforms = returnState.allPlatforms;
+            this.userFilter = returnState.userFilter == null ? "" : returnState.userFilter;
+            this.userFilterName = returnState.userFilterName == null ? "" : returnState.userFilterName;
+            this.postFilter = returnState.postFilter == null ? "" : returnState.postFilter;
+            this.search = returnState.search == null ? "" : returnState.search;
+            this.pendingRestoreState = returnState;
+        }
         boolean dark = dark(activity);
         darkModeAtCreate = dark;
         uiContext = new ContextThemeWrapper(activity, dark ? android.R.style.Theme_DeviceDefault_NoActionBar : android.R.style.Theme_DeviceDefault_Light_NoActionBar);
@@ -1133,7 +1209,6 @@ public final class CollectorPanel {
     /** Host app's platform key ("kuaishou"/"douyin"/"xhs") and display name. */
     private String hostPlatform() { return Platforms.name(activity.getPackageName()); }
     private String hostName() { return Platforms.label(hostPlatform()); }
-    private boolean allPlatforms;
     /** Platform sent with data queries: the host app's own data unless the user switched to all platforms. */
     private String scope() { return allPlatforms ? "all" : hostPlatform(); }
 
@@ -1265,6 +1340,8 @@ public final class CollectorPanel {
             LinearLayout card = card(page);
             JSONObject row = items.getJSONObject(i), user = row.optJSONObject("user");
             String uid = row.optString("userId");
+            String cid = row.optString("commentId", row.optString("id"));
+            if (!cid.isEmpty()) card.setTag(R_ANCHOR, cid);
             String name = row.optString("nickname");
             if (name.isEmpty() && user != null) name = user.optString("nickname");
             if (name.isEmpty()) name = uid;
@@ -1279,12 +1356,13 @@ public final class CollectorPanel {
             FrameLayout.LayoutParams avParams = new FrameLayout.LayoutParams(dp(36), dp(36));
             avParams.gravity = Gravity.CENTER;
             avatarBox.addView(avatar, avParams);
-            final String finalUid = uid, finalName = name;
+            final String finalUid = uid, finalName = name, finalCid = cid;
             final JSONObject finalRow = row, finalUser = user;
             Runnable openUser = () -> {
                 if (finalUid.isEmpty() || "null".equals(finalUid)) {
                     Toast.makeText(activity, "该评论未记录用户信息，请更新抓取", Toast.LENGTH_SHORT).show();
                 } else {
+                    lastClickedAnchor = finalCid;
                     userDetail(finalUid, finalName);
                 }
             };
@@ -1341,11 +1419,17 @@ public final class CollectorPanel {
             card.addView(content);
 
             Motion.press(card);
-            card.setOnClickListener(v -> showCommentDetails(finalRow, finalUser, finalName));
+            card.setOnClickListener(v -> {
+                lastClickedAnchor = finalCid;
+                showCommentDetails(finalRow, finalUser, finalName);
+            });
 
             LinearLayout foot = horizontal();
             foot.addView(muted("赞 " + number(row, "likes") + " · 回复 " + number(row, "replies"), 12), new LinearLayout.LayoutParams(0, -2, 1));
-            foot.addView(linkText("帖子", () -> openPost(finalRow.optString("photoId"))));
+            foot.addView(linkText("帖子", () -> {
+                lastClickedAnchor = finalCid;
+                openPost(finalRow.optString("photoId"));
+            }));
             foot.addView(linkText("TA 的评论", () -> { userFilter = finalUid; userFilterName = finalName; offset = 0; render(); }));
             card.addView(foot);
         }
@@ -1429,6 +1513,7 @@ public final class CollectorPanel {
         for (int i = 0; i < items.length(); i++) {
             LinearLayout card = card(page);
             JSONObject row = items.getJSONObject(i); String id = row.optString("postId");
+            if (!id.isEmpty()) card.setTag(R_ANCHOR, id);
             LinearLayout heading = horizontal();
             CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择作品 " + id); select.setChecked(selectedPosts.contains(id));
             select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedPosts.add(id); else selectedPosts.remove(id); render(); });
@@ -1445,7 +1530,10 @@ public final class CollectorPanel {
             LinearLayout foot = horizontal(); foot.setPadding(0, dp(6), 0, 0);
             foot.addView(muted("快照 " + date(row.optLong("snapshotAt")), 12), new LinearLayout.LayoutParams(0, -2, 1));
             foot.addView(linkText("评论", () -> { postFilter = id; dataKind = DATA_COMMENTS; offset = 0; render(); }));
-            foot.addView(linkText("打开", () -> openPost(id)));
+            foot.addView(linkText("打开", () -> {
+                lastClickedAnchor = id;
+                openPost(id);
+            }));
             foot.addView(linkText("采集", () -> collectNow(id, true)));
             card.addView(foot);
         }
@@ -1468,19 +1556,26 @@ public final class CollectorPanel {
         for (int i = 0; i < items.length(); i++) {
             LinearLayout card = card(page);
             JSONObject user = items.getJSONObject(i); String id = user.optString("userId");
+            if (!id.isEmpty()) card.setTag(R_ANCHOR, id);
             LinearLayout heading = horizontal();
             CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择用户 " + id); select.setChecked(selectedUsers.contains(id));
             select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedUsers.add(id); else selectedUsers.remove(id); render(); });
             heading.addView(select);
             heading.addView(thumbnail(user, "avatarUrl", "authorAvatarUrl"), new LinearLayout.LayoutParams(dp(32), dp(32)));
-            TextView name = text(user.optString("nickname", id), 15, true); name.setOnClickListener(view -> userDetail(id, user.optString("nickname", id)));
+            TextView name = text(user.optString("nickname", id), 15, true); name.setOnClickListener(view -> {
+                lastClickedAnchor = id;
+                userDetail(id, user.optString("nickname", id));
+            });
             name.setPadding(dp(10), 0, 0, 0);
             heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); card.addView(heading);
             card.addView(muted("性别 " + gender(user.optString("gender")) + " · 年龄 " + number(user, "age") + " · 评论 IP " + number(user, "lastCommentIpRegion"), 12));
             card.addView(muted("主页 IP " + number(user, "profileIpRegion") + " · 所在地 " + number(user, "location"), 12));
             LinearLayout foot = horizontal(); foot.setPadding(0, dp(6), 0, 0);
             foot.addView(muted("评论 " + user.optInt("commentCount") + " 条 · " + user.optInt("postCount") + " 个帖子", 12), new LinearLayout.LayoutParams(0, -2, 1));
-            foot.addView(linkText("详情", () -> userDetail(id, user.optString("nickname", id))));
+            foot.addView(linkText("详情", () -> {
+                lastClickedAnchor = id;
+                userDetail(id, user.optString("nickname", id));
+            }));
             foot.addView(linkText("补充资料", () -> profileTask(new JSONArray().put(id))));
             card.addView(foot);
         }
@@ -1529,8 +1624,58 @@ public final class CollectorPanel {
                 }
                 handler.post(() -> {
                     content.removeAllViews();
-                    content.addView(muted("性别 " + gender(user.optString("gender")) + " · 年龄 " + number(user, "age")
-                        + "\n评论 IP " + number(user, "lastCommentIpRegion") + " · 主页 IP " + number(user, "profileIpRegion") + " · 所在地 " + number(user, "location"), 12));
+                    LinearLayout userHeader = horizontal();
+                    userHeader.setGravity(Gravity.CENTER_VERTICAL);
+                    userHeader.setPadding(0, 0, 0, dp(8));
+                    ImageView av = thumbnail(user, "avatarUrl", "authorAvatarUrl");
+                    userHeader.addView(av, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+                    LinearLayout userText = vertical();
+                    userText.setPadding(dp(10), 0, 0, 0);
+                    LinearLayout nameLine = horizontal();
+                    nameLine.setGravity(Gravity.CENTER_VERTICAL);
+                    String displayName = user.optString("nickname", name == null || name.isEmpty() ? id : name);
+                    nameLine.addView(text(displayName, 16, true));
+
+                    String g = user.optString("gender", "unknown");
+                    String gText = "male".equals(g) ? "男" : "female".equals(g) ? "女" : "未知";
+                    TextView gBadge = text(gText, 11, true);
+                    gBadge.setTextColor("male".equals(g) ? primary : "female".equals(g) ? errorColor : secondary);
+                    gBadge.setBackground(round(surfaceVariant, 8));
+                    gBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+                    LinearLayout.LayoutParams gb = new LinearLayout.LayoutParams(-2, -2);
+                    gb.leftMargin = dp(8);
+                    nameLine.addView(gBadge, gb);
+
+                    int uAge = user.optInt("age", 0);
+                    if (uAge > 0) {
+                        TextView ageB = text(uAge + "岁", 11, true);
+                        ageB.setTextColor(secondary);
+                        ageB.setBackground(round(surfaceVariant, 8));
+                        ageB.setPadding(dp(6), dp(1), dp(6), dp(1));
+                        LinearLayout.LayoutParams ab = new LinearLayout.LayoutParams(-2, -2);
+                        ab.leftMargin = dp(6);
+                        nameLine.addView(ageB, ab);
+                    }
+                    userText.addView(nameLine);
+                    userText.addView(muted("ID: " + id, 11));
+                    userHeader.addView(userText, new LinearLayout.LayoutParams(0, -2, 1));
+                    content.addView(userHeader);
+
+                    String pIp = user.optString("profileIpRegion", "未知");
+                    String cIp = user.optString("lastCommentIpRegion", "未知");
+                    String postL = user.optString("latestPostLocation", "未知");
+                    String uLoc = user.optString("location", "");
+                    String locDetail = "主页 IP " + pIp + " · 评论 IP " + cIp + " · 发帖地 " + postL;
+                    if (!uLoc.isEmpty() && !"null".equals(uLoc) && !uLoc.equals(postL)) {
+                        locDetail += " · 所在地 " + uLoc;
+                    }
+                    content.addView(muted(locDetail, 12));
+                    if (user.has("bio") && !user.optString("bio").isEmpty()) {
+                        TextView bio = text(user.optString("bio"), 13, false);
+                        bio.setPadding(0, dp(4), 0, dp(4));
+                        content.addView(bio);
+                    }
                     TextView total = text("在 " + byPost.size() + " 个帖子下发表了 " + (comments == null ? 0 : comments.length()) + " 条评论", 14, true);
                     total.setPadding(0, dp(10), 0, dp(4)); content.addView(total);
                     for (java.util.Map.Entry<String, List<JSONObject>> entry : byPost.entrySet()) {
@@ -1567,17 +1712,120 @@ public final class CollectorPanel {
                 JSONArray items = data.optJSONArray("items");
                 if (items == null || items.length() == 0) list.addView(empty("当前条件下暂无结果"));
                 else for (int i = 0; i < items.length(); i++) {
-                    JSONObject user = items.optJSONObject(i); String uid = user.optString("userId"); LinearLayout card = card(list);
+                    JSONObject user = items.optJSONObject(i);
+                    String uid = user.optString("userId");
+                    String nickname = user.optString("nickname");
+                    if (nickname.isEmpty() || "null".equals(nickname)) nickname = uid;
+                    if (nickname.isEmpty() || "null".equals(nickname)) nickname = "未知用户";
+                    final String finalUid = uid, finalNick = nickname;
+
+                    LinearLayout card = card(list);
+                    card.setTag(R_ANCHOR, uid);
+
                     LinearLayout line = horizontal();
-                    TextView rank = text(String.valueOf(i + 1), 13, true); rank.setTextColor(primary); rank.setMinWidth(dp(24)); line.addView(rank);
-                    TextView name = text(user.optString("nickname", uid), 15, true); name.setOnClickListener(view -> userDetail(uid, user.optString("nickname", uid)));
-                    line.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-                    line.addView(linkText("评论", () -> { page = PAGE_DATA; dataKind = DATA_COMMENTS; userFilter = uid; userFilterName = user.optString("nickname", uid); offset = 0; render(); }));
+                    line.setGravity(Gravity.CENTER_VERTICAL);
+
+                    TextView rank = text("#" + (i + 1), 13, true);
+                    rank.setTextColor(primary);
+                    rank.setMinWidth(dp(28));
+                    line.addView(rank);
+
+                    FrameLayout avatarBox = new FrameLayout(uiContext);
+                    ImageView avatar = thumbnail(user, "avatarUrl", "userAvatarUrl");
+                    FrameLayout.LayoutParams avParams = new FrameLayout.LayoutParams(dp(36), dp(36));
+                    avParams.gravity = Gravity.CENTER;
+                    avatarBox.addView(avatar, avParams);
+                    avatarBox.setOnClickListener(view -> {
+                        lastClickedAnchor = finalUid;
+                        userDetail(finalUid, finalNick);
+                    });
+                    Motion.press(avatarBox);
+                    line.addView(avatarBox, new LinearLayout.LayoutParams(dp(44), dp(44)));
+
+                    LinearLayout authorBox = vertical();
+                    authorBox.setPadding(dp(8), 0, 0, 0);
+                    LinearLayout authorLine = horizontal();
+                    authorLine.setGravity(Gravity.CENTER_VERTICAL);
+                    TextView author = text(nickname, 15, true);
+                    author.setOnClickListener(view -> {
+                        lastClickedAnchor = finalUid;
+                        userDetail(finalUid, finalNick);
+                    });
+                    Motion.press(author);
+                    authorLine.addView(author);
+
+                    boolean userPending = user.optBoolean("profilePending");
+                    TextView genderBadge;
+                    if (userPending) {
+                        genderBadge = text("待采集", 11, true);
+                        genderBadge.setTextColor(secondary);
+                        genderBadge.setBackground(round(surfaceVariant, 8));
+                    } else {
+                        String g = user.optString("gender", "unknown");
+                        String gText = "male".equals(g) ? "男" : "female".equals(g) ? "女" : "未知";
+                        genderBadge = text(gText, 11, true);
+                        genderBadge.setTextColor("male".equals(g) ? primary : "female".equals(g) ? errorColor : secondary);
+                        genderBadge.setBackground(round(surfaceVariant, 8));
+                    }
+                    genderBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+                    LinearLayout.LayoutParams gbParams = new LinearLayout.LayoutParams(-2, -2);
+                    gbParams.leftMargin = dp(8);
+                    authorLine.addView(genderBadge, gbParams);
+
+                    int age = user.optInt("age", 0);
+                    if (age > 0) {
+                        TextView ageBadge = text(age + "岁", 11, true);
+                        ageBadge.setTextColor(secondary);
+                        ageBadge.setBackground(round(surfaceVariant, 8));
+                        ageBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+                        LinearLayout.LayoutParams abParams = new LinearLayout.LayoutParams(-2, -2);
+                        abParams.leftMargin = dp(6);
+                        authorLine.addView(ageBadge, abParams);
+                    }
+                    authorBox.addView(authorLine);
+                    line.addView(authorBox, new LinearLayout.LayoutParams(0, -2, 1));
+
+                    TextView commentLink = linkText("评论", () -> {
+                        page = PAGE_DATA;
+                        dataKind = DATA_COMMENTS;
+                        userFilter = finalUid;
+                        userFilterName = finalNick;
+                        offset = 0;
+                        render();
+                    });
+                    line.addView(commentLink);
                     card.addView(line);
+
+                    // User profile region line
+                    String profileIp = user.optString("profileIpRegion", "");
+                    String displayProfileIp = userPending ? "待采集" : profileIp.isEmpty() || "null".equals(profileIp) ? "未知" : profileIp;
+                    String commentIp = user.optString("lastCommentIpRegion", "");
+                    if (commentIp.isEmpty() || "null".equals(commentIp)) commentIp = "未知";
+                    String postLoc = user.optString("latestPostLocation", "");
+                    if (postLoc.isEmpty() || "null".equals(postLoc)) postLoc = "未知";
+                    String loc = user.optString("location", "");
+                    String regionInfo = "主页 IP " + displayProfileIp + " · 评论 IP " + commentIp + " · 发帖地 " + postLoc;
+                    if (!loc.isEmpty() && !"null".equals(loc) && !loc.equals(postLoc)) {
+                        regionInfo += " · 所在地 " + loc;
+                    }
+                    card.addView(muted(regionInfo, 12));
+
+                    // Stats lines
                     card.addView(muted("评论 " + user.optInt("commentCount") + " 条 · " + user.optInt("postCount") + " 个帖子 · 获赞 " + user.optLong("likesReceived") + " · 回复 " + user.optLong("replyCount"), 12));
                     card.addView(muted(date(user.optLong("firstCommentAt")) + " 至 " + date(user.optLong("lastCommentAt")), 12));
+
+                    Motion.press(card);
+                    card.setOnClickListener(v -> {
+                        lastClickedAnchor = finalUid;
+                        userDetail(finalUid, finalNick);
+                    });
                 }
                 Motion.stagger(list, 0);
+                if (pendingRestoreState != null && pendingRestoreState.page == PAGE_ANALYSIS) {
+                    ReturnState s = pendingRestoreState;
+                    pendingRestoreState = null;
+                    restoreScroll(s);
+                }
             }); } catch (Exception error) { handler.post(() -> pending.setText("计算失败：" + error.getMessage())); }
         }, "collector-analysis").start();
     }
@@ -2045,13 +2293,98 @@ public final class CollectorPanel {
 
     private void openPost(String id) {
         if (id.isEmpty()) return;
+        if (page == PAGE_DATA || page == PAGE_ANALYSIS) saveReturnState(lastClickedAnchor);
         String scheme = switch (hostPlatform()) { case "douyin" -> "snssdk1128://aweme/detail/"; case "xhs" -> "xhsdiscover://item/"; default -> "kwai://work/"; };
         launch(scheme + Uri.encode(id));
     }
     private void openProfile(String id) {
         if (id.isEmpty() || "null".equals(id)) return;
+        saveReturnState(lastClickedAnchor);
         String scheme = switch (hostPlatform()) { case "douyin" -> "snssdk1128://user/profile/"; case "xhs" -> "xhsdiscover://user/"; default -> "kwai://profile/"; };
         launch(scheme + Uri.encode(id));
+    }
+    private void saveReturnState(String anchorId) {
+        if (page != PAGE_DATA && page != PAGE_ANALYSIS) return;
+        if (grip == null || grip.getVisibility() != View.VISIBLE) return;
+        ReturnState s = new ReturnState();
+        s.page = page;
+        s.dataKind = dataKind;
+        s.offset = offset;
+        s.taskFilter = taskFilter;
+        s.allPlatforms = allPlatforms;
+        s.userFilter = userFilter;
+        s.userFilterName = userFilterName;
+        s.postFilter = postFilter;
+        s.search = search;
+        s.anchorId = anchorId;
+        s.scrollY = currentScroll != null ? currentScroll.getScrollY() : 0;
+        s.activityClass = activity.getClass().getName();
+        s.activityHash = System.identityHashCode(activity);
+        s.savedAt = System.currentTimeMillis();
+        pendingReturn = s;
+        Log.i("CommentCollector", "panel_return_saved anchor=" + anchorId + " page=" + page + " kind=" + dataKind + " scrollY=" + s.scrollY + " activity=" + s.activityClass);
+    }
+    private void restoreScroll(ReturnState s) {
+        if (s == null || currentScroll == null) return;
+        final ScrollView scroll = currentScroll;
+        final String anchor = s.anchorId;
+        final int fallbackY = s.scrollY;
+        final boolean[] flashed = {false};
+        Runnable doScroll = new Runnable() {
+            @Override public void run() {
+                if (!scroll.isAttachedToWindow()) return;
+                View target = findAnchorView(scroll, anchor);
+                if (target != null) {
+                    int top = getRelativeTop(target, scroll);
+                    scroll.scrollTo(0, Math.max(0, top - dp(12)));
+                    if (!flashed[0] && target.getHeight() > 0) {
+                        flashed[0] = true;
+                        flashAnchor(target);
+                    }
+                    Log.i("CommentCollector", "panel_return_restored anchor=" + anchor + " targetTop=" + top);
+                } else if (fallbackY > 0) {
+                    scroll.scrollTo(0, fallbackY);
+                    Log.i("CommentCollector", "panel_return_restored fallback scrollY=" + fallbackY);
+                }
+            }
+        };
+        scroll.post(doScroll);
+        scroll.postDelayed(doScroll, 150);
+    }
+    private static View findAnchorView(View view, String anchorId) {
+        if (view == null || anchorId == null || anchorId.isEmpty()) return null;
+        Object tag = view.getTag(R_ANCHOR);
+        if (anchorId.equals(tag)) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View found = findAnchorView(group.getChildAt(i), anchorId);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+    private static int getRelativeTop(View view, ViewGroup parent) {
+        int top = 0;
+        View cur = view;
+        while (cur != null && cur != parent) {
+            top += cur.getTop();
+            ViewParent p = cur.getParent();
+            if (p instanceof View) cur = (View) p;
+            else break;
+        }
+        return top;
+    }
+    private void flashAnchor(View target) {
+        if (target == null) return;
+        GradientDrawable highlight = round(surfaceContainer, M3.SHAPE_LARGE);
+        highlight.setStroke(dp(2), primary);
+        target.setBackground(highlight);
+        target.postDelayed(() -> {
+            if (target.isAttachedToWindow()) {
+                target.setBackground(round(surfaceContainer, M3.SHAPE_LARGE));
+            }
+        }, 1200);
     }
     private void launch(String url) {
         try {
@@ -2060,7 +2393,10 @@ public final class CollectorPanel {
             if ("douyin".equals(hostPlatform()) && url.startsWith("snssdk1128://aweme/detail/")) {
                 handler.postDelayed(() -> clickCommentButton(activity, 0), 2500);
             }
-        } catch (Exception error) { error(error); }
+        } catch (Exception error) {
+            pendingReturn = null;
+            error(error);
+        }
     }
     private static void clickCommentButton(Activity host, int attempt) {
         if (attempt > 6 || host == null || host.isFinishing()) return;
