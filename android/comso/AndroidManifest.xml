@@ -12,7 +12,7 @@
     </queries>
     <application android:label="comso" android:description="@string/description"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
-        android:allowBackup="false" android:debuggable="true">
+        android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -11,10 +11,22 @@ public final class BridgeReceiver extends BroadcastReceiver {
 
     @Override public void onReceive(Context context, Intent intent) {
         if (!ACTION.equals(intent.getAction())) return;
-        final int uid = getSentFromUid();
+        try { context.startForegroundService(new Intent(context, CaptureService.class)); }
+        catch (Throwable e) { try { context.startService(new Intent(context, CaptureService.class)); } catch (Throwable ignored) {} }
+
         final String operation = intent.getStringExtra("operation");
-        final Bundle extras = intent.getBundleExtra("extras");
         final PendingResult pending = goAsync();
+        if (operation == null || operation.isEmpty() || "wake".equals(operation)) {
+            Bundle result = new Bundle();
+            result.putString("data", "{\"ok\":true}");
+            pending.setResultExtras(result);
+            pending.finish();
+            Log.i("CommentCollector", "broadcast_bridge_wake_done");
+            return;
+        }
+
+        final int uid = getSentFromUid();
+        final Bundle extras = intent.getBundleExtra("extras");
         new Thread(() -> {
             Bundle result = new Bundle();
             try { result = CaptureProvider.callFromService(operation, extras, uid); }

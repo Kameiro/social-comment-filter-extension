@@ -16,6 +16,7 @@ import android.graphics.PixelFormat;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
@@ -2417,17 +2418,42 @@ public final class CollectorPanel {
         }
         return null;
     }
-    /** Relaunches the collector process via its invisible WakeActivity, then reloads the panel. */
+    /** Wakes the collector process silently without opening WakeActivity, reloading the panel when ready. */
     private void wakeCollector() {
-        try {
-            activity.startActivity(new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION));
-            Toast.makeText(activity, "正在唤醒采集服务…", Toast.LENGTH_SHORT).show();
-        } catch (Exception error) {
-            Toast.makeText(activity, "唤醒失败：" + error.getMessage(), Toast.LENGTH_LONG).show(); return;
-        }
-        handler.postDelayed(this::render, 1200);
-        handler.postDelayed(this::render, 3000);
+        Toast.makeText(activity, "正在静默唤醒采集服务…", Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            boolean ok = false;
+            CollectorWake.wake(activity);
+            for (int i = 0; i < 4; i++) {
+                try {
+                    Thread.sleep(600);
+                    JSONObject st = CollectorClient.call(activity, "status", new JSONObject());
+                    if (st != null) { ok = true; break; }
+                } catch (Throwable ignored) {
+                    try {
+                        Bundle res = CaptureBridge.call(activity, "status", new Bundle());
+                        if (res != null && (res.containsKey("data") || res.containsKey("json"))) { ok = true; break; }
+                    } catch (Throwable ignored2) {}
+                }
+            }
+            if (ok) {
+                handler.post(() -> {
+                    Toast.makeText(activity, "采集服务已唤醒", Toast.LENGTH_SHORT).show();
+                    render();
+                });
+            } else {
+                handler.post(() -> {
+                    try {
+                        activity.startActivity(new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION));
+                        Toast.makeText(activity, "正在尝试兜底唤醒…", Toast.LENGTH_SHORT).show();
+                        handler.postDelayed(this::render, 1500);
+                    } catch (Exception error) {
+                        Toast.makeText(activity, "唤醒失败：" + error.getMessage(), Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        }, "collector-manual-wake").start();
     }
 
     // ---------------------------------------------------------------- polling

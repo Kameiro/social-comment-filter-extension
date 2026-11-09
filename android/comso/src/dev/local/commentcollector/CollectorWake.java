@@ -1,14 +1,15 @@
 package dev.local.commentcollector;
 
+import android.content.ContentProviderClient;
 import android.content.Context;
 import android.content.Intent;
 import android.os.SystemClock;
 import android.util.Log;
 
 /**
- * Silent auto-wake for the collector process. ColorOS freezes or kills the module app in the background and refuses the
- * "associated start" of its provider/service from another app, but allows a foreground app to open a transparent activity
- * of it. {@link WakeActivity} starts the capture service and closes at once, so the user never sees a thing.
+ * Silent auto-wake for the collector process. Uses non-Activity IPCs (explicit broadcast, startService,
+ * and unstable ContentProvider client acquire) to wake the collector process without triggering
+ * system or host app risk popups.
  */
 final class CollectorWake {
     private static final long MIN_GAP_MS = 6000;
@@ -24,14 +25,39 @@ final class CollectorWake {
             if (now - lastAttempt < MIN_GAP_MS) return now - lastAttempt < 3500; // an attempt is still settling
             lastAttempt = now;
         }
+        boolean woken = false;
+
+        // 1. Explicit broadcast to BridgeReceiver
         try {
-            context.startActivity(new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS));
-            Log.i("CommentCollector", "collector_auto_wake");
-            return true;
-        } catch (Exception error) {
-            Log.w("CommentCollector", "collector_auto_wake_failed " + error.getClass().getSimpleName());
-            return false;
+            Intent intent = new Intent(BridgeReceiver.ACTION)
+                .setClassName("dev.local.commentcollector", "dev.local.commentcollector.BridgeReceiver")
+                .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES | Intent.FLAG_RECEIVER_FOREGROUND)
+                .putExtra("operation", "wake");
+            context.sendBroadcast(intent);
+            woken = true;
+        } catch (Throwable e) {
+            Log.w("CommentCollector", "silent_wake_broadcast_failed " + e.getMessage());
         }
+
+        // 2. startService for CaptureService
+        try {
+            Intent serviceIntent = new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.CaptureService");
+            context.startService(serviceIntent);
+            woken = true;
+        } catch (Throwable ignored) {}
+
+        // 3. Acquire unstable ContentProviderClient to trigger Provider process startup
+        try {
+            ContentProviderClient client = context.getContentResolver().acquireUnstableContentProviderClient(CaptureProvider.URI);
+            if (client != null) {
+                client.close();
+                woken = true;
+            }
+        } catch (Throwable e) {
+            Log.w("CommentCollector", "silent_wake_provider_failed " + e.getMessage());
+        }
+
+        Log.i("CommentCollector", "collector_silent_wake");
+        return woken;
     }
 }
