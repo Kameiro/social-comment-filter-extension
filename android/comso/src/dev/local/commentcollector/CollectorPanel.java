@@ -1503,16 +1503,16 @@ public final class CollectorPanel {
     /** [key, label] pairs for the non-default conditions. */
     private String[][] conditionParts(JSONObject f, boolean forCollect) {
         List<String[]> out = new ArrayList<>();
-        if (!f.optString("keyword").isEmpty()) out.add(new String[]{"keyword", "含 " + f.optString("keyword")});
-        if (!f.optString("excludeKeyword").isEmpty()) out.add(new String[]{"excludeKeyword", "排除 " + f.optString("excludeKeyword")});
-        if (!f.optString("ipRegion").isEmpty()) out.add(new String[]{"ipRegion", ("or".equals(f.optString("relation")) && !f.optString("keyword").isEmpty() ? "或 " : "") + ipSourceName(f.optString("ipSource", "profile")) + " " + f.optString("ipRegion")});
+        if (!f.optString("keyword").isEmpty()) out.add(new String[]{"keyword", "[初筛] 含 " + f.optString("keyword")});
+        if (!f.optString("excludeKeyword").isEmpty()) out.add(new String[]{"excludeKeyword", "[初筛] 排除 " + f.optString("excludeKeyword")});
+        if (f.optInt("recentDays") > 0) out.add(new String[]{"recentDays", "[初筛] 近 " + f.optInt("recentDays") + " 天"});
+        if (!f.optString("ipRegion").isEmpty()) out.add(new String[]{"ipRegion", "[补充] " + ("or".equals(f.optString("relation")) && !f.optString("keyword").isEmpty() ? "或 " : "") + ipSourceName(f.optString("ipSource", "profile")) + " " + f.optString("ipRegion")});
         String g = f.optString("gender", "all");
-        if (!"all".equals(g)) out.add(new String[]{"gender", genderFilterName(g)});
-        if (f.has("minAge") || f.has("maxAge")) out.add(new String[]{"minAge", (f.has("minAge") ? f.optString("minAge") : "") + "–" + (f.has("maxAge") ? f.optString("maxAge") : "") + " 岁"});
-        if (f.optInt("recentDays") > 0) out.add(new String[]{"recentDays", "近 " + f.optInt("recentDays") + " 天"});
+        if (!"all".equals(g)) out.add(new String[]{"gender", "[补充] 性别: " + genderFilterName(g)});
+        if (f.has("minAge") || f.has("maxAge")) out.add(new String[]{"minAge", "[补充] " + (f.has("minAge") ? f.optString("minAge") : "") + "–" + (f.has("maxAge") ? f.optString("maxAge") : "") + " 岁"});
         if (forCollect) {
             if (f.optInt("targetCount") > 0) out.add(new String[]{"targetCount", "目标 " + f.optInt("targetCount") + " 条"});
-            if (f.optInt("maxPages") > 0) out.add(new String[]{"maxPages", "最多 " + f.optInt("maxPages") + " 页"});
+            if (f.optInt("maxPages") > 0) out.add(new String[]{"maxPages", "上限 " + f.optInt("maxPages") + " 页"});
             if (!"auto".equals(f.optString("pagingMode", "auto"))) out.add(new String[]{"pagingMode", pagingMode(f.optString("pagingMode"))});
         } else if (!"captured_desc".equals(f.optString("sort", "captured_desc"))) out.add(new String[]{"sort", sortName(f.optString("sort"))});
         return out.toArray(new String[0][]);
@@ -1532,44 +1532,55 @@ public final class CollectorPanel {
     /** Condition editor shared by data views and collection tasks (desktop field set). */
     private void filterSheet(boolean forCollect) {
         LinearLayout fields = vertical(); fields.setPadding(dp(20), dp(4), dp(20), dp(8));
-        section(fields, "评论内容");
+
+        // Block 1: ① 初次筛选（评论直接可用）
+        sectionBlock(fields, "① 初次筛选（评论直接可用）", "抓取评论时实时初筛；只有满足初筛的评论，才会进入二次主页采集");
         EditText keyword = input("包含关键词，多个用逗号分隔", filters.optString("keyword"), false); fields.addView(keyword);
         EditText exclude = input("排除关键词，多个用逗号分隔", filters.optString("excludeKeyword"), false); fields.addView(exclude);
-        section(fields, "地区");
+        EditText days = input("只看最近多少天内（空为不限）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
+        int[] relation = {"or".equals(filters.optString("relation")) ? 1 : 0};
+        fields.addView(segmented(new String[]{"同时满足 (AND)", "满足其一 (OR)"}, relation[0], index -> relation[0] = index));
+        fields.addView(muted("评论关键词和地区的关系：同时满足两个条件，或满足任意一个", 11));
+
+        // Block 2: ② 二次筛选（补充主页资料后）
+        sectionBlock(fields, "② 二次筛选（补充主页资料后）", "初筛命中后，自动调取主页资料补充头像、现在主页IP、发帖地点及年龄");
         EditText region = input("IP 属地（北京、河北）", filters.optString("ipRegion"), false); fields.addView(region);
         String[] ipSources = {"profile", "comment", "post"};
         int[] ipSource = {0}; for (int i = 0; i < ipSources.length; i++) if (ipSources[i].equals(filters.optString("ipSource", "profile"))) ipSource[0] = i;
-        fields.addView(segmented(new String[]{"主页 IP", "评论 IP", "最新帖子"}, ipSource[0], index -> ipSource[0] = index));
-        fields.addView(muted("按哪个 IP 判断地区，默认主页 IP；所选 IP 取不到时按主页 IP 判断，最新帖子地址在抖音可精确到市", 12));
-        int[] relation = {"or".equals(filters.optString("relation")) ? 1 : 0};
-        fields.addView(segmented(new String[]{"同时满足", "满足其一"}, relation[0], index -> relation[0] = index));
-        fields.addView(muted("评论关键词和地区：「同时满足」两个条件都要符合；「满足其一」符合任意一个就算", 12));
-        section(fields, "用户");
+        fields.addView(segmented(new String[]{"主页 IP", "评论 IP", "最新发帖地点"}, ipSource[0], index -> ipSource[0] = index));
+        fields.addView(muted("按哪个 IP 判断地区；最新发帖地点在抖音精确到省+市，小红书为省IP", 11));
+
         String[] genderKeys = {"female", "male", "unknown"};
         boolean[] genderOn = new boolean[3];
         String savedGender = filters.optString("gender", "all");
         if ("female-or-unknown".equals(savedGender)) savedGender = "female,unknown";
         for (int i = 0; i < 3; i++) genderOn[i] = ("," + savedGender + ",").contains("," + genderKeys[i] + ",");
         fields.addView(multiChips(new String[]{"女", "男", "未知"}, genderOn));
-        fields.addView(muted("可多选；都不选表示不限性别", 12));
+        fields.addView(muted("可多选；都不选表示不限性别", 11));
+
         LinearLayout ages = horizontal();
         EditText min = input("年龄下限", filters.has("minAge") ? filters.optString("minAge") : "", true);
         EditText max = input("年龄上限", filters.has("maxAge") ? filters.optString("maxAge") : "", true);
         ages.addView(min, new LinearLayout.LayoutParams(0, dp(52), 1)); ages.addView(max, new LinearLayout.LayoutParams(0, dp(52), 1)); fields.addView(ages);
-        section(fields, "时间");
-        EditText days = input("只看最近多少天内（空为不限）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
-        section(fields, "采集任务");
-        EditText target = input("目标评论数，达到后停止（空为全部）", filters.optInt("targetCount") > 0 ? String.valueOf(filters.optInt("targetCount")) : "", true); fields.addView(target);
-        EditText pages = input("最多读取页数（空为全部）", filters.optInt("maxPages") > 0 ? String.valueOf(filters.optInt("maxPages")) : "", true); fields.addView(pages);
+
+        // Block 3: 采集与排序
+        sectionBlock(fields, "③ 采集与排序", forCollect ? "控制翻页上限与采集模式" : "数据列表排序规则");
+        EditText target = null, pages = null;
         String[] pagingKeys = {"auto", "native", "ui"};
-        int[] pagingIndex = {0}; for (int i = 0; i < pagingKeys.length; i++) if (pagingKeys[i].equals(filters.optString("pagingMode", "auto"))) pagingIndex[0] = i;
-        fields.addView(segmented(new String[]{"自动", "原生接口", "页面滚动"}, pagingIndex[0], index -> pagingIndex[0] = index));
-        section(fields, "排序（数据列表）");
+        int[] pagingIndex = {0};
+        if (forCollect) {
+            target = input("目标评论数，达到后停止（空为全部）", filters.optInt("targetCount") > 0 ? String.valueOf(filters.optInt("targetCount")) : "", true); fields.addView(target);
+            pages = input("最多读取页数（空为全部）", filters.optInt("maxPages") > 0 ? String.valueOf(filters.optInt("maxPages")) : "", true); fields.addView(pages);
+            for (int i = 0; i < pagingKeys.length; i++) if (pagingKeys[i].equals(filters.optString("pagingMode", "auto"))) pagingIndex[0] = i;
+            fields.addView(segmented(new String[]{"自动", "原生接口", "页面滚动"}, pagingIndex[0], index -> pagingIndex[0] = index));
+        }
         String[] sortKeys = {"captured_desc", "created_desc", "created_asc", "likes_desc", "captured_asc"};
         Spinner sorts = new Spinner(uiContext);
         sorts.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item, new String[]{"最新抓取", "最新评论", "最早评论", "点赞最多", "最早抓取"}));
         sorts.setMinimumHeight(dp(48)); fields.addView(sorts);
         for (int i = 0; i < sortKeys.length; i++) if (sortKeys[i].equals(filters.optString("sort", "captured_desc"))) sorts.setSelection(i);
+
+        final EditText fTarget = target, fPages = pages;
         ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
         alert().setTitle(forCollect ? "采集条件" : "筛选条件").setView(scroll)
             .setNeutralButton("重置", (dialog, which) -> { filters = new JSONObject(); saveFilters(); render(); })
@@ -1582,7 +1593,11 @@ public final class CollectorPanel {
                         .put("gender", genderValue(genderKeys, genderOn)).put("sort", sortKeys[sorts.getSelectedItemPosition()])
                         .put("pagingMode", pagingKeys[pagingIndex[0]]);
                     putNumber(next, "minAge", min); putNumber(next, "maxAge", max);
-                    putNumber(next, "recentDays", days); putNumber(next, "targetCount", target); putNumber(next, "maxPages", pages);
+                    putNumber(next, "recentDays", days);
+                    if (fTarget != null) putNumber(next, "targetCount", fTarget);
+                    else if (filters.has("targetCount")) next.put("targetCount", filters.get("targetCount"));
+                    if (fPages != null) putNumber(next, "maxPages", fPages);
+                    else if (filters.has("maxPages")) next.put("maxPages", filters.get("maxPages"));
                     filters = next; saveFilters(); render();
                 } catch (Exception error) { error(error); }
             }).show();
@@ -1593,8 +1608,10 @@ public final class CollectorPanel {
         if (!value.isEmpty()) { int number = Integer.parseInt(value); if (number > 0) target.put(key, number); }
     }
 
-    private void section(LinearLayout parent, String title) {
-        TextView label = text(title, 13, true); label.setTextColor(primary); label.setPadding(0, dp(14), 0, dp(4)); parent.addView(label);
+    private void section(LinearLayout parent, String title) { sectionBlock(parent, title, null); }
+    private void sectionBlock(LinearLayout parent, String title, String subtitle) {
+        TextView label = text(title, 14, true); label.setTextColor(primary); label.setPadding(0, dp(14), 0, dp(2)); parent.addView(label);
+        if (subtitle != null && !subtitle.isEmpty()) { TextView sub = muted(subtitle, 11); sub.setPadding(0, 0, 0, dp(4)); parent.addView(sub); }
     }
 
     // ---------------------------------------------------------------- task creation
@@ -2158,7 +2175,7 @@ public final class CollectorPanel {
         }
         return row;
     }
-    private static String ipSourceName(String source) { return "comment".equals(source) ? "评论IP" : "post".equals(source) ? "最新帖子" : "主页IP"; }
+    private static String ipSourceName(String source) { return "comment".equals(source) ? "评论IP" : "post".equals(source) ? "发帖地点" : "主页IP"; }
     private String gender(String gender) { return "female".equals(gender) ? "女" : "male".equals(gender) ? "男" : "未知"; }
     private String genderFilterName(String key) {
         if (key.contains(",")) { StringBuilder names = new StringBuilder(); for (String part : key.split(",")) names.append(names.length() == 0 ? "" : "/").append(gender(part)); return names.toString(); }
