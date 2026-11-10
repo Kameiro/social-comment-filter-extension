@@ -250,6 +250,7 @@ public final class CollectorPanel {
         long taskFilter;
         boolean allPlatforms;
         String userFilter, userFilterName, postFilter, search, anchorId;
+        String sourcePostId;
         int scrollY;
         WeakReference<Activity> sourceActivity;
         String activityClass;
@@ -325,6 +326,11 @@ public final class CollectorPanel {
                 pendingReturn = null;
                 decor.postDelayed(() -> {
                     if (!activity.isFinishing() && !activity.isDestroyed() && !showing()) {
+                        String current = currentPhoto != null ? currentPhoto.get() : "";
+                        if (!current.isEmpty() && !current.equals(s.sourcePostId)) {
+                            Log.i("CommentCollector", "pending_return_cancelled_post_changed old=" + s.sourcePostId + " new=" + current);
+                            return;
+                        }
                         show(activity, currentPhoto, s);
                     }
                 }, 350);
@@ -2466,6 +2472,7 @@ public final class CollectorPanel {
         s.activityClass = activity.getClass().getName();
         s.activityHash = System.identityHashCode(activity);
         s.savedAt = System.currentTimeMillis();
+        s.sourcePostId = photo != null ? photo.get() : "";
         pendingReturn = s;
         Log.i("CommentCollector", "panel_return_saved anchor=" + anchorId + " page=" + page + " kind=" + dataKind + " scrollY=" + s.scrollY + " activity=" + s.activityClass + " hash=" + s.activityHash);
     }

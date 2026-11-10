@@ -166,6 +166,8 @@ public final class KuaishouModule extends XposedModule {
             JSONObject post = PublicMapper.post(value);
             if (post == null) return;
             lastPost = post;
+            String pid = post.optString("postId");
+            if (!pid.isEmpty()) lastPhoto = pid;
             processed.put(value, Boolean.TRUE);
             writer.execute(() -> { try { CollectorClient.call(context, "record_post", new JSONObject().put("post", post)); } catch (Exception ignored) {} });
         } } catch (Exception ignored) { Log.w(TAG, "post_observation_failed"); }
@@ -366,6 +368,24 @@ public final class KuaishouModule extends XposedModule {
         Activity act = activeActivity;
         if (act == null || act.isFinishing() || act.isDestroyed()) return "";
         if (!isFeedActivity(act.getClass().getName())) return "";
+        try {
+            View decor = act.getWindow() != null ? act.getWindow().getDecorView() : null;
+            float midX = act.getResources().getDisplayMetrics().widthPixels * 0.5f;
+            float midY = act.getResources().getDisplayMetrics().heightPixels * 0.5f;
+            Object photo = currentPost.resolve(act, midX, midY, decor);
+            if (photo != null) {
+                JSONObject post = PublicMapper.post(photo);
+                if (post != null && !post.optString("postId").isEmpty()) {
+                    lastPost = post;
+                    lastPhoto = post.optString("postId");
+                    rememberPost(photo);
+                    return post.optString("postId");
+                }
+            }
+        } catch (Throwable ignored) {}
+        if (hasUsablePost()) {
+            return lastPost.optString("postId");
+        }
         return lastPhoto == null ? "" : lastPhoto;
     }
 
@@ -392,6 +412,8 @@ public final class KuaishouModule extends XposedModule {
                     resetTap();
                     Log.i(TAG, "current_post_reset activity=" + value.getClass().getName());
                 }
+                CollectorPanel.attach(value, KuaishouModule.this::resolveCurrentPhoto);
+                CollectorPanel.attachDouyinSettingsEntry(value, KuaishouModule.this::resolveCurrentPhoto);
             }
             @Override public void onActivityCreated(Activity value, Bundle state) {}
             @Override public void onActivityStarted(Activity value) {}

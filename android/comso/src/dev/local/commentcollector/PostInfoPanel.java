@@ -126,8 +126,21 @@ final class PostInfoPanel {
         int neutral = S.secondaryContainer;
         int onNeutral = S.onSecondaryContainer;
         java.util.List<Button> buttons = new java.util.ArrayList<>();
+        String currentPostId = post.optString("postId");
+        if (!currentPostId.isEmpty()) {
+            Button collectBtn = button(activity, "采集本帖评论", S.primary, S.onPrimary);
+            collectBtn.setOnClickListener(view -> {
+                dialog.dismiss();
+                sheet.postDelayed(() -> {
+                    if (!activity.isFinishing() && !activity.isDestroyed()) {
+                        CollectorPanel.show(activity, () -> currentPostId);
+                    }
+                }, 180);
+            });
+            buttons.add(collectBtn);
+        }
         if (VideoInfoSettings.enabled(settings, "copy_description")) {
-            Button copy = button(activity, "复制文案", S.primary, S.onPrimary);
+            Button copy = button(activity, "复制文案", neutral, onNeutral);
             copy.setOnClickListener(view -> { copy(activity, post.optString("title")); Motion.flashLabel(copy, "已复制 ✓", 1200); });
             buttons.add(copy);
         }
