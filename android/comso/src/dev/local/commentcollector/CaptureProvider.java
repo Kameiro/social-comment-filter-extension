@@ -280,6 +280,7 @@ public final class CaptureProvider extends ContentProvider {
                 long targetTask = input.getLong("taskId");
                 JSONArray uids = input.optJSONArray("userIds");
                 JSONObject secMap = input.optJSONObject("secUids");
+                boolean backfillTask = input.optBoolean("backfillTask");
                 int added = 0;
                 db.beginTransaction();
                 try {
@@ -292,13 +293,13 @@ public final class CaptureProvider extends ContentProvider {
                             if (!userJson.isEmpty()) {
                                 try { if (new JSONObject(userJson).has("profileCapturedAt")) continue; } catch (Throwable ignored) {}
                             }
-                            db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
-                                new Object[]{targetTask, uid, sec, System.currentTimeMillis()});
-                            added++;
+                            ContentValues target = new ContentValues();
+                            target.put("task", targetTask); target.put("user", uid); target.put("status", "pending"); target.putNull("issue");
+                            target.put("sec_uid", sec); target.put("attempts", 0); target.put("updated", System.currentTimeMillis());
+                            if (db.insertWithOnConflict("profile_targets", null, target, SQLiteDatabase.CONFLICT_IGNORE) != -1) added++;
                         }
                     }
-                    if (input.optBoolean("backfillTask")) {
-                        JSONObject taskParams = status(targetTask).optJSONObject("params");
+                    if (backfillTask) {
                         java.util.Set<String> enqueued = new java.util.HashSet<>();
                         String sql = "SELECT c.data, coalesce(json_extract(c.data, '$.secUid'), '') " +
                                      "FROM comments c LEFT JOIN users u ON json_extract(c.data, '$.userId') = u.id " +
@@ -312,12 +313,11 @@ public final class CaptureProvider extends ContentProvider {
                                 JSONObject commentRow = new JSONObject(commentData);
                                 String uid = commentRow.optString("userId");
                                 if (uid.isEmpty() || enqueued.contains(uid)) continue;
-                                if (matchesCommentStage(taskParams, commentRow)) {
-                                    enqueued.add(uid);
-                                    db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
-                                        new Object[]{targetTask, uid, sec == null ? "" : sec, System.currentTimeMillis()});
-                                    added++;
-                                }
+                                enqueued.add(uid);
+                                ContentValues target = new ContentValues();
+                                target.put("task", targetTask); target.put("user", uid); target.put("status", "pending"); target.putNull("issue");
+                                target.put("sec_uid", sec == null ? "" : sec); target.put("attempts", 0); target.put("updated", System.currentTimeMillis());
+                                if (db.insertWithOnConflict("profile_targets", null, target, SQLiteDatabase.CONFLICT_IGNORE) != -1) added++;
                             }
                         }
                     }
@@ -329,6 +329,14 @@ public final class CaptureProvider extends ContentProvider {
                     }
                     db.setTransactionSuccessful();
                 } finally { db.endTransaction(); }
+                if (added > 0) {
+                    JSONObject target = status(targetTask);
+                    if ("comment".equals(target.optString("kind")) && !target.optString("status").startsWith("running")) {
+                        db.execSQL("UPDATE tasks SET status='running-profiles',issue='采集资料中',updated=? WHERE id=?",
+                            new Object[]{System.currentTimeMillis(), targetTask});
+                        event(targetTask, "profile_backfill_started");
+                    }
+                }
                 out.putString("data", new JSONObject().put("added", added).toString()); return out;
             }
             if ("profile_queue_next".equals(method)) {
@@ -339,12 +347,6 @@ public final class CaptureProvider extends ContentProvider {
                     new Object[]{targetTask, staleThreshold});
                 db.execSQL("UPDATE profile_targets SET status='failed', issue='profile_timeout' WHERE task=? AND status='pending' AND attempts >= 3",
                     new Object[]{targetTask});
-                JSONObject taskInfo = status(targetTask);
-                JSONObject taskParams = taskInfo.optJSONObject("params");
-                if ("comment".equals(taskInfo.optString("kind")) && taskParams != null && !prunedTasks.contains(targetTask)) {
-                    prunePendingProfiles(targetTask, taskParams);
-                    prunedTasks.add(targetTask);
-                }
                 String user = null;
                 String secUid = "";
                 try (Cursor cursor = db.rawQuery("SELECT user, coalesce(sec_uid,'') FROM profile_targets WHERE task=? AND status='pending' ORDER BY updated ASC, user ASC LIMIT 1",

@@ -2569,15 +2569,24 @@ public final class CollectorPanel {
         }
         return null;
     }
-    /** Wakes the collector process silently without opening WakeActivity, reloading the panel when ready. */
+    /** Starts the collector from an explicit user action, then reloads the panel when ready. */
     private void wakeCollector() {
-        Toast.makeText(activity, "正在静默唤醒采集服务…", Toast.LENGTH_SHORT).show();
+        Toast.makeText(activity, "正在打开采集服务…", Toast.LENGTH_SHORT).show();
         new Thread(() -> {
             boolean ok = false;
-            CollectorWake.wake(activity);
-            for (int i = 0; i < 4; i++) {
+            // ColorOS blocks a host app from starting comso's provider/service in the
+            // background. This path is only reached after an explicit user tap, so use
+            // the short trampoline activity to establish the collector process first.
+            try {
+                Intent wake = new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+                activity.startActivity(wake);
+            } catch (Throwable ignored) {
+                CollectorWake.wake(activity);
+            }
+            for (int i = 0; i < 8; i++) {
                 try {
-                    Thread.sleep(600);
+                    Thread.sleep(500);
                     JSONObject st = CollectorClient.call(activity, "status", new JSONObject());
                     if (st != null) { ok = true; break; }
                 } catch (Throwable ignored) {
@@ -2594,7 +2603,7 @@ public final class CollectorPanel {
                 });
             } else {
                 handler.post(() -> {
-                    Toast.makeText(activity, "唤醒未完成：服务已被系统深度冻结。请打开一次“comso”应用，或为 comso 开启自启动/关联启动权限。", Toast.LENGTH_LONG).show();
+                    Toast.makeText(activity, "唤醒未完成：请在系统设置中为 comso 开启自启动、关联启动和后台运行权限。", Toast.LENGTH_LONG).show();
                 });
             }
         }, "collector-manual-wake").start();
