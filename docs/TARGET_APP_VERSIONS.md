@@ -82,6 +82,7 @@
 | `xiaohongshu-v9.53.0-split-apks.zip` | ~187 MB | `7060cd4d46b0b9b741b742570774d00be3a48865d311c45b6a8295acdaa9b375` | 小红书 v9.53.0 完整分包（base + arm64_v8a + xxxhdpi） |
 | `kuaishou-v14.8.40.50567.apk` | ~179 MB | `1aea3180f86d97a92ebbf0418c71d7ffa9c1e56808d8a573ac14f4c66422dcae` | 快手 v14.8.40.50567 单 APK |
 | `douyin-v40.7.0.apk` | ~343 MB | `51d9fd191904c3112e895bdeaf25ff5bb3b61fa65af1519a617b769e73235f0a` | 抖音 v40.7.0 单 APK |
+| `comso-v0.1.4.apk` | ~257 KB | `e51eb123713900fa9f29fd4d18445a9f61412c76458f0a23d452a644490cea30` | 采集模块 Vector / LSPosed 插件 APK (0.1.4 修复快手与跨端兼容性) |
 | `comso-v0.1.3.apk` | ~257 KB | `d78f1fa377ae1488d26ed6807017fcb2b804a96ebb5b18731c3705637c0b489f` | 采集模块 Vector / LSPosed 插件 APK (0.1.3 基准归档) |
 
 如需排查新版本兼容性问题，可重新下载上述 APK 覆盖安装以还原验证基准。
