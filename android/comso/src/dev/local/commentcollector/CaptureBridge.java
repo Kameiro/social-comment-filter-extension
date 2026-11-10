@@ -38,7 +38,10 @@ final class CaptureBridge {
     static Bundle call(Context context, String operation, Bundle extras) throws Exception {
         Log.i("CommentCollector", "bridge_call operation=" + operation);
         try {
-            if (!bindUnavailable && !Platforms.HOSTS.contains(context.getPackageName())) {
+            // Keep a bound service while a host app is in the foreground. On ColorOS this
+            // prevents the collector process from being classified as a cached FGS and frozen
+            // between requests; broadcast remains the fallback when binding is rejected.
+            if (!bindUnavailable) {
                 ensureBound(context.getApplicationContext());
                 return callBound(operation, extras);
             }
@@ -70,10 +73,13 @@ final class CaptureBridge {
             @Override public void onReceive(Context ignored, Intent intent) { result[0] = getResultExtras(true); done.countDown(); }
         };
         Intent intent = new Intent(BridgeReceiver.ACTION).setComponent(new ComponentName("dev.local.commentcollector", "dev.local.commentcollector.BridgeReceiver"));
-        intent.putExtra("operation", operation); if (extras != null) intent.putExtra("extras", extras);
+        intent.putExtra("operation", operation).putExtra("callerPackage", context.getPackageName());
+        if (extras != null) intent.putExtra("extras", extras);
         context.sendOrderedBroadcast(intent, null, receiver, replyHandler, 0, null, null);
         if (!done.await(2, TimeUnit.SECONDS)) throw new IllegalStateException("采集广播桥接响应超时");
         if (result[0] == null) throw new IllegalStateException("采集广播桥接无响应");
+        if (!result[0].containsKey("data") && !result[0].containsKey("json") && !result[0].containsKey("error"))
+            throw new IllegalStateException("采集广播桥接返回空结果");
         return result[0];
     }
 

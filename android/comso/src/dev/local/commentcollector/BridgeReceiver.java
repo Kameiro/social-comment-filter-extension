@@ -36,7 +36,18 @@ public final class BridgeReceiver extends BroadcastReceiver {
             return;
         }
 
-        final int uid = getSentFromUid();
+        int sentUid = -1;
+        try { sentUid = getSentFromUid(); } catch (Throwable ignored) {}
+        String callerPackage = intent.getStringExtra("callerPackage");
+        final int uid;
+        if (callerPackage != null && Platforms.HOSTS.contains(callerPackage)) {
+            int packageUid;
+            try { packageUid = context.getPackageManager().getPackageUid(callerPackage, 0); }
+            catch (Throwable error) { packageUid = -1; }
+            uid = packageUid > 0 ? packageUid : sentUid;
+        } else {
+            uid = sentUid;
+        }
         final Bundle extras = intent.getBundleExtra("extras");
         new Thread(() -> {
             Bundle result = new Bundle();

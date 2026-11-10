@@ -11,9 +11,7 @@ public final class CollectorClient {
         Bundle result = null; Exception providerError = null;
         try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
         catch (Exception error) { providerError = error; }
-        boolean isUnknownAuth = providerError instanceof IllegalArgumentException &&
-            String.valueOf(providerError.getMessage()).contains("Unknown authority");
-        if (result == null && !isUnknownAuth && CollectorWake.wake(context)) {
+        if (result == null && CollectorWake.wake(context)) {
             for (int attempt = 0; attempt < 14 && result == null; attempt++) {
                 try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
                 try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); providerError = null; }
@@ -32,9 +30,7 @@ public final class CollectorClient {
         boolean host = Platforms.HOSTS.contains(context.getPackageName());
         try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
         catch (Exception error) { providerError = error; }
-        boolean isUnknownAuth = providerError instanceof IllegalArgumentException &&
-            String.valueOf(providerError.getMessage()).contains("Unknown authority");
-        if (result == null && host && !isUnknownAuth && CollectorWake.wake(context)) {
+        if (result == null && host && CollectorWake.wake(context)) {
             // The collector process was frozen or killed: wake it silently, then retry the provider for a few seconds.
             for (int attempt = 0; attempt < 14 && result == null; attempt++) {
                 try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
