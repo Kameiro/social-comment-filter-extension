@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="dev.local.commentcollector" android:versionCode="5" android:versionName="0.1.4">
+    package="dev.local.commentcollector" android:versionCode="6" android:versionName="0.1.5">
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="36" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

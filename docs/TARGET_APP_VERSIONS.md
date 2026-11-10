@@ -15,7 +15,7 @@
 | **小红书** | `com.xingin.xhs` | `9.53.0` | `9530804` | 36 (Android 16) | Split APKs (App Bundle) |  已验证通过（兼容 9.51.0） |
 | **快手** | `com.smile.gifmaker` | `14.8.40.50567` | `50567` | 30 (Android 11) | 单 APK (`base.apk`) |  已验证通过 |
 | **抖音** | `com.ss.android.ugc.aweme` | `40.7.0` | `400701` | 34 (Android 14) | 单 APK (`base.apk`) |  已验证通过 |
-| **comso 采集模块** | `dev.local.commentcollector` | `0.1.4` | `5` | 36 (Android 16) | Vector / LSPosed 模块 APK |  已验证通过 |
+| **comso 采集模块** | `dev.local.commentcollector` | `0.1.5` | `6` | 36 (Android 16) | Vector / LSPosed 模块 APK |  已验证通过 |
 
 ---
 
