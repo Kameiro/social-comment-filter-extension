@@ -1185,8 +1185,10 @@ public final class CollectorPanel {
         line.addView(channelBadge, cbP);
 
         line.addView(text("#" + task.optLong("taskId") + " " + kindName(kind), 15, true), new LinearLayout.LayoutParams(0, -2, 1));
-        boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native");
-        TextView badge = text(waitingForPage ? "等待返回应用" : state(state), 12, true);
+        boolean isTargetPost = photo == null || task.optString("photoId").isEmpty() || task.optString("photoId").equals(photo.get());
+        boolean waitingForPage = task.optBoolean("auto") && state.startsWith("running") &&
+            (!isTargetPost || (!task.optString("pagingDriver").startsWith("native") && (showing() || open.get() != null)));
+        TextView badge = text(!isTargetPost && state.startsWith("running") ? "需打开帖子" : waitingForPage ? "等待返回应用" : state(state), 12, true);
         boolean bad = "paused".equals(state) || "stopped".equals(state) || "failed".equals(state), good = "complete".equals(state);
         badge.setTextColor(bad ? sc.onErrorContainer : good ? sc.onPrimaryContainer : sc.onSecondaryContainer); badge.setPadding(dp(10), dp(3), dp(10), dp(3));
         badge.setBackground(round(bad ? sc.errorContainer : good ? sc.primaryContainer : sc.secondaryContainer, 8)); line.addView(badge);
@@ -1226,7 +1228,9 @@ public final class CollectorPanel {
 
     private void taskDetails(LinearLayout card, JSONObject task, boolean live) throws Exception {
         long id = task.getLong("taskId"); String state = task.optString("status"), kind = task.optString("kind");
-        boolean waitingForPage = showing() && task.optBoolean("auto") && state.startsWith("running") && !task.optString("pagingDriver").startsWith("native");
+        boolean isTargetPost = photo == null || task.optString("photoId").isEmpty() || task.optString("photoId").equals(photo.get());
+        boolean waitingForPage = task.optBoolean("auto") && state.startsWith("running") &&
+            (!isTargetPost || (!task.optString("pagingDriver").startsWith("native") && (showing() || open.get() != null)));
         long total = "profile".equals(kind) ? task.optLong("profilesTotal") : "discovery".equals(kind) ? task.getJSONObject("params").optLong("target", 20) : task.optLong("total");
         long read = "profile".equals(kind) ? task.optLong("profilesDone") : "discovery".equals(kind) ? task.optLong("discoveredPosts") : task.optLong("comments");
         if ("profile".equals(kind)) card.addView(text("成功 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位 · 失败 " + task.optInt("profilesFailed") + " 位", 13, false));
@@ -1273,7 +1277,10 @@ public final class CollectorPanel {
         if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); card.addView(reason); }
         LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
         List<Button> buttons = new ArrayList<>();
-        if (waitingForPage) buttons.add(primary("返回" + hostName() + "继续", closePanel));
+        if (waitingForPage) {
+            if (!isTargetPost) buttons.add(primary("打开目标帖子继续", () -> openPost(task.optString("photoId"))));
+            else buttons.add(primary("返回" + hostName() + "继续", closePanel));
+        }
         if ("paused".equals(state)) buttons.add(primary("继续", () -> taskAction("resume", id)));
         if (state.startsWith("running") || "paused".equals(state) || "queued".equals(state)) buttons.add(button("停止", () -> taskAction("stop", id)));
         if ("stopped".equals(state)) buttons.add(button("续跑", () -> taskAction("retry", id)));
@@ -2543,8 +2550,8 @@ public final class CollectorPanel {
         try {
             if (showing()) open.get().dismiss();
             activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(activity.getPackageName()));
-            if ("douyin".equals(hostPlatform()) && url.startsWith("snssdk1128://aweme/detail/")) {
-                handler.postDelayed(() -> clickCommentButton(activity, 0), 2500);
+            if (url.startsWith("snssdk1128://aweme/detail/") || url.startsWith("kwai://work/")) {
+                handler.postDelayed(() -> clickCommentButton(activity, 0), 2000);
             }
         } catch (Exception error) {
             pendingReturn = null;
