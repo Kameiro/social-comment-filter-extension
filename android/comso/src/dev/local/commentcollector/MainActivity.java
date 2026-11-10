@@ -9,7 +9,8 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        startService(new Intent(this, CaptureService.class));
+        if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(new Intent(this, CaptureService.class));
+        else startService(new Intent(this, CaptureService.class));
         setContentView(CollectorPanel.standalone(this, hookProbe()));
     }
 }

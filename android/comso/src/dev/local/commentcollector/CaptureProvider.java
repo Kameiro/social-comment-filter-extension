@@ -879,17 +879,17 @@ public final class CaptureProvider extends ContentProvider {
         platformClause(where, args, query, "c.data");
         match(where, args, query, "photoId", "json_extract(c.data,'$.photoId')", false);
         match(where, args, query, "userId", "json_extract(c.data,'$.userId')", false);
-        // 1. 排除关键词：最高优先级一票否决
-        for (String term : terms(query.optString("excludeKeyword"))) {
-            where.append(" AND coalesce(json_extract(c.data,'$.text'),'') NOT LIKE ? ESCAPE '\\'");
-            args.add("%" + like(term) + "%");
-        }
-        // 2. 评论时间范围
+        // 1. 评论时间范围：初筛的第一道门；未知时间不满足有界时间条件。
         if (query.optInt("recentDays") > 0) {
             where.append(" AND (CASE WHEN CAST(json_extract(c.data,'$.created') AS INTEGER) < 100000000000 THEN CAST(json_extract(c.data,'$.created') AS INTEGER)*1000 ELSE CAST(json_extract(c.data,'$.created') AS INTEGER) END) >= ?");
             args.add(String.valueOf(System.currentTimeMillis() - query.optInt("recentDays") * 86400000L));
         }
-        // 3. 初次筛选：包含关键词 & 评论 IP 属地
+        // 2. 排除关键词：独立的一票否决，不参与关键词/IP 的 AND/OR 关系。
+        for (String term : terms(query.optString("excludeKeyword"))) {
+            where.append(" AND coalesce(json_extract(c.data,'$.text'),'') NOT LIKE ? ESCAPE '\\'");
+            args.add("%" + like(term) + "%");
+        }
+        // 3. 初次筛选：关键词与评论 IP 属于同一个可配置关系组。
         StringBuilder commentIpClause = new StringBuilder(); List<String> commentIpArgs = new ArrayList<>();
         String commentRegionVal = query.optString("commentIpRegion").trim();
         if (commentRegionVal.isEmpty() && "comment".equals(query.optString("ipSource"))) {
@@ -903,7 +903,7 @@ public final class CaptureProvider extends ContentProvider {
         StringBuilder keywordClause = new StringBuilder(); List<String> keywordArgs = new ArrayList<>();
         keywordTerms(keywordClause, keywordArgs, query.optString("keyword"), "json_extract(c.data,'$.text')");
 
-        if ("or".equals(query.optString("relation")) && commentIpClause.length() > 0 && keywordClause.length() > 0) {
+        if ("or".equalsIgnoreCase(query.optString("relation")) && commentIpClause.length() > 0 && keywordClause.length() > 0) {
             where.append(" AND (").append(commentIpClause.substring(5)).append(" OR ").append(keywordClause.substring(5)).append(')');
             args.addAll(commentIpArgs); args.addAll(keywordArgs);
         } else {
@@ -1038,56 +1038,7 @@ public final class CaptureProvider extends ContentProvider {
         return false;
     }
     static boolean matchesCommentStage(JSONObject params, JSONObject comment) {
-        if (params == null || comment == null) return true;
-        String text = comment.optString("text", "");
-
-        // 1. 排除关键词：最高优先级一票否决
-        // 只要出现排除关键词，即使同时出现了包含关键词，该评论也必须被排除！
-        for (String term : terms(params.optString("excludeKeyword"))) {
-            if (!term.isEmpty() && text.contains(term)) return false;
-        }
-
-        // 2. 评论时间范围：满足近 N 天内
-        int recentDays = params.optInt("recentDays");
-        if (recentDays > 0) {
-            long created = comment.optLong("created");
-            if (created < 100000000000L) created *= 1000L;
-            if (created < System.currentTimeMillis() - recentDays * 86400000L) return false;
-        }
-
-        // 3. 包含关键词（多词逗号/空格分隔，满足任意一个即算命中包含）
-        List<String> kwTerms = terms(params.optString("keyword"));
-        boolean hasKeyword = !kwTerms.isEmpty();
-        boolean keywordMatch = false;
-        if (hasKeyword) {
-            for (String term : kwTerms) {
-                if (!term.isEmpty() && text.contains(term)) { keywordMatch = true; break; }
-            }
-        }
-
-        // 4. 评论 IP 属地（初筛，直接取自评论自身的 ipRegion）
-        String commentRegionVal = params.optString("commentIpRegion").trim();
-        if (commentRegionVal.isEmpty() && "comment".equals(params.optString("ipSource"))) {
-            commentRegionVal = params.optString("ipRegion").trim();
-        }
-        List<String> commentRegionTerms = terms(commentRegionVal);
-        boolean hasCommentRegion = !commentRegionTerms.isEmpty();
-        boolean commentRegionMatch = false;
-        if (hasCommentRegion) {
-            String commentIp = comment.optString("ipRegion", "");
-            for (String reg : commentRegionTerms) {
-                if (!reg.isEmpty() && commentIp.contains(reg)) { commentRegionMatch = true; break; }
-            }
-        }
-
-        // 5. 结合关系（AND 或 OR，但排除词始终一票否决）
-        String relation = params.optString("relation", "and");
-        if ("or".equals(relation) && hasKeyword && hasCommentRegion) {
-            return keywordMatch || commentRegionMatch;
-        }
-        if (hasKeyword && !keywordMatch) return false;
-        if (hasCommentRegion && !commentRegionMatch) return false;
-        return true;
+        return InitialCommentFilter.matches(params, comment);
     }
 
     private final java.util.Set<Long> prunedTasks = java.util.Collections.synchronizedSet(new java.util.HashSet<>());

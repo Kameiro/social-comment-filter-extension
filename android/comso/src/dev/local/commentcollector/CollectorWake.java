@@ -17,12 +17,12 @@ final class CollectorWake {
 
     private CollectorWake() {}
 
-    /** True when a wake was just issued (or is already in flight), so the caller should retry its request shortly. */
+    /** True only when startService or provider acquisition succeeded; broadcasts alone are not proof of a wake. */
     static boolean wake(Context context) {
         if (!Platforms.HOSTS.contains(context.getPackageName())) return false;
         long now = SystemClock.elapsedRealtime();
         synchronized (CollectorWake.class) {
-            if (now - lastAttempt < MIN_GAP_MS) return now - lastAttempt < 3500; // an attempt is still settling
+            if (now - lastAttempt < MIN_GAP_MS) return false; // an attempt is still settling; no new wake was issued
             lastAttempt = now;
         }
         boolean woken = false;
@@ -34,7 +34,10 @@ final class CollectorWake {
                 .addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES | Intent.FLAG_RECEIVER_FOREGROUND)
                 .putExtra("operation", "wake");
             context.sendBroadcast(intent);
-            woken = true;
+            // sendBroadcast() only means that the request was queued. ColorOS can
+            // accept the call and still drop the receiver start through
+            // OplusAppStartupManager, so do not report a wake until a component was
+            // actually started (or a provider client was acquired below).
         } catch (Throwable e) {
             Log.w("CommentCollector", "silent_wake_broadcast_failed " + e.getMessage());
         }
@@ -42,8 +45,7 @@ final class CollectorWake {
         // 2. startService for CaptureService
         try {
             Intent serviceIntent = new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.CaptureService");
-            context.startService(serviceIntent);
-            woken = true;
+            woken = context.startService(serviceIntent) != null;
         } catch (Throwable ignored) {}
 
         // 3. Acquire unstable ContentProviderClient to trigger Provider process startup
@@ -57,7 +59,7 @@ final class CollectorWake {
             Log.w("CommentCollector", "silent_wake_provider_failed " + e.getMessage());
         }
 
-        Log.i("CommentCollector", "collector_silent_wake");
+        Log.i("CommentCollector", "collector_silent_wake started=" + woken);
         return woken;
     }
 }

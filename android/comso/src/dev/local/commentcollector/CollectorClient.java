@@ -11,7 +11,12 @@ public final class CollectorClient {
         Bundle result = null; Exception providerError = null;
         try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
         catch (Exception error) { providerError = error; }
-        if (result == null && CollectorWake.wake(context)) {
+        if (result == null && Platforms.HOSTS.contains(context.getPackageName())) {
+            // A rejected background wake is still useful diagnostic information,
+            // but it must not decide whether the provider retry happens. The
+            // receiver/startService calls can be dropped by ColorOS without an
+            // exception. Poll the provider, then use the bound bridge fallback.
+            CollectorWake.wake(context);
             for (int attempt = 0; attempt < 14 && result == null; attempt++) {
                 try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
                 try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); providerError = null; }
@@ -30,7 +35,8 @@ public final class CollectorClient {
         boolean host = Platforms.HOSTS.contains(context.getPackageName());
         try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
         catch (Exception error) { providerError = error; }
-        if (result == null && host && CollectorWake.wake(context)) {
+        if (result == null && host) {
+            CollectorWake.wake(context);
             // The collector process was frozen or killed: wake it silently, then retry the provider for a few seconds.
             for (int attempt = 0; attempt < 14 && result == null; attempt++) {
                 try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }

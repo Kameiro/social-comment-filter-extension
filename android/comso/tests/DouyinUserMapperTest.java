@@ -86,56 +86,7 @@ public final class DouyinUserMapperTest {
     }
 
     private static boolean matchesCommentStage(JSONObject params, JSONObject comment) {
-        if (params == null || comment == null) return true;
-        String text = comment.optString("text", "");
-
-        // 1. 排除关键词：最高优先级一票否决
-        // 只要出现排除关键词，即使同时出现了包含关键词，该评论也必须被排除！
-        for (String term : terms(params.optString("excludeKeyword"))) {
-            if (!term.isEmpty() && text.contains(term)) return false;
-        }
-
-        // 2. 评论时间范围：满足近 N 天内
-        int recentDays = params.optInt("recentDays");
-        if (recentDays > 0) {
-            long created = comment.optLong("created");
-            if (created < 100000000000L) created *= 1000L;
-            if (created < System.currentTimeMillis() - recentDays * 86400000L) return false;
-        }
-
-        // 3. 包含关键词（多词逗号/空格分隔，满足任意一个即算命中包含）
-        List<String> kwTerms = terms(params.optString("keyword"));
-        boolean hasKeyword = !kwTerms.isEmpty();
-        boolean keywordMatch = false;
-        if (hasKeyword) {
-            for (String term : kwTerms) {
-                if (!term.isEmpty() && text.contains(term)) { keywordMatch = true; break; }
-            }
-        }
-
-        // 4. 评论 IP 属地（初筛，直接取自评论自身的 ipRegion）
-        String commentRegionVal = params.optString("commentIpRegion").trim();
-        if (commentRegionVal.isEmpty() && "comment".equals(params.optString("ipSource"))) {
-            commentRegionVal = params.optString("ipRegion").trim();
-        }
-        List<String> commentRegionTerms = terms(commentRegionVal);
-        boolean hasCommentRegion = !commentRegionTerms.isEmpty();
-        boolean commentRegionMatch = false;
-        if (hasCommentRegion) {
-            String commentIp = comment.optString("ipRegion", "");
-            for (String reg : commentRegionTerms) {
-                if (!reg.isEmpty() && commentIp.contains(reg)) { commentRegionMatch = true; break; }
-            }
-        }
-
-        // 5. 结合关系（AND 或 OR，但排除词始终一票否决）
-        String relation = params.optString("relation", "and");
-        if ("or".equals(relation) && hasKeyword && hasCommentRegion) {
-            return keywordMatch || commentRegionMatch;
-        }
-        if (hasKeyword && !keywordMatch) return false;
-        if (hasCommentRegion && !commentRegionMatch) return false;
-        return true;
+        return InitialCommentFilter.matches(params, comment);
     }
 
     private static void check(boolean condition, String msg) {

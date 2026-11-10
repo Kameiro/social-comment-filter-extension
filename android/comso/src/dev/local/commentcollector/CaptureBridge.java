@@ -12,6 +12,7 @@ import android.os.IBinder;
 import android.os.Message;
 import android.os.Messenger;
 import android.os.RemoteException;
+import android.os.SystemClock;
 import android.util.Log;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,7 +32,9 @@ final class CaptureBridge {
     private static CountDownLatch connecting;
     private static Messenger reply;
     private static Handler replyHandler;
-    private static volatile boolean bindUnavailable;
+    // ColorOS may reject a bind while its startup policy is settling. A permanent
+    // latch here made the bridge unusable until the host process was restarted.
+    private static volatile long bindRetryAt;
 
     private CaptureBridge() {}
 
@@ -41,12 +44,13 @@ final class CaptureBridge {
             // Keep a bound service while a host app is in the foreground. On ColorOS this
             // prevents the collector process from being classified as a cached FGS and frozen
             // between requests; broadcast remains the fallback when binding is rejected.
-            if (!bindUnavailable) {
+            if (SystemClock.elapsedRealtime() >= bindRetryAt) {
                 ensureBound(context.getApplicationContext());
                 return callBound(operation, extras);
             }
         } catch (Exception bindError) {
-            bindUnavailable = true;
+            long now = SystemClock.elapsedRealtime();
+            bindRetryAt = now + 2500L;
             Log.w("CommentCollector", "bridge_bind_failed, using broadcast");
         }
         return callBroadcast(context.getApplicationContext(), operation, extras);
@@ -61,7 +65,12 @@ final class CaptureBridge {
         if (target == null) { PENDING.remove(id); throw new IllegalStateException("采集桥接服务未连接"); }
         try { target.send(request); }
         catch (RemoteException error) { PENDING.remove(id); resetConnection(); throw error; }
-        if (!pending.done.await(15, TimeUnit.SECONDS)) { PENDING.remove(id); throw new IllegalStateException("采集桥接服务响应超时"); }
+        if (!pending.done.await(15, TimeUnit.SECONDS)) {
+            PENDING.remove(id);
+            resetConnection();
+            bindRetryAt = SystemClock.elapsedRealtime() + 2500L;
+            throw new IllegalStateException("采集桥接服务响应超时");
+        }
         if (pending.result == null) throw new IllegalStateException("采集桥接服务无响应");
         return pending.result;
     }
@@ -119,11 +128,18 @@ final class CaptureBridge {
         }
         @Override public void onServiceDisconnected(ComponentName name) { Log.w("CommentCollector", "bridge_disconnected"); resetConnection(); }
         @Override public void onBindingDied(ComponentName name) { resetConnection(); }
-        @Override public void onNullBinding(ComponentName name) { synchronized (LOCK) { service = null; if (connecting != null) connecting.countDown(); } }
+        @Override public void onNullBinding(ComponentName name) {
+            synchronized (LOCK) {
+                service = null;
+                if (connecting != null) connecting.countDown();
+                connecting = null;
+            }
+            bindRetryAt = SystemClock.elapsedRealtime() + 2500L;
+        }
     };
 
     private static void resetConnection() {
-        synchronized (LOCK) { service = null; connecting = null; bindUnavailable = false; }
+        synchronized (LOCK) { service = null; connecting = null; }
     }
 
     private static final class Pending {

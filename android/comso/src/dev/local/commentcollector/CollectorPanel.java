@@ -2006,16 +2006,18 @@ public final class CollectorPanel {
     /** [key, label] pairs for the non-default conditions. */
     private String[][] conditionParts(JSONObject f, boolean forCollect) {
         List<String[]> out = new ArrayList<>();
+        // Display the same priority used by the collector: time first, then the
+        // keyword/comment-IP relation group, followed by the exclusion veto.
+        if (f.optInt("recentDays") > 0) out.add(new String[]{"recentDays", "[初筛 1] 近 " + f.optInt("recentDays") + " 天"});
         if (!f.optString("keyword").isEmpty()) out.add(new String[]{"keyword", "[初筛] 含 " + f.optString("keyword")});
-        if (!f.optString("excludeKeyword").isEmpty()) out.add(new String[]{"excludeKeyword", "[初筛] 排除 " + f.optString("excludeKeyword")});
-        if (f.optInt("recentDays") > 0) out.add(new String[]{"recentDays", "[初筛] 近 " + f.optInt("recentDays") + " 天"});
 
         String commentIp = f.optString("commentIpRegion").trim();
         if (commentIp.isEmpty() && "comment".equals(f.optString("ipSource"))) commentIp = f.optString("ipRegion").trim();
         if (!commentIp.isEmpty()) {
-            boolean isOr = "or".equals(f.optString("relation")) && !f.optString("keyword").isEmpty();
+            boolean isOr = "or".equalsIgnoreCase(f.optString("relation")) && !f.optString("keyword").isEmpty();
             out.add(new String[]{"commentIpRegion", "[初筛] " + (isOr ? "或 " : "") + "评论IP " + commentIp});
         }
+        if (!f.optString("excludeKeyword").isEmpty()) out.add(new String[]{"excludeKeyword", "[初筛] 排除 " + f.optString("excludeKeyword")});
 
         String profileIp = f.optString("profileIpRegion").trim();
         if (profileIp.isEmpty() && !"comment".equals(f.optString("ipSource")) && !"post".equals(f.optString("ipSource"))) profileIp = f.optString("ipRegion").trim();
@@ -2052,20 +2054,19 @@ public final class CollectorPanel {
         LinearLayout fields = vertical(); fields.setPadding(dp(20), dp(4), dp(20), dp(8));
 
         // Block 1: ① 初次筛选（评论直接可用）
-        sectionBlock(fields, "① 初次筛选（评论直接可用）", "抓取评论时实时初筛；只有满足初筛的评论，才会进入二次主页采集");
-        EditText keyword = input("包含关键词，多个用逗号分隔（如：词1, 词2）", filters.optString("keyword"), false); fields.addView(keyword);
-        EditText exclude = input("排除关键词，多个用逗号分隔（如：词4, 词5）", filters.optString("excludeKeyword"), false); fields.addView(exclude);
-        fields.addView(muted("若同时命中包含词与排除词，排除词一票否决（该评论必定排除）", 11));
-
+        sectionBlock(fields, "① 初次筛选（评论直接可用）", "先按时间过滤；再按关键词与评论 IP 的关系筛选；只有命中初筛的评论才会进入二次主页采集");
         EditText days = input("只看最近多少天内评论（空为不限，如：30）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
+        EditText keyword = input("包含关键词，多个用逗号分隔（如：词1, 词2）", filters.optString("keyword"), false); fields.addView(keyword);
 
         String initCommentIp = filters.optString("commentIpRegion");
         if (initCommentIp.isEmpty() && "comment".equals(filters.optString("ipSource"))) initCommentIp = filters.optString("ipRegion");
         EditText commentIp = input("评论 IP 属地（如：浙江、杭州，多个用逗号分隔）", initCommentIp, false); fields.addView(commentIp);
 
-        int[] relation = {"or".equals(filters.optString("relation")) ? 1 : 0};
+        int[] relation = {"or".equalsIgnoreCase(filters.optString("relation")) ? 1 : 0};
         fields.addView(segmented(new String[]{"同时满足 (AND)", "满足其一 (OR)"}, relation[0], index -> relation[0] = index));
         fields.addView(muted("包含关键词与评论 IP 的关系：同时满足两个条件，或满足其一（排除词始终一票否决）", 11));
+        EditText exclude = input("排除关键词，多个用逗号分隔（如：词4, 词5）", filters.optString("excludeKeyword"), false); fields.addView(exclude);
+        fields.addView(muted("若命中排除词，该评论会被排除；排除词不受 AND/OR 关系影响", 11));
 
         // Block 2: ② 二次筛选（补充主页资料后）
         sectionBlock(fields, "② 二次筛选（补充主页资料后）", "初筛命中后，自动调取主页资料补充主页IP、最近发帖地点及性别年龄");
@@ -2572,41 +2573,50 @@ public final class CollectorPanel {
     /** Starts the collector from an explicit user action, then reloads the panel when ready. */
     private void wakeCollector() {
         Toast.makeText(activity, "正在打开采集服务…", Toast.LENGTH_SHORT).show();
-        new Thread(() -> {
-            boolean ok = false;
-            // ColorOS blocks a host app from starting comso's provider/service in the
-            // background. This path is only reached after an explicit user tap, so use
-            // the short trampoline activity to establish the collector process first.
+        // Keep the trampoline launch on the main thread. Some ColorOS builds only
+        // treat an Activity launch from the visible host/UI thread as a user-initiated
+        // start; launching it from the polling worker is classified as background.
+        activity.runOnUiThread(() -> {
             try {
-                Intent wake = new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
-                activity.startActivity(wake);
-            } catch (Throwable ignored) {
+                if (!"com.ss.android.ugc.aweme".equals(activity.getPackageName())) {
+                    Intent wake = new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.WakeActivity")
+                        .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
+                    activity.startActivity(wake);
+                } else {
+                    // Douyin's internal security monitor intercepts foreign startActivity calls
+                    // and flags risk alerts. Use non-Activity silent wake instead.
+                    CollectorWake.wake(activity);
+                }
+            } catch (Throwable error) {
+                Log.w("CommentCollector", "manual_wake_activity_failed", error);
                 CollectorWake.wake(activity);
             }
-            for (int i = 0; i < 8; i++) {
-                try {
-                    Thread.sleep(500);
-                    JSONObject st = CollectorClient.call(activity, "status", new JSONObject());
-                    if (st != null) { ok = true; break; }
-                } catch (Throwable ignored) {
+            new Thread(() -> {
+                boolean ok = false;
+                for (int i = 0; i < 8; i++) {
                     try {
-                        Bundle res = CaptureBridge.call(activity, "status", new Bundle());
-                        if (res != null && (res.containsKey("data") || res.containsKey("json"))) { ok = true; break; }
-                    } catch (Throwable ignored2) {}
+                        Thread.sleep(500);
+                        JSONObject st = CollectorClient.call(activity, "status", new JSONObject());
+                        if (st != null) { ok = true; break; }
+                    } catch (Throwable ignored) {
+                        try {
+                            Bundle res = CaptureBridge.call(activity, "status", new Bundle());
+                            if (res != null && (res.containsKey("data") || res.containsKey("json"))) { ok = true; break; }
+                        } catch (Throwable ignored2) {}
+                    }
                 }
-            }
-            if (ok) {
-                handler.post(() -> {
-                    Toast.makeText(activity, "采集服务已唤醒", Toast.LENGTH_SHORT).show();
-                    render();
-                });
-            } else {
-                handler.post(() -> {
-                    Toast.makeText(activity, "唤醒未完成：请在系统设置中为 comso 开启自启动、关联启动和后台运行权限。", Toast.LENGTH_LONG).show();
-                });
-            }
-        }, "collector-manual-wake").start();
+                if (ok) {
+                    handler.post(() -> {
+                        Toast.makeText(activity, "采集服务已唤醒", Toast.LENGTH_SHORT).show();
+                        render();
+                    });
+                } else {
+                    handler.post(() -> {
+                        Toast.makeText(activity, "唤醒未完成：请在系统设置中为 comso 开启自启动、关联启动和后台运行权限。", Toast.LENGTH_LONG).show();
+                    });
+                }
+            }, "collector-manual-wake").start();
+        });
     }
 
     // ---------------------------------------------------------------- polling
