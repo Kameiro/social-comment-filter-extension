@@ -58,9 +58,10 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
     }
     private void tick() {
         try {
-            Bundle result = context.getContentResolver().call(CaptureProvider.URI, "status", null, null);
+            Bundle result = CollectorClient.callRaw(context, "status", null);
             if (result == null || result.containsKey("error")) return;
-            JSONObject state = new JSONObject(result.getString("json"));
+            String json = result.getString("data", result.getString("json", "{}"));
+            JSONObject state = new JSONObject(json);
             if (!state.optString("status").startsWith("running")) { running = false; stage = state.optString("status"); return; }
             String taskPlatform = state.optString("platform");
             if ((!taskPlatform.isEmpty() && !"kuaishou".equals(taskPlatform))

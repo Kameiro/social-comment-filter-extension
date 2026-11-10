@@ -11,10 +11,12 @@ public final class CollectorClient {
         Bundle result = null; Exception providerError = null;
         try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
         catch (Exception error) { providerError = error; }
-        if (result == null && CollectorWake.wake(context)) {
+        boolean isUnknownAuth = providerError instanceof IllegalArgumentException &&
+            String.valueOf(providerError.getMessage()).contains("Unknown authority");
+        if (result == null && !isUnknownAuth && CollectorWake.wake(context)) {
             for (int attempt = 0; attempt < 14 && result == null; attempt++) {
                 try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
-                try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
+                try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); providerError = null; }
                 catch (Exception error) { providerError = error; }
             }
         }
@@ -30,7 +32,9 @@ public final class CollectorClient {
         boolean host = Platforms.HOSTS.contains(context.getPackageName());
         try { result = context.getContentResolver().call(CaptureProvider.URI, operation, null, args); }
         catch (Exception error) { providerError = error; }
-        if (result == null && host && CollectorWake.wake(context)) {
+        boolean isUnknownAuth = providerError instanceof IllegalArgumentException &&
+            String.valueOf(providerError.getMessage()).contains("Unknown authority");
+        if (result == null && host && !isUnknownAuth && CollectorWake.wake(context)) {
             // The collector process was frozen or killed: wake it silently, then retry the provider for a few seconds.
             for (int attempt = 0; attempt < 14 && result == null; attempt++) {
                 try { Thread.sleep(250); } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); break; }
@@ -39,12 +43,6 @@ public final class CollectorClient {
             }
         }
         if (result == null) {
-            // ColorOS can reject cross-UID provider lookup. Never block the host app's render/network callbacks on a
-            // 15-second bridge timeout for read-only status probes; the next write will still try the bridge.
-            if (("status".equals(operation) || "runtime_update".equals(operation)) && host) {
-                if (providerError != null) throw providerError;
-                throw new IllegalStateException("Provider 不可用");
-            }
             try { result = CaptureBridge.call(context, operation, args); }
             catch (Exception bridgeError) {
                 if (providerError != null) throw new IllegalStateException("Provider 不可用，桥接服务也不可用：" + bridgeError.getMessage(), bridgeError);

@@ -38,7 +38,7 @@ final class CaptureBridge {
     static Bundle call(Context context, String operation, Bundle extras) throws Exception {
         Log.i("CommentCollector", "bridge_call operation=" + operation);
         try {
-            if (!bindUnavailable) {
+            if (!bindUnavailable && !Platforms.HOSTS.contains(context.getPackageName())) {
                 ensureBound(context.getApplicationContext());
                 return callBound(operation, extras);
             }
