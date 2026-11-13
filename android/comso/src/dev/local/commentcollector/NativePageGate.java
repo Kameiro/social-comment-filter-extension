@@ -21,4 +21,7 @@ final class NativePageGate {
     void requested(long now, int progress) { this.progress = progress; lastRequest = now; pending = true; }
 
     void localCompleted() { pending = false; }
+
+    /** Forget an outstanding request (task paused/resumed or page left the foreground) so a stale one cannot time out. */
+    void reset() { pending = false; lastRequest = -3000; task = 0; generation = 0; stream = ""; }
 }

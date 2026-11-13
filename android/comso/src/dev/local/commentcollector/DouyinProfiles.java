@@ -235,7 +235,18 @@ final class DouyinProfiles {
         }
         out.put("age", age).put("ageVisibility", age == JSONObject.NULL ? "privacy_unspecified" : "public_or_unset");
         Latest post = latest.get(uid);
-        if (post != null) { out.put("latestPostLocation", post.location).put("latestPostAt", post.created); if (!post.city.isEmpty()) out.put("latestPostCity", post.city); }
+        if (post != null) {
+            out.put("latestPostLocation", post.location).put("latestPostAt", post.created);
+            if (!post.city.isEmpty()) out.put("latestPostCity", post.city);
+        } else {
+            String userLoc = firstNonEmpty(text(user, "cityName"), text(user, "city"));
+            if (!userLoc.isEmpty()) {
+                if (!region.isEmpty() && !userLoc.contains(region)) out.put("latestPostLocation", region + " " + userLoc);
+                else out.put("latestPostLocation", userLoc);
+            } else if (!region.isEmpty()) {
+                out.put("latestPostLocation", region);
+            }
+        }
         out.put("fieldSources", new JSONObject().put("gender", "user.gender").put("age", ageObj != null ? "user.age" : "user.birthday").put("location", "user.city")
             .put("profileIpRegion", "user.ip_location"));
         return out;

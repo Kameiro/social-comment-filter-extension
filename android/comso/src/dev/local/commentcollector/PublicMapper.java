@@ -128,7 +128,8 @@ public final class PublicMapper {
             .put("profileSource", response.getClass().getName());
         put(out, "nickname", SnapshotMapper.field(user, "mName"));
         put(out, "bio", SnapshotMapper.field(user, "mText"));
-        put(out, "location", SnapshotMapper.field(profile, "mCityName"));
+        String cityName = text(SnapshotMapper.field(profile, "mCityName"));
+        put(out, "location", cityName);
         String privacy = text(SnapshotMapper.field(profile, "mAgePrivacy"));
         String age = text(SnapshotMapper.field(profile, "mAge"));
         // Unknown privacy codes are not interpreted as permission to reveal an age.
@@ -136,7 +137,14 @@ public final class PublicMapper {
         out.put("ageVisibility", privacy.isEmpty() ? "public_or_unset" : "privacy_unspecified");
         Object meta = SnapshotMapper.invoke(profile, "getKUserProfileMeta", new Class<?>[0]);
         Object ip = SnapshotMapper.field(meta, "mIpLocation");
-        put(out, "profileIpRegion", SnapshotMapper.field(ip, "ipLocationName"));
+        String ipLocation = text(SnapshotMapper.field(ip, "ipLocationName"));
+        put(out, "profileIpRegion", ipLocation);
+        if (!cityName.isEmpty()) {
+            if (!ipLocation.isEmpty() && !cityName.contains(ipLocation)) put(out, "latestPostLocation", ipLocation + " " + cityName);
+            else put(out, "latestPostLocation", cityName);
+        } else if (!ipLocation.isEmpty()) {
+            put(out, "latestPostLocation", ipLocation);
+        }
         JSONObject sources = new JSONObject().put("gender", "profile.user_sex").put("age", "userProfile.age")
             .put("location", "userProfile.cityName").put("profileIpRegion", "userProfileMeta.ipLocation.ipLocationName");
         out.put("fieldSources", sources);

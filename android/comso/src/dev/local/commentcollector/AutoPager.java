@@ -19,6 +19,8 @@ import android.util.Log;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 import java.util.function.Consumer;
 import org.json.JSONObject;
@@ -28,7 +30,18 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
     private final Supplier<String> lastPhoto;
     private final Consumer<JSONObject> bootstrap;
     private final NativeCommentPager nativePager;
+    private final TargetPostGate target = new TargetPostGate();
+    private volatile long lastTouchAt = SystemClock.uptimeMillis();
+    /** Called from the host's dispatchTouchEvent hook: AutoPager never navigates while the user is touching the screen. */
+    void noteTouch() { lastTouchAt = SystemClock.uptimeMillis(); }
     private final Handler handler = new Handler(Looper.getMainLooper());
+    /**
+     * Every collector IPC runs here, never on Kuaishou's main thread: when the collector process is frozen
+     * or killed, CollectorClient retries for seconds, which froze the host UI and triggered an ANR kill.
+     */
+    private final ExecutorService io = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "ks-autopager-io"); thread.setDaemon(true); return thread;
+    });
     private WeakReference<Activity> activity = new WeakReference<>(null);
     volatile WeakReference<Dialog> dialog = new WeakReference<>(null);
     private long taskId;
@@ -56,13 +69,33 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
         windows.add(new WeakReference<>(view));
         while (windows.size() > 20) windows.remove(0);
     }
+    /** Fetches task status off the main thread, then runs the UI step on the main thread. */
     private void tick() {
         try {
-            Bundle result = CollectorClient.callRaw(context, "status", null);
+            io.execute(() -> {
+                Bundle result = null;
+                try { result = CollectorClient.callRaw(context, "status", null); }
+                catch (Throwable error) { stage = "collector_unavailable"; }
+                Bundle fetched = result;
+                handler.post(() -> { step(fetched); logStage(); });
+            });
+        } catch (Throwable error) { handler.postDelayed(this::tick, 3000); }
+    }
+    private String loggedStage = "";
+    private boolean decisionOnTarget, decisionListShown;
+    private String lastPumpFalse = "";
+    /** One line per stage change so device logs show the decision path. */
+    private void logStage() {
+        if (stage.equals(loggedStage)) return;
+        Log.i("CommentCollector", "autopager_stage=" + stage + " prev=" + loggedStage + " onTarget=" + decisionOnTarget + " listShown=" + decisionListShown);
+        loggedStage = stage;
+    }
+    private void step(Bundle result) {
+        try {
             if (result == null || result.containsKey("error")) return;
             String json = result.getString("data", result.getString("json", "{}"));
             JSONObject state = new JSONObject(json);
-            if (!state.optString("status").startsWith("running")) { running = false; stage = state.optString("status"); return; }
+            if (!state.optString("status").startsWith("running")) { running = false; stage = state.optString("status"); nativePager.idle(); target.reset(); return; }
             String taskPlatform = state.optString("platform");
             if ((!taskPlatform.isEmpty() && !"kuaishou".equals(taskPlatform))
                 || state.optString("photoId").matches("[0-9a-fA-F]{24}")) {
@@ -73,6 +106,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             if (taskId != state.optLong("taskId") || generation != state.optLong("generation")) {
                 taskId = state.optLong("taskId"); pages = -1; actions = 0; lastClick = ""; repliesStarted = false;
                 generation = state.optLong("generation"); navigationRequested = false; profileUser = ""; navigatedAt = 0;
+                target.reset(); nativePager.idle();
                 if ("comment".equals(state.optString("kind"))) { bootstrap.accept(state); return; }
             }
             if (!state.optBoolean("auto")) { running = false; return; }
@@ -81,8 +115,11 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             if (foreground == null) { stage = "waiting_foreground"; lastProgress = SystemClock.elapsedRealtime(); return; }
             if (CollectorPanel.showing()) {
                 stage = "database_open";
-                if ("comment".equals(state.optString("kind")) && nativePager.pump(state)) {
-                    lastProgress = SystemClock.elapsedRealtime(); return;
+                if ("comment".equals(state.optString("kind"))) {
+                    boolean onTarget = TargetPostGate.onTarget(postForeground(foreground), state.optString("photoId"), lastPhoto.get());
+                    if (!onTarget) { stage = "waiting_target_post"; nativePager.leftTarget(state.optString("photoId")); }
+                    else if (commentListShown(foreground)) nativePager.pump(state, true);
+                    else nativePager.suspend();
                 }
                 lastProgress = SystemClock.elapsedRealtime(); return;
             }
@@ -99,9 +136,43 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 lastProgress = SystemClock.elapsedRealtime();
                 return;
             }
-            if ("comment".equals(state.optString("kind")) && nativePager.pump(state)) {
-                lastProgress = SystemClock.elapsedRealtime();
-                return;
+            boolean commentTask = "comment".equals(state.optString("kind"));
+            if (commentTask) {
+                boolean onTarget = TargetPostGate.onTarget(postForeground(foreground), state.optString("photoId"), lastPhoto.get());
+                decisionOnTarget = onTarget; decisionListShown = false;
+                if (!onTarget) {
+                    target.newVisit();
+                    // The user is elsewhere (feed, another post, a pendant page). Wait; never pump, pause or count this time.
+                    stage = target.exhausted() ? "waiting_target_post_manual" : "waiting_target_post";
+                    nativePager.leftTarget(state.optString("photoId"));
+                    lastProgress = SystemClock.elapsedRealtime();
+                    if (!state.optString("photoId").isEmpty() && target.tryNavigate(SystemClock.uptimeMillis(), lastTouchAt, taskId, generation)) {
+                        Log.i("CommentCollector", "navigate_to_target_post");
+                        launch(foreground, "kwai://work/" + Uri.encode(state.optString("photoId")));
+                    }
+                    return;
+                }
+                // On the post: only pump while its comment list is shown, otherwise let the UI path open the comments first.
+                boolean shown = commentListShown(foreground);
+                decisionListShown = shown;
+                if (shown) {
+                    target.newVisit();
+                    if (nativePager.pump(state, true)) { lastProgress = SystemClock.elapsedRealtime(); return; }
+                    try {
+                        String nativeState = nativePager.diagnostics().optString("nativeState");
+                        if (!nativeState.equals(lastPumpFalse)) { lastPumpFalse = nativeState; Log.i("CommentCollector", "native_pump_false nativeState=" + nativeState); }
+                    } catch (Exception ignored) {}
+                } else {
+                    nativePager.suspend();
+                    // Drawer closed: open it ourselves, but only when the user has been idle, a few times per visit.
+                    stage = "opening_comments";
+                    if (!target.openExhausted()) lastProgress = SystemClock.elapsedRealtime();
+                    if (target.tryOpenComments(SystemClock.uptimeMillis(), lastTouchAt)) {
+                        String how = clickCommentButton(foreground);
+                        Log.i("CommentCollector", "opening_comments_click result=" + how);
+                    }
+                    return;
+                }
             }
             View root = window();
             if (root == null) return;
@@ -125,23 +196,14 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 return;
             }
             stage = "comment_loading";
-            if ("comment".equals(state.optString("kind")) && nativePager.pump(state)) {
-                lastProgress = SystemClock.elapsedRealtime(); return;
-            }
             boolean hasComments = false;
-            for (View node : nodes) if (node.getClass().getName().contains("RecyclerView") && commentList(node)) { hasComments = true; break; }
-            if (!navigationRequested && !state.optString("photoId").isEmpty() &&
-                (!state.optString("photoId").equals(lastPhoto.get()) || !hasComments || state.optInt("rootPages") == 0)) {
+            for (View node : nodes) if (isShownCommentList(node)) { hasComments = true; break; }
+            // Legacy open-by-link only when the current post differs, and through the shared limiter.
+            if (!state.optString("photoId").isEmpty() && !state.optString("photoId").equals(lastPhoto.get())
+                && target.tryNavigate(SystemClock.uptimeMillis(), lastTouchAt, taskId, generation)) {
                 stage = "opening_target_post";
-                launch(foreground, "kwai://work/" + Uri.encode(state.optString("photoId"))); navigationRequested = true;
+                launch(foreground, "kwai://work/" + Uri.encode(state.optString("photoId")));
                 navigatedAt = SystemClock.elapsedRealtime(); lastProgress = navigatedAt; return;
-            }
-            if (navigationRequested && !hasComments && SystemClock.elapsedRealtime() - navigatedAt > 4000) {
-                stage = "opening_comments";
-                for (View node : nodes) if (node.isShown() && node.getContentDescription() != null &&
-                    node.getContentDescription().toString().matches("评论[0-9万,.]+")) {
-                    if (node.performClick() || tap(root, node)) { navigatedAt = SystemClock.elapsedRealtime(); return; }
-                }
             }
             if (state.optString("photoId").isEmpty() || !state.optString("photoId").equals(lastPhoto.get())) return;
             if ("native".equals(state.getJSONObject("params").optString("pagingMode")) && hasComments && state.optInt("rootPages") > 0) {
@@ -151,8 +213,8 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             if (actions >= 300) { pause("auto_action_limit"); return; }
             View list = null;
             for (View node : nodes) {
-                if (!node.isShown() || node.getHeight() < 150 || !node.getClass().getName().contains("RecyclerView")) continue;
-                if (commentList(node) && (list == null || node.getHeight() > list.getHeight())) list = node;
+                if (!isShownCommentList(node)) continue;
+                if ((list == null || node.getHeight() > list.getHeight())) list = node;
             }
             if (list == null) return;
             if (!state.optBoolean("rootComplete") && !list.canScrollVertically(1)) {
@@ -179,7 +241,8 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 if (key.equals(lastClick)) continue;
                 if (tap(root, view)) { Log.i("CommentCollector", "reply_control_tapped"); lastClick = key; actions++; return; }
             }
-            CollectorClient.call(context, "paging_driver", new JSONObject().put("taskId", taskId).put("generation", generation).put("driver", "ui").put("uiScroll", true));
+            JSONObject driver = new JSONObject().put("taskId", taskId).put("generation", generation).put("driver", "ui").put("uiScroll", true);
+            io.execute(() -> { try { CollectorClient.call(context, "paging_driver", driver); } catch (Exception ignored) {} });
             list.scrollBy(0, Math.max(100, (int) (list.getHeight() * .75f))); actions++;
         } catch (Exception error) {
             Throwable cause = error instanceof java.lang.reflect.InvocationTargetException && error.getCause() != null ? error.getCause() : error;
@@ -187,6 +250,50 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             Log.w("CommentCollector", "adapter_error:" + errorType);
             pause("adapter_error:" + errorType.toLowerCase(java.util.Locale.ROOT));
         } finally { heartbeat(); handler.postDelayed(this::tick, 3000); }
+    }
+    /** True when the resumed activity can be showing the post's comment list (not a pendant/webview page on top). */
+    static boolean postForeground(Activity foreground) {
+        String name = foreground == null ? "" : foreground.getClass().getName();
+        return name.matches(".*(?:HomeActivity|PhotoDetail|FeedActivity|DetailActivity|SlidePlay|PhotoActivity).*");
+    }
+    /** True when a comment RecyclerView is shown in any window the post can use (tracked windows, dialog, activity). */
+    /** The one predicate for "a comment list is really showing": visible, on screen, non-trivial size, has items. */
+    private boolean isShownCommentList(View node) {
+        if (!node.getClass().getName().contains("RecyclerView") || !node.isShown() || node.getHeight() < 150) return false;
+        if (node instanceof ViewGroup && ((ViewGroup) node).getChildCount() == 0) return false;
+        Rect visible = new Rect();
+        return node.getGlobalVisibleRect(visible) && visible.height() >= 150 && commentList(node);
+    }
+    /** Clicks the comment button (resource id comment_button, else content-desc "评论N"); returns a short result for the log. */
+    private String clickCommentButton(Activity foreground) {
+        View root = foreground == null || foreground.getWindow() == null ? null : foreground.getWindow().getDecorView();
+        if (root == null) return "no_window";
+        List<View> nodes = new ArrayList<>(); flatten(root, nodes);
+        View byId = null, byDesc = null;
+        for (View node : nodes) {
+            if (!node.isShown()) continue;
+            try { if (node.getId() != View.NO_ID && "comment_button".equals(node.getResources().getResourceEntryName(node.getId()))) { byId = node; break; } }
+            catch (Exception ignored) {}
+            CharSequence desc = node.getContentDescription();
+            if (byDesc == null && desc != null && node.isClickable() && desc.toString().matches("评论[0-9万,.]*")) byDesc = node;
+        }
+        View button = byId != null ? byId : byDesc;
+        if (button == null) return "button_not_found";
+        boolean clicked = button.performClick();
+        if (clicked) return (byId != null ? "id" : "desc") + "_performClick";
+        return tap(root, button) ? (byId != null ? "id" : "desc") + "_tap" : "tap_failed";
+    }
+    private boolean commentListShown(Activity foreground) {
+        List<View> roots = new ArrayList<>();
+        for (WeakReference<View> ref : windows) { View view = ref.get(); if (view != null && view.isAttachedToWindow() && view.isShown()) roots.add(view); }
+        Dialog current = dialog.get();
+        if (current != null && current.isShowing() && current.getWindow() != null) roots.add(current.getWindow().getDecorView());
+        if (foreground != null && foreground.getWindow() != null) roots.add(foreground.getWindow().getDecorView());
+        for (View root : roots) {
+            List<View> nodes = new ArrayList<>(); flatten(root, nodes);
+            for (View node : nodes) if (isShownCommentList(node)) return true;
+        }
+        return false;
     }
     private void heartbeat() {
         long now = SystemClock.elapsedRealtime();
@@ -196,7 +303,10 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             JSONObject report = nativePager.diagnostics().put("loadedBuild", BuildInfo.ID).put("stage", stage)
                 .put("taskId", taskId).put("generation", generation).put("pid", android.os.Process.myPid()).put("errorType", errorType)
                 .put("appVersion", context.getPackageManager().getPackageInfo("com.smile.gifmaker", 0).versionName);
-            CollectorClient.call(context, "runtime_update", report);
+            io.execute(() -> {
+                try { CollectorClient.call(context, "runtime_update", report); }
+                catch (Exception ignored) { Log.w("CommentCollector", "runtime_diagnostic_unavailable"); }
+            });
         } catch (Exception ignored) { Log.w("CommentCollector", "runtime_diagnostic_unavailable"); }
     }
     private View window() {
@@ -289,8 +399,10 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
         } finally { down.recycle(); }
     }
     private void pause(String code) {
-        try { CollectorClient.call(context, "pause", new JSONObject().put("taskId", taskId).put("generation", generation).put("code", code)); }
-        catch (Exception ignored) {}
+        try {
+            JSONObject request = new JSONObject().put("taskId", taskId).put("generation", generation).put("code", code);
+            io.execute(() -> { try { CollectorClient.call(context, "pause", request); } catch (Exception ignored) {} });
+        } catch (Exception ignored) {}
     }
     @Override public void onActivityResumed(Activity value) { activity = new WeakReference<>(value); CollectorPanel.attach(value, lastPhoto); }
     @Override public void onActivityCreated(Activity value, Bundle state) {}

@@ -124,6 +124,12 @@ final class XhsProfileMapper {
 
         String city = text(userInfo, "location", "city");
         put(out, "location", city);
+        if (!city.isEmpty()) {
+            if (!ip.isEmpty() && !city.contains(ip)) put(out, "latestPostLocation", ip + " " + city);
+            else put(out, "latestPostLocation", city);
+        } else if (!ip.isEmpty()) {
+            put(out, "latestPostLocation", ip);
+        }
 
         Object age = JSONObject.NULL;
         Object ageObj = ModelReader.get(userInfo, "age");

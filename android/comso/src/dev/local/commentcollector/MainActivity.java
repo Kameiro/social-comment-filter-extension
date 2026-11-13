@@ -11,6 +11,6 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(new Intent(this, CaptureService.class));
         else startService(new Intent(this, CaptureService.class));
-        setContentView(CollectorPanel.standalone(this, hookProbe()));
+        setContentView(CollectorPanel.standalone(this, hookProbe(), BackgroundCheck.SECTION.equals(getIntent().getStringExtra("section"))));
     }
 }

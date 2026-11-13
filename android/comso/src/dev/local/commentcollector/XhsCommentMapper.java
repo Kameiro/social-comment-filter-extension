@@ -177,10 +177,14 @@ final class XhsCommentMapper {
 
         String time = ModelReader.text(comment, "time");
         long created = number(time);
+        if (created <= 0 && !time.isEmpty()) {
+            created = InitialCommentFilter.parseRelativeTime(time, System.currentTimeMillis());
+        }
         if (created > 0) {
             if (created < 100000000000L) created *= 1000;
             row.put("created", created);
-        } else if (!time.isEmpty()) row.put("createdText", time);
+        }
+        if (!time.isEmpty()) row.put("createdText", time);
 
         row.put("ipRegionSource", "xhs_android.CommentCommentInfo.ipLocation")
             .put("gender", "unknown").put("capturedAt", System.currentTimeMillis());

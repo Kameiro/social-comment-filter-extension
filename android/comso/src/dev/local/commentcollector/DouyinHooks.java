@@ -189,12 +189,11 @@ final class DouyinHooks {
                     return false;
                 }
                 Object aweme = null;
-                boolean isFlow = host != null && host.getClass().getName().contains("FlowPageActivity");
-                if (!isFlow) {
-                    Object panel = livePanel == null ? null : livePanel.get();
-                    if (panel != null && isCurrentPanel(panel)) {
-                        aweme = currentAweme();
-                    }
+                // Use the live panel for FlowPageActivity too; scanning its object
+                // graph first can select the preloaded next item.
+                Object panel = livePanel == null ? null : livePanel.get();
+                if (panel != null && isCurrentPanel(panel)) {
+                    aweme = currentAweme();
                 }
                 if (aweme == null && host != null) {
                     android.view.View decor = host.getWindow() == null ? null : host.getWindow().getDecorView();
@@ -271,8 +270,12 @@ final class DouyinHooks {
 
     private void onNativePostCaptured(String postId) {
         if (postId != null && !postId.isEmpty()) {
-            lastCommentPostId = postId;
-            lastPostId = postId;
+            // Native pager responses include preloaded neighbours. They are useful
+            // for the pager's request correlation, but must never become the
+            // current-post supplier used when the user opens the collector panel.
+            // The visible Aweme resolver and actual comment response are the only
+            // authoritative current-post sources.
+            Log.i(TAG, "douyin_native_post_captured non_current_cache post=" + postId);
         }
     }
 
@@ -309,28 +312,19 @@ final class DouyinHooks {
 
     private String resolveCurrentPostId() {
         Activity act = activity;
-        if (act != null && DouyinComments.hasVisibleDrawer(act)) {
-            String commentPost = lastCommentPostId;
-            if (commentPost.isEmpty()) commentPost = DouyinNativePager.lastCapturedPost();
-            if (commentPost.isEmpty()) commentPost = DouyinNativePager.post();
-            if (!commentPost.isEmpty()) {
-                lastPostId = commentPost;
-                return commentPost;
-            }
-        }
         if (act != null) {
             String actName = act.getClass().getName();
             if (actName.contains("UserProfile") || actName.contains("Setting")) {
                 return "";
             }
             boolean isSearch = actName.contains("Search");
-            boolean isFlow = actName.contains("FlowPageActivity");
             Object aweme = null;
-            if (!isFlow) {
-                Object panel = livePanel == null ? null : livePanel.get();
-                if (panel != null && isCurrentPanel(panel)) {
-                    aweme = currentAweme();
-                }
+            // BaseListFragmentPanel#getCurrentAweme is the authoritative live item
+            // for both the normal feed and FlowPageActivity. Do this before any
+            // object-graph scan: the latter can encounter a preloaded neighbour.
+            Object panel = livePanel == null ? null : livePanel.get();
+            if (panel != null && isCurrentPanel(panel)) {
+                aweme = currentAweme();
             }
             if (aweme == null && !isSearch) {
                 android.view.View decor = act.getWindow() == null ? null : act.getWindow().getDecorView();
@@ -343,7 +337,21 @@ final class DouyinHooks {
             if (aweme != null) {
                 remember(aweme);
                 String aid = ModelReader.text(aweme, "aid", "aweme_id");
-                if (!aid.isEmpty()) return aid;
+                if (!aid.isEmpty()) {
+                    // Always prefer the object currently visible in the detail/feed
+                    // activity. A comment response or native prefetch may still carry
+                    // the previous post while the user has already swiped to another.
+                    Log.i(TAG, "douyin_current_post_supplier source=visible post=" + aid);
+                    return aid;
+                }
+            }
+            // Never use a cross-page cache as the current ID on a detail screen.
+            // A comment/native response can belong to a preloaded neighbour; an
+            // empty result is safer because the UI will block task creation and ask
+            // the user to wait for the visible Aweme to resolve.
+            if (isPostDetailActivity(act)) {
+                Log.i(TAG, "douyin_current_post_supplier source=unresolved activity=" + actName);
+                return "";
             }
         }
         return lastPostId == null ? "" : lastPostId;
@@ -351,13 +359,10 @@ final class DouyinHooks {
 
     private void refreshCurrentPost(Activity act) {
         if (act == null || act.isFinishing() || act != activity || !isPostDetailActivity(act)) return;
-        boolean isFlow = act.getClass().getName().contains("FlowPageActivity");
         Object aweme = null;
-        if (!isFlow) {
-            Object panel = livePanel == null ? null : livePanel.get();
-            if (panel != null && isCurrentPanel(panel)) {
-                aweme = currentAweme();
-            }
+        Object panel = livePanel == null ? null : livePanel.get();
+        if (panel != null && isCurrentPanel(panel)) {
+            aweme = currentAweme();
         }
         if (aweme == null) {
             android.view.View decor = act.getWindow() == null ? null : act.getWindow().getDecorView();

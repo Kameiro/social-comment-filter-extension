@@ -13,10 +13,10 @@ execFileSync(join(java, 'bin/javac'), ['--release', '17', '-cp', json, '-d', joi
   join(project, 'src/dev/local/commentcollector/Analysis.java'),
   join(project, 'src/dev/local/commentcollector/WeakIdentityMap.java'),
   join(project, 'src/dev/local/commentcollector/CommentPageCache.java'), join(project, 'src/dev/local/commentcollector/RegionFilter.java'), join(project, 'src/dev/local/commentcollector/InitialCommentFilter.java'),
-  join(project, 'src/dev/local/commentcollector/NativePageGate.java'),
+  join(project, 'src/dev/local/commentcollector/NativePageGate.java'), join(project, 'src/dev/local/commentcollector/NativeEofGuard.java'), join(project, 'src/dev/local/commentcollector/TargetPostGate.java'), join(project, 'src/dev/local/commentcollector/CollectorBackoff.java'),
   join(project, 'src/dev/local/commentcollector/XhsMapper.java'), join(project, 'src/dev/local/commentcollector/XhsCommentMapper.java'), join(project, 'src/dev/local/commentcollector/XhsProfileMapper.java'), join(project, 'src/dev/local/commentcollector/ModelReader.java'),
   join(project, 'tests/com/kuaishou/android/model/mix/QSubComment.java'), join(project, 'tests/j6a/a.java'),
-  join(project, 'tests/MapperTest.java'), join(project, 'tests/RecoveryTest.java'), join(project, 'tests/NativePagerTest.java'), join(project, 'tests/XhsMapperTest.java'), join(project, 'tests/XhsCommentMapperTest.java'), join(project, 'tests/XhsProfileMapperTest.java'), join(project, 'tests/DouyinUserMapperTest.java'), join(project, 'tests/InitialCommentFilterTest.java')], { stdio: 'inherit' });
+  join(project, 'tests/MapperTest.java'), join(project, 'tests/RecoveryTest.java'), join(project, 'tests/NativePagerTest.java'), join(project, 'tests/XhsMapperTest.java'), join(project, 'tests/XhsCommentMapperTest.java'), join(project, 'tests/XhsProfileMapperTest.java'), join(project, 'tests/DouyinUserMapperTest.java'), join(project, 'tests/InitialCommentFilterTest.java'), join(project, 'tests/CollectorBackoffTest.java')], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.MapperTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.RecoveryTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.NativePagerTest'], { stdio: 'inherit' });
@@ -25,3 +25,4 @@ execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'te
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.XhsProfileMapperTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.DouyinUserMapperTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.InitialCommentFilterTest'], { stdio: 'inherit' });
+execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.CollectorBackoffTest'], { stdio: 'inherit' });

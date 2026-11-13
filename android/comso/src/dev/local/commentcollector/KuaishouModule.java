@@ -36,6 +36,20 @@ public final class KuaishouModule extends XposedModule {
     private final ThreadLocal<JSONObject> request = new ThreadLocal<>();
     private final ThreadPoolExecutor writer = new ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS,
         new ArrayBlockingQueue<>(64), runnable -> new Thread(runnable, "comment-capture"));
+    /**
+     * Every capture() runs here, never on the hooked thread: capture asks the collector for status, and when the
+     * collector is unreachable that blocks for seconds. Hook sites only enqueue (bounded, drop when full).
+     */
+    private final ThreadPoolExecutor captureExecutor = new ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS,
+        new ArrayBlockingQueue<>(128), runnable -> { Thread thread = new Thread(runnable, "ks-capture"); thread.setDaemon(true); return thread; });
+    /** Identity dedupe for queued captures: -1 while pending/in flight, else the completion time. */
+    private final WeakIdentityMap<Long> captureQueued = new WeakIdentityMap<>();
+    private static final long CAPTURE_COOLDOWN_MS = 1500L;
+    private volatile long lastDropLogAt;
+    /** Pause requests go through here so they never wait behind capture work. */
+    private final java.util.concurrent.ExecutorService replyCapture = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "ks-reply-capture"); thread.setDaemon(true); return thread;
+    });
     private String process;
     private volatile Context context;
     private volatile Activity activeActivity;
@@ -136,17 +150,17 @@ public final class KuaishouModule extends XposedModule {
                 .getDeclaredMethod("getMComments");
             hook(getter).intercept(chain -> {
                 Object result = chain.proceed();
-                capture(chain.getThisObject());
+                enqueueCapture(chain.getThisObject(), request.get(), false);
                 return result;
             });
         } catch (Exception error) { log(Log.WARN, TAG, "model_hook_unavailable"); }
         try {
             Method getter = loader.loadClass("com.kuaishou.android.model.mix.QSubComment").getDeclaredMethod("getKComments");
-            hook(getter).intercept(chain -> { Object result = chain.proceed(); capture(chain.getThisObject()); return result; });
+            hook(getter).intercept(chain -> { Object result = chain.proceed(); enqueueCapture(chain.getThisObject(), request.get(), false); return result; });
         } catch (Exception error) { log(Log.WARN, TAG, "reply_model_hook_unavailable"); }
         try {
             Method getter = loader.loadClass("com.kwai.framework.model.user.UserProfile").getDeclaredMethod("getKUserInfo");
-            hook(getter).intercept(chain -> { Object result = chain.proceed(); capture(chain.getThisObject()); return result; });
+            hook(getter).intercept(chain -> { Object result = chain.proceed(); enqueueCapture(chain.getThisObject(), request.get(), false); return result; });
             Class<?> qPhoto = loader.loadClass("com.yxcorp.gifshow.entity.QPhoto");
             // Keep this on the caption getter only. The other QPhoto getters are hot render-path methods;
             // reflecting on them causes measurable feed stalls on newer Kuaishou builds.
@@ -399,7 +413,7 @@ public final class KuaishouModule extends XposedModule {
             catch (Exception error) { Log.w(TAG, "native_eof_storage_failed"); }
         }), (sub, metadata) -> {
             replyContext.put(sub, metadata);
-            capture(sub);
+            enqueueCapture(sub, metadata, true);
         });
         pager = new AutoPager(app, this::resolveCurrentPhoto, this::replayCached, nativePager);
         profileDriver = new KuaishouProfiles(() -> context, () -> activeActivity);
@@ -460,6 +474,7 @@ public final class KuaishouModule extends XposedModule {
                 String key = method.getDeclaringClass().getName() + "#" + method.getName();
                 if (!touchHooks.add(key)) continue;
                 hook(method).intercept(chain -> {
+                    if (pager != null) pager.noteTouch();
                     if (touchDepth > 0) return chain.proceed();
                     touchDepth++;
                     try {
@@ -561,15 +576,14 @@ public final class KuaishouModule extends XposedModule {
                     try {
                         Object result = chain.proceed();
                         Object body = SnapshotMapper.field(result, "body", "b");
-                        if (body != null) capture(body);
+                        if (body != null) enqueueCapture(body, metadata, false);
                         try { if (metadata != null && context != null) {
                             Object code = SnapshotMapper.field(chain.getArg(0), "code");
-                            JSONObject task = CollectorClient.call(context, "status", new JSONObject());
-                            boolean matches = "comment".equals(task.optString("kind")) && !metadata.optString("photoId").isEmpty() && metadata.optString("photoId").equals(task.optString("photoId")) ||
-                                "discovery".equals(task.optString("kind")) && !metadata.optString("keyword").isEmpty() && metadata.optString("keyword").equals(task.getJSONObject("params").optString("keyword"));
-                            if (matches &&
-                                code instanceof Number && ((Number) code).intValue() >= 400)
-                                pause("http_" + ((Number) code).intValue());
+                            // Only error responses need the collector's task state; the check runs off this thread.
+                            if (code instanceof Number && ((Number) code).intValue() >= 400) {
+                                int status = ((Number) code).intValue();
+                                try { captureExecutor.execute(() -> checkHttpError(metadata, status)); } catch (java.util.concurrent.RejectedExecutionException ignored) { noteCaptureDrop(); }
+                            }
                         } } catch (Exception ignored) { Log.w(TAG, "response_diagnostic_unavailable"); }
                         return result;
                     } finally { if (previous == null) request.remove(); else request.set(previous); }
@@ -627,14 +641,46 @@ public final class KuaishouModule extends XposedModule {
     private void observe(Method method) {
         hook(method).intercept(chain -> {
             Object result = chain.proceed();
-            capture(result);
+            enqueueCapture(result, request.get(), false);
             return result;
         });
     }
-    private void capture(Object response) {
+    /** Hook-thread side: dedupe by identity and enqueue; never blocks and never calls the collector. */
+    private void enqueueCapture(Object response, JSONObject metadata, boolean force) {
+        if (response == null || context == null) return;
+        long now = SystemClock.elapsedRealtime();
+        synchronized (captureQueued) {
+            Long state = captureQueued.get(response);
+            if (state != null && (state < 0 || !force && now - state < CAPTURE_COOLDOWN_MS)) return;
+            captureQueued.put(response, -1L);
+        }
+        try {
+            captureExecutor.execute(() -> {
+                try { capture(response, metadata); }
+                catch (Throwable error) { Log.w(TAG, "capture_failed: " + error.getClass().getSimpleName()); }
+                finally { synchronized (captureQueued) { captureQueued.put(response, SystemClock.elapsedRealtime()); } }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException full) {
+            synchronized (captureQueued) { captureQueued.put(response, 0L); }
+            noteCaptureDrop();
+        }
+    }
+    private void noteCaptureDrop() {
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastDropLogAt > 10000L) { lastDropLogAt = now; Log.w(TAG, "capture_queue_full_dropped"); }
+    }
+    private void checkHttpError(JSONObject metadata, int code) {
+        try {
+            JSONObject task = CollectorClient.call(context, "status", new JSONObject());
+            boolean matches = "comment".equals(task.optString("kind")) && !metadata.optString("photoId").isEmpty() && metadata.optString("photoId").equals(task.optString("photoId")) ||
+                "discovery".equals(task.optString("kind")) && !metadata.optString("keyword").isEmpty() && metadata.optString("keyword").equals(task.getJSONObject("params").optString("keyword"));
+            if (matches) pause("http_" + code);
+        } catch (Exception ignored) { Log.w(TAG, "response_diagnostic_unavailable"); }
+    }
+    /** Runs on the ks-capture thread only. {@code metadata} is the request metadata captured on the hook thread. */
+    private void capture(Object response, JSONObject metadata) {
         if (context == null) return;
         try {
-            JSONObject metadata = request.get();
             if (metadata == null) metadata = new JSONObject().put("appVersion", version);
             JSONObject bound = replyContext.get(response);
             if (bound != null) metadata = bound;
@@ -717,9 +763,9 @@ public final class KuaishouModule extends XposedModule {
     }
     private void pause(String code) {
         if (context == null) return;
-        try {
-            Bundle args = new Bundle(); args.putString("code", code);
-            CollectorClient.callRaw(context, "pause", args);
-        } catch (Exception ignored) {}
+        // Callers include main-thread paths (cached replay); never block them on collector IPC.
+        Bundle args = new Bundle(); args.putString("code", code);
+        try { replyCapture.execute(() -> { try { CollectorClient.callRaw(context, "pause", args); } catch (Exception ignored) {} }); }
+        catch (Exception ignored) {}
     }
 }

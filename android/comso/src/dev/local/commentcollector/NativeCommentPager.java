@@ -16,6 +16,7 @@ final class NativeCommentPager {
     private final List<WeakReference<Object>> pagers = new ArrayList<>();
     private final Map<String, WeakReference<Object>> roots = new LinkedHashMap<>();
     private final NativePageGate gate = new NativePageGate();
+    private final NativeEofGuard eofGuard = new NativeEofGuard();
     private String rootsPhoto = "";
     private Context context;
     private String version;
@@ -27,6 +28,13 @@ final class NativeCommentPager {
     private Object idleReply;
     private long idleSince;
     private long replyTask, replyGeneration;
+    /** pump() runs on the host main thread, so collector IPC (which can block for seconds) goes here. */
+    private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "ks-native-io"); thread.setDaemon(true); return thread;
+    });
+    private volatile JSONArray pendingIds;
+    private volatile String pendingKey = "";
+    private volatile boolean pendingLoading;
 
     void attach(Context context, String version, java.util.function.Consumer<JSONObject> completeRoot,
                 java.util.function.BiConsumer<Object, JSONObject> captureReply) {
@@ -56,7 +64,29 @@ final class NativeCommentPager {
         while (roots.size() > 2000) roots.remove(roots.keySet().iterator().next());
     }
 
-    synchronized boolean pump(JSONObject task) throws Exception {
+    /** The user is not on the task's post: forget its pagers (they go stale) and all timing so nothing pauses meanwhile. */
+    synchronized void leftTarget(String photo) {
+        pagers.removeIf(ref -> {
+            Object candidate = ref.get();
+            if (candidate == null) return true;
+            try {
+                Object id = SnapshotMapper.invoke(SnapshotMapper.field(candidate, "b"), "getKId", new Class<?>[0]);
+                return id != null && photo.equals(String.valueOf(id));
+            } catch (Throwable ignored) { return false; }
+        });
+        gate.reset(); eofGuard.reset(); busySince = 0; idleReply = null;
+        state = "native_waiting_target_post";
+    }
+    /** On the post but the comment list is not shown yet: stop the timers without discarding the pager. */
+    synchronized void suspend() { gate.reset(); eofGuard.reset(); busySince = 0; state = "native_waiting_comment_list"; }
+
+    /** Called when no task is running (paused/finished): drop timing state so a resume starts clean. */
+    synchronized void idle() {
+        gate.reset(); eofGuard.reset(); busySince = 0; idleReply = null;
+    }
+
+    /** @param postForeground the resumed activity is the post detail page (not a pendant/webview/settings page on top of it) */
+    synchronized boolean pump(JSONObject task, boolean postForeground) throws Exception {
         if (context == null || !"14.8.40.50567".equals(version)) { state = "unsupported_native_version"; return false; }
         if (!"comment".equals(task.optString("kind")) || !task.optBoolean("auto") ||
             !task.optString("status").startsWith("running") || task.optBoolean("platformBlocked")) return false;
@@ -64,6 +94,10 @@ final class NativeCommentPager {
             replyTask = task.optLong("taskId"); replyGeneration = task.optLong("generation"); idleReply = null;
         }
         if ("ui".equals(task.getJSONObject("params").optString("pagingMode"))) { state = "ui_requested"; return false; }
+        if (!postForeground) {
+            // The post is covered: its pager reports "no more" and loads would go nowhere. Wait, do not pause.
+            state = "native_waiting_post_foreground"; gate.reset(); eofGuard.reset(); busySince = 0; return true;
+        }
         Object pager = null;
         for (int i = pagers.size() - 1; i >= 0; i--) {
             Object candidate = pagers.get(i).get();
@@ -89,19 +123,22 @@ final class NativeCommentPager {
                 state = "native_first_page_refresh";
             } else {
                 if (!Boolean.TRUE.equals(call(pager, "k0"))) {
-                    if (expandFolded(pager)) return true;
+                    if (expandFolded(pager)) { eofGuard.reset(); return true; }
                     Object response = call(core, "j0");
-                    if (Boolean.FALSE.equals(SnapshotMapper.invoke(response, "hasMore", new Class<?>[0])))
-                        markRootEof(task, "native_response_has_more_false");
-                    else pause(task, "native_eof_unconfirmed");
+                    if (Boolean.FALSE.equals(SnapshotMapper.invoke(response, "hasMore", new Class<?>[0]))) {
+                        markRootEof(task, "native_response_has_more_false"); eofGuard.reset();
+                    } else if (eofGuard.persistent(SystemClock.elapsedRealtime(), task.optLong("taskId"), task.optLong("generation"), System.identityHashCode(response))) {
+                        pause(task, "native_eof_unconfirmed"); eofGuard.reset(); gate.reset();
+                    } else state = "native_eof_pending";
                     return true;
                 }
+                eofGuard.reset();
                 load = pager.getClass().getMethod("k");
                 state = "native_root_load";
             }
         } else {
-            JSONObject pending = CollectorClient.call(context, "pending_reply_ids", bound(task));
-            JSONArray ids = pending.getJSONArray("items");
+            JSONArray ids = pendingReplyIds(task);
+            if (ids == null) { state = "native_pending_ids_loading"; return true; }
             observeRoots(task.optString("photoId"), call(pager, "r0"));
             for (int i = 0; i < ids.length(); i++) {
                 WeakReference<Object> ref = roots.get(ids.getString(i));
@@ -141,7 +178,8 @@ final class NativeCommentPager {
         if (decision == NativePageGate.Decision.TIMEOUT) { pause(task, "native_page_timeout"); return true; }
         if (decision == NativePageGate.Decision.WAIT) return true;
         gate.requested(now, progress);
-        CollectorClient.call(context, "paging_driver", bound(task).put("driver", reply ? "native-replies" : "native-root").put("nativeLoad", true));
+        JSONObject driver = bound(task).put("driver", reply ? "native-replies" : "native-root").put("nativeLoad", true);
+        io.execute(() -> { try { CollectorClient.call(context, "paging_driver", driver); } catch (Exception ignored) {} });
         Log.i("CommentCollector", reply ? "native_reply_load" : "native_root_load");
         if (reply && root != null) {
             Object action = load.invoke(pager, root, root, null);
@@ -201,5 +239,31 @@ final class NativeCommentPager {
         completeRoot.accept(bound(task).put("stream", "root").put("evidence", evidence));
         Log.i("CommentCollector", "native_root_eof evidence=" + evidence);
     }
-    private void pause(JSONObject task, String code) throws Exception { CollectorClient.call(context, "pause", bound(task).put("code", code)); }
+    private void pause(JSONObject task, String code) throws Exception {
+        JSONObject request = bound(task).put("code", code);
+        io.execute(() -> { try { CollectorClient.call(context, "pause", request); } catch (Exception ignored) {} });
+    }
+    /**
+     * Returns reply roots fetched off the main thread since the last call, or null while a fetch is in
+     * flight. Each result is used once, so a group finished in the meantime is never reloaded from stale ids.
+     */
+    private JSONArray pendingReplyIds(JSONObject task) throws Exception {
+        String key = task.optLong("taskId") + ":" + task.optLong("generation");
+        JSONArray ready = pendingIds;
+        if (ready != null && key.equals(pendingKey)) { pendingIds = null; return ready; }
+        fetchPendingIds(task, key);
+        return null;
+    }
+    private void fetchPendingIds(JSONObject task, String key) throws Exception {
+        if (pendingLoading) return;
+        pendingLoading = true;
+        JSONObject request = bound(task);
+        io.execute(() -> {
+            try {
+                JSONArray items = CollectorClient.call(context, "pending_reply_ids", request).getJSONArray("items");
+                pendingKey = key; pendingIds = items;
+            } catch (Exception ignored) { pendingIds = null; }
+            finally { pendingLoading = false; }
+        });
+    }
 }

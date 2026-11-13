@@ -128,10 +128,29 @@ public final class CaptureProvider extends ContentProvider {
     }
     private void authorize() { authorize(Binder.getCallingUid()); }
 
+    // Reachability evidence for the "后台运行检查" card: last time each host app reached us, and outage reports from hosts.
+    private final java.util.Map<String, Long> hostContact = new java.util.concurrent.ConcurrentHashMap<>();
+    private long hostContactSavedAt;
+    private synchronized void noteHost(int uid) {
+        if (owner(uid)) return;
+        String[] packages = getContext().getPackageManager().getPackagesForUid(uid);
+        if (packages == null) return;
+        long now = System.currentTimeMillis();
+        boolean first = false;
+        for (String name : packages) if (Platforms.HOSTS.contains(name)) { if (hostContact.put(name, now) == null) first = true; }
+        if (db == null || !first && now - hostContactSavedAt < 30000L) return;
+        hostContactSavedAt = now;
+        try {
+            JSONObject saved = new JSONObject(); for (java.util.Map.Entry<String, Long> entry : hostContact.entrySet()) saved.put(entry.getKey(), entry.getValue());
+            db.execSQL("INSERT OR REPLACE INTO settings VALUES ('host_contact',?)", new Object[]{saved.toString()});
+        } catch (Exception ignored) {}
+    }
+
     static Bundle callFromService(String method, Bundle extras, int callingUid) {
         CaptureProvider value = instance;
         if (value == null || value.db == null) throw new IllegalStateException("采集服务尚未启动");
         value.authorize(callingUid);
+        value.noteHost(callingUid);
         return value.callInternal(method, null, extras);
     }
     private long activeId() {
@@ -197,6 +216,7 @@ public final class CaptureProvider extends ContentProvider {
 
     @Override public synchronized Bundle call(String method, String arg, Bundle extras) {
         authorize();
+        noteHost(Binder.getCallingUid());
         return callInternal(method, arg, extras);
     }
 
@@ -218,6 +238,27 @@ public final class CaptureProvider extends ContentProvider {
                 android.content.pm.PackageInfo installed = getContext().getPackageManager().getPackageInfo("dev.local.commentcollector", 0);
                 report.put("installedVersion", installed.versionName).put("installedVersionCode", installed.getLongVersionCode());
                 out.putString("data", report.toString()); return out;
+            }
+            if ("reach_report".equals(method)) {
+                String host = input.optString("hostPackage");
+                if (!Platforms.HOSTS.contains(host)) throw new IllegalArgumentException("unknown host");
+                String saved = scalar("SELECT data FROM settings WHERE name='reach_reports'");
+                JSONArray old = saved.isEmpty() ? new JSONArray() : new JSONArray(saved), kept = new JSONArray();
+                for (int i = Math.max(0, old.length() - 19); i < old.length(); i++) kept.put(old.get(i));
+                kept.put(new JSONObject().put("hostPackage", host).put("outageStart", input.optLong("outageStart")).put("outageEnd", input.optLong("outageEnd"))
+                    .put("failures", input.optInt("failures")));
+                db.execSQL("INSERT OR REPLACE INTO settings VALUES ('reach_reports',?)", new Object[]{kept.toString()});
+                out.putString("data", "{\"ok\":true}"); return out;
+            }
+            if ("background_state".equals(method)) {
+                JSONObject contacts = new JSONObject();
+                String saved = scalar("SELECT data FROM settings WHERE name='host_contact'");
+                if (!saved.isEmpty()) { JSONObject old = new JSONObject(saved); for (java.util.Iterator<String> keys = old.keys(); keys.hasNext();) { String key = keys.next(); contacts.put(key, old.optLong(key)); } }
+                for (java.util.Map.Entry<String, Long> entry : hostContact.entrySet()) contacts.put(entry.getKey(), entry.getValue());
+                String reports = scalar("SELECT data FROM settings WHERE name='reach_reports'");
+                out.putString("data", new JSONObject().put("now", System.currentTimeMillis()).put("contacts", contacts)
+                    .put("reports", reports.isEmpty() ? new JSONArray() : new JSONArray(reports)).toString());
+                return out;
             }
             if ("health".equals(method)) {
                 out.putString("data", new JSONObject().put("apiVersion", 1).put("platform", "kuaishou")
@@ -881,7 +922,7 @@ public final class CaptureProvider extends ContentProvider {
         match(where, args, query, "userId", "json_extract(c.data,'$.userId')", false);
         // 1. 评论时间范围：初筛的第一道门；未知时间不满足有界时间条件。
         if (query.optInt("recentDays") > 0) {
-            where.append(" AND (CASE WHEN CAST(json_extract(c.data,'$.created') AS INTEGER) < 100000000000 THEN CAST(json_extract(c.data,'$.created') AS INTEGER)*1000 ELSE CAST(json_extract(c.data,'$.created') AS INTEGER) END) >= ?");
+            where.append(" AND CAST((CASE WHEN CAST(json_extract(c.data,'$.created') AS INTEGER) < 100000000000 THEN CAST(json_extract(c.data,'$.created') AS INTEGER)*1000 ELSE CAST(json_extract(c.data,'$.created') AS INTEGER) END) AS INTEGER) >= CAST(? AS INTEGER)");
             args.add(String.valueOf(System.currentTimeMillis() - query.optInt("recentDays") * 86400000L));
         }
         // 2. 排除关键词：独立的一票否决，不参与关键词/IP 的 AND/OR 关系。
@@ -935,7 +976,7 @@ public final class CaptureProvider extends ContentProvider {
         if (!postRegionVal.isEmpty()) {
             StringBuilder postClause = new StringBuilder(); List<String> postArgs = new ArrayList<>();
             JSONObject postQuery = new JSONObject().put("postIp", postRegionVal);
-            RegionFilter.append(postClause, postArgs, postQuery, "postIp", "postIps", "coalesce(json_extract(u.data,'$.latestPostLocation'),'')");
+            RegionFilter.append(postClause, postArgs, postQuery, "postIp", "postIps", "coalesce(nullif(json_extract(u.data,'$.latestPostLocation'),''), nullif(json_extract(u.data,'$.location'),''), coalesce(json_extract(u.data,'$.profileIpRegion'),''))");
             if (postClause.length() > 0) {
                 where.append(" AND (").append(postClause.substring(5)).append(" OR json_extract(u.data,'$.profileCapturedAt') IS NULL)");
                 args.addAll(postArgs);
@@ -957,7 +998,7 @@ public final class CaptureProvider extends ContentProvider {
             }
         }
         for (String key : Arrays.asList("minAge", "maxAge")) if (query.has(key) && !query.isNull(key)) {
-            where.append(" AND (CAST(json_extract(u.data,'$.age') AS INTEGER)").append("minAge".equals(key) ? ">=?" : "<=?").append(" OR json_extract(u.data,'$.profileCapturedAt') IS NULL)");
+            where.append(" AND (CAST(json_extract(u.data,'$.age') AS INTEGER)").append("minAge".equals(key) ? ">=CAST(? AS INTEGER)" : "<=CAST(? AS INTEGER)").append(" OR json_extract(u.data,'$.profileCapturedAt') IS NULL)");
             args.add(String.valueOf(query.getInt(key)));
         }
         String order = switch (query.optString("sort", "captured_desc")) {
@@ -984,7 +1025,10 @@ public final class CaptureProvider extends ContentProvider {
                     if (profileCaptured) {
                         row.put("gender", user.optString("gender", "unknown"));
                         row.put("profileIpRegion", user.optString("profileIpRegion", ""));
-                        row.put("latestPostLocation", user.optString("latestPostLocation", ""));
+                        String postLoc = user.optString("latestPostLocation", "");
+                        if (postLoc.isEmpty()) postLoc = user.optString("location", "");
+                        if (postLoc.isEmpty()) postLoc = user.optString("profileIpRegion", "");
+                        row.put("latestPostLocation", postLoc);
                     } else {
                         row.put("gender", "pending");
                         row.put("profileIpRegion", "");
@@ -998,7 +1042,7 @@ public final class CaptureProvider extends ContentProvider {
             return new JSONObject().put("read", read).put("more", more);
         }
         int total = Integer.parseInt(scalar("SELECT count(*)" + from, args.toArray(new String[0])));
-        int pending = Integer.parseInt(scalar("SELECT count(*)" + from + " AND json_extract(u.data,'$.profileCapturedAt') IS NULL", args.toArray(new String[0])));
+        int pending = needsProfiles(query) ? Integer.parseInt(scalar("SELECT count(*)" + from + " AND json_extract(u.data,'$.profileCapturedAt') IS NULL", args.toArray(new String[0]))) : 0;
         JSONArray items = new JSONArray();
         try (Cursor cursor = db.rawQuery("SELECT c.data,c.task,u.data" + from + " ORDER BY " + order + ",c.id LIMIT " + limit + " OFFSET " + offset, args.toArray(new String[0]))) {
             while (cursor.moveToNext()) {
@@ -1010,7 +1054,10 @@ public final class CaptureProvider extends ContentProvider {
                 if (profileCaptured) {
                     row.put("gender", user.optString("gender", "unknown"));
                     row.put("profileIpRegion", user.optString("profileIpRegion", ""));
-                    row.put("latestPostLocation", user.optString("latestPostLocation", ""));
+                    String postLoc = user.optString("latestPostLocation", "");
+                    if (postLoc.isEmpty()) postLoc = user.optString("location", "");
+                    if (postLoc.isEmpty()) postLoc = user.optString("profileIpRegion", "");
+                    row.put("latestPostLocation", postLoc);
                 } else {
                     row.put("gender", "pending");
                     row.put("profileIpRegion", "");
@@ -1135,13 +1182,13 @@ public final class CaptureProvider extends ContentProvider {
         }
         if (!postRegionVal.isEmpty()) {
             JSONObject postQuery = new JSONObject().put("postIp", postRegionVal);
-            RegionFilter.append(where, args, postQuery, "postIp", "postIps", "coalesce(json_extract(data,'$.latestPostLocation'),'')");
+            RegionFilter.append(where, args, postQuery, "postIp", "postIps", "coalesce(nullif(json_extract(data,'$.latestPostLocation'),''), nullif(json_extract(data,'$.location'),''), coalesce(json_extract(data,'$.profileIpRegion'),''))");
         }
         String userSearch = query.optString("search").trim();
         if (!userSearch.isEmpty()) { where.append(" AND (coalesce(json_extract(data,'$.nickname'),'') LIKE ? ESCAPE '\\' OR id=?)"); args.add("%" + like(userSearch) + "%"); args.add(userSearch); }
         genderClause(where, args, "coalesce(json_extract(data,'$.gender'),'unknown')", query.optString("gender", "all"));
         for (String key : Arrays.asList("minAge", "maxAge")) if (query.has(key)) {
-            where.append(" AND CAST(json_extract(data,'$.age') AS INTEGER)").append("minAge".equals(key) ? ">=?" : "<=?"); args.add(String.valueOf(query.getInt(key)));
+            where.append(" AND CAST(json_extract(data,'$.age') AS INTEGER)").append("minAge".equals(key) ? ">=CAST(? AS INTEGER)" : "<=CAST(? AS INTEGER)"); args.add(String.valueOf(query.getInt(key)));
         }
         int limit = Math.max(1, Math.min(200, query.optInt("limit", 50))), offset = Math.max(0, query.optInt("offset"));
         int total = Integer.parseInt(scalar("SELECT count(*) FROM users WHERE " + where, args.toArray(new String[0])));

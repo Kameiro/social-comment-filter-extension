@@ -70,6 +70,7 @@ public final class CollectorPanel {
     private static WeakReference<Dialog> open = new WeakReference<>(null);
     private static final String FLOATING_TAG = "comment_collector_fab";
     private static final String PILL_TAG = "comment_collector_pill";
+    private static final String CATCHER_TAG = "comment_collector_fab_catcher";
     private static final String SETTINGS_ENTRY_TAG = "comment_collector_douyin_settings_entry";
 
     /** Builds the styled "comso 模块设置" settings entry card used in Douyin and Kuaishou settings screens. */
@@ -380,7 +381,17 @@ public final class CollectorPanel {
         };
         pill.setTag(R_SHAPES, shapes);
         float hidden = size * .62f;
+        // The tucked button only exposes a sliver, so taps beside it would reach the host (e.g. Kuaishou's coin pendant).
+        // This transparent catcher covers the button's whole 48dp square plus 12dp on the screen-inner side and forwards
+        // every touch to the button's own listener (rawX/rawY based, so the button's translation does not matter).
+        int extra = dp(activity, 12);
+        View catcher = new View(activity); catcher.setTag(CATCHER_TAG);
+        FrameLayout.LayoutParams catcherParams = new FrameLayout.LayoutParams(size + extra, size, Gravity.TOP | Gravity.START);
+        catcher.setOnTouchListener((view, event) -> button.dispatchTouchEvent(event));
         Runnable place = () -> {
+            catcherParams.leftMargin = dockRight[0] ? Math.max(0, params.leftMargin - extra) : params.leftMargin;
+            catcherParams.topMargin = params.topMargin;
+            catcher.setLayoutParams(catcherParams);
             int gap = 0, pillWidth = pill.getWidth() > 0 ? pill.getWidth() : dp(activity, 110);
             pillParams.topMargin = params.topMargin + (size - pillHeight) / 2;
             pillParams.leftMargin = dockRight[0] ? Math.max(0, params.leftMargin + Math.round(button.getTranslationX()) - pillWidth - gap)
@@ -436,8 +447,9 @@ public final class CollectorPanel {
         });
         shapes.run();
         button.setTranslationX(-hidden); button.setAlpha(.72f);
-        if (!VideoInfoSettings.enabled(VideoInfoSettings.current(activity), "floating_button")) button.setVisibility(View.GONE);
+        if (!VideoInfoSettings.enabled(VideoInfoSettings.current(activity), "floating_button")) { button.setVisibility(View.GONE); catcher.setVisibility(View.GONE); }
         ((FrameLayout) decor).addView(pill, pillParams);
+        ((FrameLayout) decor).addView(catcher, catcherParams);
         ((FrameLayout) decor).addView(button, params);
         place.run();
         startPillUpdates(activity, pill);
@@ -448,6 +460,8 @@ public final class CollectorPanel {
         View decor = activity.getWindow().getDecorView();
         View fab = decor == null ? null : decor.findViewWithTag(FLOATING_TAG);
         if (fab != null) fab.setVisibility(visible ? View.VISIBLE : View.GONE);
+        View catcher = decor == null ? null : decor.findViewWithTag(CATCHER_TAG);
+        if (catcher != null) catcher.setVisibility(visible ? View.VISIBLE : View.GONE);
     }
 
     /** Polls task status off the main thread and shows "采集中 120/450" next to the button while a task is active. */
@@ -608,9 +622,87 @@ public final class CollectorPanel {
     }
 
     /** Full-screen variant used by the collector app's own launcher activity. */
-    public static View standalone(Activity activity, String probe) {
+    public static View standalone(Activity activity, String probe, boolean highlightBackground) {
         CollectorPanel panel = new CollectorPanel(activity, () -> "", activity::finish);
-        panel.summary.setContentDescription("Vector Hook " + probe); panel.poll(); return panel.root;
+        panel.summary.setContentDescription("Vector Hook " + probe);
+        int at = panel.root.indexOfChild(panel.body);
+        if (at >= 0) panel.root.addView(panel.backgroundCheckCard(highlightBackground), at);
+        panel.poll(); return panel.root;
+    }
+
+    // ---------------------------------------------------------------- background run check
+
+    /** Collector app only: explains ColorOS startup blocking and links to the relevant system screens. */
+    private View backgroundCheckCard(boolean expanded) {
+        LinearLayout card = vertical(); card.setPadding(dp(16), dp(12), dp(16), dp(12));
+        card.setBackground(round(expanded ? sc.secondaryContainer : surfaceContainer, M3.SHAPE_LARGE));
+        LinearLayout.LayoutParams outer = new LinearLayout.LayoutParams(-1, -2); outer.setMargins(dp(16), dp(4), dp(16), dp(8)); card.setLayoutParams(outer);
+        TextView title = text("后台运行检查 ▸", 15, true);
+        card.addView(title);
+        LinearLayout details = vertical(); details.setVisibility(expanded ? View.VISIBLE : View.GONE); card.addView(details);
+        Runnable toggle = () -> {
+            boolean open = details.getVisibility() != View.VISIBLE;
+            details.setVisibility(open ? View.VISIBLE : View.GONE); title.setText(open ? "后台运行检查 ▾" : "后台运行检查 ▸");
+        };
+        title.setOnClickListener(view -> toggle.run());
+        if (expanded) title.setText("后台运行检查 ▾");
+        boolean ignored = BackgroundCheck.batteryIgnored(activity);
+        TextView battery = muted("电池优化：" + (ignored ? "已忽略（允许后台运行）" : "未忽略，可能被系统限制"), 13);
+        details.addView(battery);
+        LinearLayout hosts = vertical(); details.addView(hosts);
+        TextView report = muted("", 13); report.setVisibility(View.GONE); details.addView(report);
+        TextView why = muted("采集服务是独立的 comso 应用进程，不是模块的一部分。LSPosed 只负责把模块注入快手/抖音/小红书；"
+            + "ColorOS 的启动管理（自启动、关联启动、后台耗电）仍可冻结或拦截这个进程，导致采集失败。", 13);
+        why.setPadding(0, dp(8), 0, dp(4)); details.addView(why);
+        details.addView(muted("请确认：允许自启动、允许关联启动、耗电管理里允许后台运行/不限制。", 13));
+        LinearLayout row = horizontal(); row.setPadding(0, dp(8), 0, 0);
+        row.addView(button("打开自启动管理", () -> BackgroundCheck.open(activity, BackgroundCheck.startupIntent(activity))), weighted(0));
+        row.addView(button("打开耗电管理", () -> BackgroundCheck.open(activity, BackgroundCheck.powerIntent(activity))), weighted(8));
+        android.widget.HorizontalScrollView scroller = new android.widget.HorizontalScrollView(activity); scroller.setHorizontalScrollBarEnabled(false); scroller.addView(row);
+        details.addView(scroller);
+        if (!ignored) {
+            LinearLayout second = horizontal(); second.setPadding(0, dp(8), 0, 0);
+            second.addView(button("忽略电池优化", () -> BackgroundCheck.open(activity, BackgroundCheck.ignoreBatteryIntent(activity))), weighted(0));
+            details.addView(second);
+        }
+        new Thread(() -> {
+            JSONObject state = null;
+            try { state = CollectorClient.call(activity, "background_state", new JSONObject()); } catch (Exception ignoredError) {}
+            JSONObject loaded = state;
+            handler.post(() -> {
+                if (activity.isDestroyed()) return;
+                hosts.removeAllViews();
+                for (String pkg : Platforms.HOSTS) if (BackgroundCheck.installed(activity, pkg))
+                    hosts.addView(muted(Platforms.label(Platforms.name(pkg)) + "：" + BackgroundCheck.contactLine(loaded, pkg), 13));
+                String line = BackgroundCheck.reportLine(loaded);
+                if (!line.isEmpty()) { report.setText(line); report.setTextColor(errorColor); report.setVisibility(View.VISIBLE); }
+            });
+        }, "background-check-load").start();
+        return card;
+    }
+
+    /** Host side: compact banner shown only inside the panel when the collector was recently unreachable. */
+    private View unreachableBanner;
+    private View buildUnreachableBanner() {
+        boolean douyin = "com.ss.android.ugc.aweme".equals(activity.getPackageName());
+        LinearLayout banner = vertical(); banner.setPadding(dp(14), dp(10), dp(14), dp(10));
+        banner.setBackground(round(sc.errorContainer, M3.SHAPE_MEDIUM));
+        LinearLayout.LayoutParams outer = new LinearLayout.LayoutParams(-1, -2); outer.setMargins(dp(16), dp(4), dp(16), dp(8)); banner.setLayoutParams(outer);
+        TextView message = text("采集服务没有运行，可能被系统拦截了自启动/关联启动", 13, true); message.setTextColor(sc.onErrorContainer);
+        banner.addView(message);
+        if (douyin) {
+            // Douyin's security monitor flags foreign startActivity calls (see wakeCollector); give instructions only.
+            TextView hint = text("请打开 comso 应用 → 后台运行检查", 13, false); hint.setTextColor(sc.onErrorContainer); banner.addView(hint);
+        } else {
+            Button go = button("去设置", () -> {
+                try {
+                    activity.startActivity(new Intent().setClassName("dev.local.commentcollector", "dev.local.commentcollector.MainActivity")
+                        .putExtra("section", BackgroundCheck.SECTION).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (Throwable error) { Toast.makeText(activity, "请打开 comso 应用 → 后台运行检查", Toast.LENGTH_SHORT).show(); }
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(40)); params.topMargin = dp(6); banner.addView(go, params);
+        }
+        return banner;
     }
 
     // ---------------------------------------------------------------- construction
@@ -682,6 +774,9 @@ public final class CollectorPanel {
         header.addView(titles, new LinearLayout.LayoutParams(0, -2, 1));
         header.addView(icon(M3.Icon.CLOSE, "关闭", close));
         root.addView(header);
+        if (Platforms.HOSTS.contains(activity.getPackageName()) && CollectorClient.collectorUnreachable()) {
+            unreachableBanner = buildUnreachableBanner(); root.addView(unreachableBanner);
+        }
 
         body = vertical(); root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(bottomNav());
@@ -2628,6 +2723,8 @@ public final class CollectorPanel {
 
     // ---------------------------------------------------------------- polling
 
+    private final java.util.concurrent.atomic.AtomicBoolean polling = new java.util.concurrent.atomic.AtomicBoolean();
+    /** Collector IPC runs on a worker thread (a dead collector blocks for seconds); only UI updates run on main. */
     private void poll() {
         Runnable refresh = new Runnable() {
             @Override public void run() {
@@ -2637,18 +2734,29 @@ public final class CollectorPanel {
                     handler.postDelayed(() -> show(activity, photo), 320);
                     return;
                 }
-                try {
-                    JSONObject counts = api("summary", new JSONObject().put("platform", hostPlatform())), task = api("status", new JSONObject());
-                    String summaryText = hostName() + " · 帖子 " + counts.optInt("posts") + " · 评论 " + counts.optInt("comments") + " · 用户 " + counts.optInt("users")
-                        + (cloudStatusHint.isEmpty() ? "" : " · " + cloudStatusHint);
-                    if (!summaryText.contentEquals(summary.getText())) summary.setText(summaryText);
-                    maybeAutoSync(task);
-                    if (page == PAGE_COLLECT && !lastTaskSnapshot.equals(task.toString())) {
-                        boolean first = lastTaskSnapshot.isEmpty(); lastTaskSnapshot = task.toString();
-                        String shaped = shape(task); boolean sameShape = shaped.equals(lastTaskShape); lastTaskShape = shaped;
-                        if (!first) { if (sameShape && liveUpdate != null) liveUpdate.accept(task); else render(); }
-                    }
-                } catch (Exception error) { summary.setText("采集服务不可用 · 可在“我的”中唤醒"); }
+                if (polling.compareAndSet(false, true)) new Thread(() -> {
+                    JSONObject counts = null, task = null; boolean failed = false;
+                    try { counts = api("summary", new JSONObject().put("platform", hostPlatform())); task = api("status", new JSONObject()); }
+                    catch (Exception error) { failed = true; }
+                    JSONObject c = counts, t = task; boolean bad = failed;
+                    handler.post(() -> {
+                        polling.set(false);
+                        if (activity.isFinishing() || activity.isDestroyed()) return;
+                        if (unreachableBanner != null && !CollectorClient.collectorUnreachable()) unreachableBanner.setVisibility(View.GONE);
+                        if (bad) { summary.setText("采集服务不可用 · 可在“我的”中唤醒"); return; }
+                        try {
+                            String summaryText = hostName() + " · 帖子 " + c.optInt("posts") + " · 评论 " + c.optInt("comments") + " · 用户 " + c.optInt("users")
+                                + (cloudStatusHint.isEmpty() ? "" : " · " + cloudStatusHint);
+                            if (!summaryText.contentEquals(summary.getText())) summary.setText(summaryText);
+                            maybeAutoSync(t);
+                            if (page == PAGE_COLLECT && !lastTaskSnapshot.equals(t.toString())) {
+                                boolean first = lastTaskSnapshot.isEmpty(); lastTaskSnapshot = t.toString();
+                                String shaped = shape(t); boolean sameShape = shaped.equals(lastTaskShape); lastTaskShape = shaped;
+                                if (!first) { if (sameShape && liveUpdate != null) liveUpdate.accept(t); else render(); }
+                            }
+                        } catch (Exception error) { summary.setText("采集服务不可用 · 可在“我的”中唤醒"); }
+                    });
+                }, "collector-panel-poll").start();
                 handler.postDelayed(this, 2000);
             }
         }; handler.post(refresh);
