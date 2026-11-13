@@ -642,9 +642,11 @@ public final class CollectorPanel {
         LinearLayout details = vertical(); details.setVisibility(expanded ? View.VISIBLE : View.GONE); card.addView(details);
         Runnable toggle = () -> {
             boolean open = details.getVisibility() != View.VISIBLE;
-            details.setVisibility(open ? View.VISIBLE : View.GONE); title.setText(open ? "后台运行检查 ▾" : "后台运行检查 ▸");
+            title.setText(open ? "后台运行检查 ▾" : "后台运行检查 ▸");
+            Motion.expand(details, open, null);
         };
         title.setOnClickListener(view -> toggle.run());
+        Motion.press(title);
         if (expanded) title.setText("后台运行检查 ▾");
         boolean ignored = BackgroundCheck.batteryIgnored(activity);
         TextView battery = muted("电池优化：" + (ignored ? "已忽略（允许后台运行）" : "未忽略，可能被系统限制"), 13);
@@ -810,7 +812,11 @@ public final class CollectorPanel {
         int previous = page;
         page = target; offset = 0; currentScroll = null; allTasks = false;
         render();
-        if (previous != target) Motion.tabContent(body, target - previous);
+        if (previous != target) {
+            Motion.tabContent(body, target - previous);
+            if (target < navIndicators.size()) Motion.indicator(navIndicators.get(target));
+            if (target < navIcons.size()) Motion.pop(navIcons.get(target));
+        }
     }
 
     // ---------------------------------------------------------------- rendering
@@ -965,6 +971,7 @@ public final class CollectorPanel {
             taskRow(list, task); shown++;
         }
         if (shown == 0) list.addView(muted("暂无其他任务", 13));
+        Motion.stagger(list, 0);
     }
 
     /** Compact one-line task row; swipe left for refresh & delete actions, tap to expand into the full card. */
@@ -1011,10 +1018,11 @@ public final class CollectorPanel {
             refreshBtn.setGravity(Gravity.CENTER);
             refreshBtn.setPadding(0, 0, 0, 0);
             refreshBtn.setOnClickListener(v -> {
-                row.animate().translationX(0f).setDuration(160).start();
+                Motion.swipeSnap(row, 0f, null);
                 openSwipeRow = null;
                 taskAction("refresh_task", tid);
             });
+            Motion.press(refreshBtn);
             actions.addView(refreshBtn, new LinearLayout.LayoutParams(dp(92), -1));
 
             Button deleteBtn = new Button(uiContext);
@@ -1026,10 +1034,11 @@ public final class CollectorPanel {
             deleteBtn.setGravity(Gravity.CENTER);
             deleteBtn.setPadding(0, 0, 0, 0);
             deleteBtn.setOnClickListener(v -> {
-                row.animate().translationX(0f).setDuration(160).start();
+                Motion.swipeSnap(row, 0f, null);
                 openSwipeRow = null;
                 deleteTask(tid);
             });
+            Motion.press(deleteBtn);
             actions.addView(deleteBtn, new LinearLayout.LayoutParams(dp(76), -1));
         }
 
@@ -1096,7 +1105,7 @@ public final class CollectorPanel {
                 multiSelectMode = true;
                 selectedTasks.add(tid);
                 if (openSwipeRow != null) {
-                    openSwipeRow.animate().translationX(0f).setDuration(160).start();
+                    Motion.swipeSnap(openSwipeRow, 0f, null);
                     openSwipeRow = null;
                 }
                 render();
@@ -1125,7 +1134,7 @@ public final class CollectorPanel {
                             swiping = true;
                             if (row.getParent() != null) row.getParent().requestDisallowInterceptTouchEvent(true);
                             if (openSwipeRow != null && openSwipeRow != row) {
-                                openSwipeRow.animate().translationX(0f).setDuration(160).start();
+                                Motion.swipeSnap(openSwipeRow, 0f, null);
                             }
                         }
                         if (swiping) {
@@ -1149,17 +1158,17 @@ public final class CollectorPanel {
                         if (swiping) {
                             float dx2 = event.getRawX() - downRawX;
                             if (row.getTranslationX() < -actionWidth * 0.35f || (dx2 < -dp(24) && startTx == 0)) {
-                                row.animate().translationX(-actionWidth).setDuration(180).start();
+                                Motion.swipeSnap(row, -actionWidth, null);
                                 openSwipeRow = row;
                             } else {
-                                row.animate().translationX(0f).setDuration(180).start();
+                                Motion.swipeSnap(row, 0f, null);
                                 if (openSwipeRow == row) openSwipeRow = null;
                             }
                             return true;
                         }
                         if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                             if (row.getTranslationX() < -dp(8)) {
-                                row.animate().translationX(0f).setDuration(180).start();
+                                Motion.swipeSnap(row, 0f, null);
                                 if (openSwipeRow == row) openSwipeRow = null;
                                 return true;
                             }
@@ -1169,11 +1178,9 @@ public final class CollectorPanel {
                                     catch (Exception error) { details.addView(muted(String.valueOf(error.getMessage()), 12)); }
                                 }
                                 summaryView.setVisibility(View.GONE);
-                                details.setVisibility(View.VISIBLE);
-                                Motion.fadeIn(details, 200);
+                                Motion.expand(details, true, null);
                             } else {
-                                details.setVisibility(View.GONE);
-                                summaryView.setVisibility(View.VISIBLE);
+                                Motion.expand(details, false, () -> summaryView.setVisibility(View.VISIBLE));
                             }
                             return true;
                         }
@@ -1432,9 +1439,13 @@ public final class CollectorPanel {
 
         LinearLayout top = vertical(); top.setPadding(dp(12), dp(2), dp(12), dp(4));
         top.addView(segmented(new String[]{"评论", "帖子", "用户"}, dataKind, index -> {
+            int previousKind = dataKind;
             dataKind = index; offset = 0; selectedPosts.clear(); selectedUsers.clear();
             if (index != DATA_COMMENTS) taskFilter = 0;
             render();
+            if (previousKind != index && dataScroll != null) {
+                Motion.tabContent(dataScroll, index - previousKind);
+            }
         }));
         LinearLayout selectorRow = horizontal();
         selectorRow.setPadding(0, dp(8), 0, 0);
@@ -1647,6 +1658,7 @@ public final class CollectorPanel {
             card.addView(foot);
         }
         pageControls(data);
+        Motion.stagger(page, 0);
     }
 
     private void showCommentDetails(JSONObject row, JSONObject user, String name) {
@@ -1707,8 +1719,7 @@ public final class CollectorPanel {
                 } catch (Exception err) { error(err); }
             });
         }
-        AlertDialog dialog = builder.create();
-        dialog.show();
+        showDialog(builder);
     }
 
     private void posts() throws Exception {
@@ -1752,8 +1763,14 @@ public final class CollectorPanel {
             }));
             foot.addView(linkText("采集", () -> collectNow(id, true)));
             card.addView(foot);
+            Motion.press(card);
+            card.setOnClickListener(v -> {
+                lastClickedAnchor = id;
+                openPost(id);
+            });
         }
         pageControls(data);
+        Motion.stagger(page, 0);
     }
 
     private void users() throws Exception {
@@ -1794,8 +1811,14 @@ public final class CollectorPanel {
             }));
             foot.addView(linkText("补充资料", () -> profileTask(new JSONArray().put(id))));
             card.addView(foot);
+            Motion.press(card);
+            card.setOnClickListener(v -> {
+                lastClickedAnchor = id;
+                userDetail(id, user.optString("nickname", id));
+            });
         }
         pageControls(data);
+        Motion.stagger(page, 0);
     }
 
     /**
@@ -1808,14 +1831,13 @@ public final class CollectorPanel {
         TextView loading = muted("正在读取…", 13); content.addView(loading);
         ScrollView scroll = new ScrollView(activity); scroll.addView(content);
         int maxHeight = (int) (activity.getResources().getDisplayMetrics().heightPixels * .6f);
-        android.app.AlertDialog dialog = alert().setTitle(name == null || name.isEmpty() ? id : name).setView(scroll)
+        android.app.AlertDialog dialog = showDialog(alert().setTitle(name == null || name.isEmpty() ? id : name).setView(scroll)
             .setNeutralButton("复制昵称", (d, w) -> {
                 ((ClipboardManager) activity.getSystemService(Activity.CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("昵称", name));
                 Toast.makeText(activity, "已复制昵称", Toast.LENGTH_SHORT).show();
             })
             .setNegativeButton("关闭", null)
-            .setPositiveButton("打开主页", (d, w) -> openProfile(id)).create();
-        dialog.show();
+            .setPositiveButton("打开主页", (d, w) -> openProfile(id)));
         // Grow with the content, but never past ~60% of the screen.
         content.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
             int wanted = Math.min(b - t, Math.min(maxHeight, dp(560)));
@@ -2067,6 +2089,7 @@ public final class CollectorPanel {
         try { JSONObject runtime = api("runtime", new JSONObject()); runtimeText = "模块 " + runtime.optString("installedVersion") + " · " + hostName() + " " + runtime.optString("appVersion", ""); } catch (Exception ignored) {}
         TextView about = muted((runtimeText.isEmpty() ? "" : runtimeText + "\n") + "构建 " + BuildInfo.ID, 11);
         about.setPadding(dp(8), dp(12), dp(8), 0); list.addView(about);
+        Motion.stagger(list, 0);
     }
 
     private void menuRow(LinearLayout parent, int iconRes, String title, String subtitle, Runnable action) {
@@ -2269,7 +2292,7 @@ public final class CollectorPanel {
         scroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
         scroll.addView(fields);
 
-        AlertDialog dialog = alert()
+        showDialog(alert()
             .setTitle(forCollect ? "🎯 采集条件配置" : "🔍 筛选条件配置")
             .setView(scroll)
             .setNeutralButton("重置全部", (d, which) -> { filters = new JSONObject(); saveFilters(); render(); })
@@ -2297,20 +2320,7 @@ public final class CollectorPanel {
                     saveFilters();
                     render();
                 } catch (Exception error) { error(error); }
-            }).create();
-
-        dialog.show();
-        if (dialog.getWindow() != null) {
-            dialog.getWindow().setBackgroundDrawable(round(sc.surfaceContainer, 28));
-        }
-        try {
-            Button pos = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
-            if (pos != null) { pos.setTextColor(primary); pos.setTypeface(M3.medium()); }
-            Button neg = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
-            if (neg != null) { neg.setTextColor(secondary); }
-            Button neu = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
-            if (neu != null) { neu.setTextColor(errorColor); }
-        } catch (Throwable ignored) {}
+            }));
     }
 
     private TextView cardNote(String text) {
@@ -2416,11 +2426,11 @@ public final class CollectorPanel {
             }
         } catch (RuntimeException ignored) {}
         fields.addView(links);
-        alert().setTitle("批量添加帖子").setView(fields).setNegativeButton("取消", null).setPositiveButton("加入队列", (dialog, which) -> {
+        showDialog(alert().setTitle("批量添加帖子").setView(fields).setNegativeButton("取消", null).setPositiveButton("加入队列", (dialog, which) -> {
             List<String> ids = parseIds(links.getText().toString());
             if (ids.isEmpty()) { error(new IllegalStateException("没有识别到帖子 ID。短链接请先在" + hostName() + "打开后复制完整链接。")); return; }
             batchStart(ids);
-        }).show();
+        }));
     }
 
     static List<String> parseIds(String text) {
@@ -2471,11 +2481,11 @@ public final class CollectorPanel {
         LinearLayout fields = vertical(); fields.setPadding(dp(20), 0, dp(20), 0);
         EditText keyword = input("搜索关键词", "", false), count = input("目标数量", "20", true), pages = input("最多加载页数", "20", true);
         fields.addView(keyword); fields.addView(count); fields.addView(pages);
-        alert().setTitle("发现帖子").setView(fields).setNegativeButton("取消", null).setPositiveButton("开始发现", (dialog, which) -> {
+        showDialog(alert().setTitle("发现帖子").setView(fields).setNegativeButton("取消", null).setPositiveButton("开始发现", (dialog, which) -> {
             try { api("start", new JSONObject().put("kind", "discovery").put("keyword", keyword.getText().toString().trim())
                 .put("target", Integer.parseInt(count.getText().toString())).put("maxPages", Integer.parseInt(pages.getText().toString())).put("auto", true).put("enqueue", true).put("platform", hostPlatform())); closePanel.run(); }
             catch (Exception error) { error(error); }
-        }).show();
+        }));
     }
 
     private void deleteTask(long id) {
@@ -2490,11 +2500,10 @@ public final class CollectorPanel {
             "连同专有评论用户数据一起删除\n（彻底清理仅在该任务出现的专有用户记录）"
         };
         int[] chosen = {0};
-        alert().setTitle(title)
+        showDialog(alert().setTitle(title)
             .setSingleChoiceItems(options, 0, (dialog, which) -> chosen[0] = which)
             .setNegativeButton("取消", null)
-            .setPositiveButton("确认删除", (dialog, which) -> deleteTasks(taskIds, chosen[0] == 1))
-            .show();
+            .setPositiveButton("确认删除", (dialog, which) -> deleteTasks(taskIds, chosen[0] == 1)));
     }
 
     private void deleteTasks(List<Long> taskIds, boolean deleteUsers) {
@@ -2591,7 +2600,7 @@ public final class CollectorPanel {
             catch (Exception error) { error(error); }
         });
         ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
-        alert().setTitle("登录账户").setView(scroll).setNegativeButton("关闭", (dialog, which) -> render()).show();
+        showDialog(alert().setTitle("登录账户").setView(scroll).setNegativeButton("关闭", (dialog, which) -> render()));
     }
     private String syncStateText(JSONObject config) {
         long last = config.optLong("lastSyncAt"); String error = config.optString("lastSyncError");
@@ -2619,7 +2628,7 @@ public final class CollectorPanel {
         EditText timeFormat = input("时间格式，例如 yyyy-MM-dd HH:mm:ss", saved.optString("time_format", "yyyy-MM-dd HH:mm:ss"), false);
         fields.addView(timeFormat);
         ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
-        alert().setTitle("comso 模块设置").setView(scroll).setNegativeButton("取消", null).setNeutralButton("打开采集面板", (dialog, which) -> show(activity, photo, PAGE_COLLECT)).setPositiveButton("保存", (dialog, which) -> {
+        showDialog(alert().setTitle("comso 模块设置").setView(scroll).setNegativeButton("取消", null).setNeutralButton("打开采集面板", (dialog, which) -> show(activity, photo, PAGE_COLLECT)).setPositiveButton("保存", (dialog, which) -> {
             try {
                 JSONObject value = VideoInfoSettings.defaults();
                 for (int i = 0; i < keys.length; i++) value.put(keys[i], switches[i].isChecked());
@@ -2630,7 +2639,7 @@ public final class CollectorPanel {
                 syncFloatingButtonVisibility(activity, value.optBoolean("floating_button", true));
                 Toast.makeText(activity, "模块设置已保存", Toast.LENGTH_SHORT).show();
             } catch (Exception error) { error(error); }
-        }).show();
+        }));
     }
 
     private void apiSettings() {
@@ -2654,14 +2663,14 @@ public final class CollectorPanel {
             } catch (Exception error) { error(error); }
         }), new LinearLayout.LayoutParams(-1, dp(44)));
         settings.addView(button("导出当前任务", () -> { try { api("export", new JSONObject()); } catch (Exception error) { error(error); } }), new LinearLayout.LayoutParams(-1, dp(44)));
-        alert().setTitle("本机接口").setView(settings).setPositiveButton("关闭", null).show();
+        showDialog(alert().setTitle("本机接口").setView(settings).setPositiveButton("关闭", null));
     }
 
     private void events(long id) {
         try {
             JSONArray events = api("events", new JSONObject().put("taskId", id)).getJSONArray("items"); StringBuilder message = new StringBuilder();
             for (int i = 0; i < events.length(); i++) { JSONObject event = events.getJSONObject(i); message.append(date(event.optLong("time"))).append(" · ").append(event.optString("code")).append('\n'); }
-            alert().setTitle("任务 #" + id).setMessage(message.length() == 0 ? "暂无运行记录" : message.toString()).setPositiveButton("关闭", null).show();
+            showDialog(alert().setTitle("任务 #" + id).setMessage(message.length() == 0 ? "暂无运行记录" : message.toString()).setPositiveButton("关闭", null));
         } catch (Exception error) { error(error); }
     }
     private void copyDiagnostics(long id) {
@@ -2942,6 +2951,23 @@ public final class CollectorPanel {
         return systemConfigured == Configuration.UI_MODE_NIGHT_YES || configured == Configuration.UI_MODE_NIGHT_YES;
     }
     private android.app.AlertDialog.Builder alert() { return new android.app.AlertDialog.Builder(activity, dark(activity) ? android.R.style.Theme_DeviceDefault_Dialog_Alert : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert); }
+    private android.app.AlertDialog showDialog(android.app.AlertDialog.Builder builder) {
+        android.app.AlertDialog dialog = builder.create();
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(round(sc.surfaceContainer, 28));
+        }
+        try {
+            Button pos = dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE);
+            if (pos != null) { pos.setTextColor(primary); pos.setTypeface(M3.medium()); }
+            Button neg = dialog.getButton(android.app.AlertDialog.BUTTON_NEGATIVE);
+            if (neg != null) { neg.setTextColor(secondary); }
+            Button neu = dialog.getButton(android.app.AlertDialog.BUTTON_NEUTRAL);
+            if (neu != null) { neu.setTextColor(errorColor); }
+        } catch (Throwable ignored) {}
+        Motion.dialogEnter(dialog);
+        return dialog;
+    }
     private LinearLayout vertical() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.VERTICAL); return view; }
     private LinearLayout horizontal() { LinearLayout view = new LinearLayout(activity); view.setOrientation(LinearLayout.HORIZONTAL); view.setGravity(Gravity.CENTER_VERTICAL); return view; }
     private TextView text(String value, int size, boolean bold) {
@@ -3009,7 +3035,17 @@ public final class CollectorPanel {
         chip.setPadding(dp(12), dp(4), dp(12), dp(4));
         GradientDrawable shape = round(removable ? sc.secondaryContainer : Color.TRANSPARENT, 16);
         if (!removable) shape.setStroke(dp(1), sc.outlineVariant); else shape.setStroke(dp(1), sc.secondaryContainer);
-        chip.setBackground(shape); chip.setOnClickListener(view -> action.run()); Motion.press(chip);
+        chip.setBackground(shape);
+        chip.setOnClickListener(view -> {
+            if (removable) {
+                view.animate().scaleX(.85f).scaleY(.85f).alpha(0f).setDuration(160).setInterpolator(Motion.EXIT)
+                    .withEndAction(action).start();
+            } else {
+                Motion.pop(view);
+                action.run();
+            }
+        });
+        Motion.press(chip);
         return chip;
     }
     /** M3 segmented button: outlined pill, the selected segment filled with the secondary container. */
@@ -3024,8 +3060,10 @@ public final class CollectorPanel {
             item.setGravity(Gravity.CENTER); item.setSingleLine(true); item.setEllipsize(TextUtils.TruncateAt.END); item.setPadding(dp(8), 0, dp(8), 0);
             item.setOnClickListener(view -> {
                 for (int j = 0; j < items.length; j++) styleSegment(items[j], j == index);
+                Motion.pop(item);
                 onSelect.accept(index);
             });
+            Motion.press(item);
             styleSegment(item, i == selected); items[i] = item;
             row.addView(item, new LinearLayout.LayoutParams(0, dp(42), 1));
             if (i < options.length - 1) { View divider = new View(activity); divider.setBackgroundColor(sc.outlineVariant); row.addView(divider, new LinearLayout.LayoutParams(dp(1), dp(22))); }
@@ -3048,7 +3086,7 @@ public final class CollectorPanel {
         float r = dp(radius); shape.setCornerRadii(new float[]{r, r, r, r, 0, 0, 0, 0}); return shape;
     }
     private JSONObject api(String operation, JSONObject params) throws Exception { return CollectorClient.call(activity, operation, params); }
-    private void error(Exception error) { alert().setMessage(error.getMessage()).setPositiveButton("确定", null).show(); }
+    private void error(Exception error) { showDialog(alert().setMessage(error.getMessage()).setPositiveButton("确定", null)); }
     private LinearLayout scrolling() {
         if (dataContent != null && dataScroll != null) {
             currentScroll = dataScroll;
@@ -3137,7 +3175,12 @@ public final class CollectorPanel {
                 item.setText((on[index] ? "✓ " : "") + labels[index]);
             };
             paint.run();
-            item.setOnClickListener(view -> { on[index] = !on[index]; paint.run(); });
+            item.setOnClickListener(view -> {
+                on[index] = !on[index];
+                paint.run();
+                if (on[index]) Motion.pop(item);
+            });
+            Motion.press(item);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(42), 1);
             if (i > 0) params.leftMargin = dp(8);
             row.addView(item, params);

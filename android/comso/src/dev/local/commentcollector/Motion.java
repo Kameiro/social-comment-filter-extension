@@ -26,15 +26,16 @@ final class Motion {
     /** Scale-down feedback while pressed; never consumes the event, so clicks still fire. */
     @SuppressLint("ClickableViewAccessibility")
     static void press(View view) {
+        if (view == null) return;
         view.setOnTouchListener((target, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
-                    target.animate().scaleX(.95f).scaleY(.95f).alpha(.88f).setDuration(90).setInterpolator(STANDARD).start();
+                    target.animate().scaleX(.96f).scaleY(.96f).alpha(.92f).setDuration(90).setInterpolator(STANDARD).start();
                     break;
                 case MotionEvent.ACTION_UP:
                 case MotionEvent.ACTION_CANCEL:
                     target.animate().scaleX(1f).scaleY(1f).alpha(1f).setDuration(260)
-                        .setInterpolator(new OvershootInterpolator(2.2f)).start();
+                        .setInterpolator(new OvershootInterpolator(1.4f)).start();
                     break;
                 default: break;
             }
@@ -42,13 +43,71 @@ final class Motion {
         });
     }
 
+    /** Tactile spring pop / bounce for selections, toggles, chips, and icons. */
+    static void pop(View view) {
+        if (view == null) return;
+        view.setScaleX(0.92f);
+        view.setScaleY(0.92f);
+        view.animate().scaleX(1f).scaleY(1f).setDuration(260)
+            .setInterpolator(new OvershootInterpolator(1.6f)).start();
+    }
+
     /** Applies press feedback to every clickable descendant. */
     static void pressAll(View root) {
+        if (root == null) return;
         if (root.isClickable() && !(root instanceof android.widget.CompoundButton) && !(root instanceof android.widget.ScrollView)) press(root);
         if (root instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) root;
             for (int i = 0; i < group.getChildCount(); i++) pressAll(group.getChildAt(i));
         }
+    }
+
+    /** Material 3 Expressive dialog entrance: scale up, slight slide up, and fade in with emphasized decelerate. */
+    static void dialogEnter(android.app.Dialog dialog) {
+        if (dialog == null) return;
+        android.view.Window window = dialog.getWindow();
+        if (window == null) return;
+        View decor = window.getDecorView();
+        if (decor == null) return;
+        pressAll(decor);
+        float dy = 22 * decor.getResources().getDisplayMetrics().density;
+        decor.setScaleX(0.92f);
+        decor.setScaleY(0.92f);
+        decor.setTranslationY(dy);
+        decor.setAlpha(0f);
+        decor.animate().scaleX(1f).scaleY(1f).translationY(0f).alpha(1f)
+            .setDuration(280).setInterpolator(ENTER).start();
+    }
+
+    /** Smooth accordion expand / collapse for expandable cards and sections. */
+    static void expand(View view, boolean open, Runnable onComplete) {
+        if (view == null) return;
+        view.animate().cancel();
+        float dy = 12 * view.getResources().getDisplayMetrics().density;
+        if (open) {
+            view.setVisibility(View.VISIBLE);
+            view.setAlpha(0f);
+            view.setTranslationY(-dy);
+            view.animate().alpha(1f).translationY(0f)
+                .setDuration(240).setInterpolator(ENTER)
+                .withEndAction(onComplete).start();
+        } else {
+            view.animate().alpha(0f).translationY(-dy)
+                .setDuration(180).setInterpolator(EXIT)
+                .withEndAction(() -> {
+                    view.setVisibility(View.GONE);
+                    view.setTranslationY(0f);
+                    if (onComplete != null) onComplete.run();
+                }).start();
+        }
+    }
+
+    /** Smooth snap for swipe-to-reveal rows. */
+    static void swipeSnap(View row, float targetX, Runnable onEnd) {
+        if (row == null) return;
+        android.view.ViewPropertyAnimator anim = row.animate().translationX(targetX).setDuration(220).setInterpolator(ENTER);
+        if (onEnd != null) anim.withEndAction(onEnd);
+        anim.start();
     }
 
     /** Bottom sheet slides up; centered card scales and fades in. The scrim fades to {@code dim}. */
@@ -153,15 +212,17 @@ final class Motion {
 
     /** Content swap when switching tabs: slight slide toward the chosen direction plus fade. */
     static void tabContent(View body, int direction) {
-        float shift = 24 * body.getResources().getDisplayMetrics().density * Math.signum(direction);
+        if (body == null) return;
+        float shift = 28 * body.getResources().getDisplayMetrics().density * Math.signum(direction);
         body.setAlpha(0f); body.setTranslationX(shift);
-        body.animate().alpha(1f).translationX(0f).setDuration(240).setInterpolator(ENTER).start();
+        body.animate().alpha(1f).translationX(0f).setDuration(260).setInterpolator(ENTER).start();
     }
 
-    /** Selected-tab indicator grows from the centre. */
+    /** Selected-tab indicator grows from the centre with a spring pop. */
     static void indicator(View view) {
+        if (view == null) return;
         view.setScaleX(0f);
-        view.animate().scaleX(1f).setDuration(260).setInterpolator(new OvershootInterpolator(1.6f)).start();
+        view.animate().scaleX(1f).setDuration(260).setInterpolator(new OvershootInterpolator(1.4f)).start();
     }
 
     /** Lets the user drag a bottom sheet down by {@code grip}; past a threshold or on a fling it dismisses. */
