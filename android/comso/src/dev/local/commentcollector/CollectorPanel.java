@@ -1280,7 +1280,8 @@ public final class CollectorPanel {
         line.addView(channelBadge, cbP);
 
         line.addView(text("#" + task.optLong("taskId") + " " + kindName(kind), 15, true), new LinearLayout.LayoutParams(0, -2, 1));
-        boolean isTargetPost = photo == null || task.optString("photoId").isEmpty() || task.optString("photoId").equals(photo.get());
+        boolean isStandalone = photo == null || photo.get().isEmpty();
+        boolean isTargetPost = isStandalone || task.optString("photoId").isEmpty() || task.optString("photoId").equals(photo.get());
         boolean waitingForPage = task.optBoolean("auto") && state.startsWith("running") &&
             (!isTargetPost || (!task.optString("pagingDriver").startsWith("native") && (showing() || open.get() != null)));
         TextView badge = text(!isTargetPost && state.startsWith("running") ? "需打开帖子" : waitingForPage ? "等待返回应用" : state(state), 12, true);
@@ -1323,7 +1324,8 @@ public final class CollectorPanel {
 
     private void taskDetails(LinearLayout card, JSONObject task, boolean live) throws Exception {
         long id = task.getLong("taskId"); String state = task.optString("status"), kind = task.optString("kind");
-        boolean isTargetPost = photo == null || task.optString("photoId").isEmpty() || task.optString("photoId").equals(photo.get());
+        boolean isStandalone = photo == null || photo.get().isEmpty();
+        boolean isTargetPost = isStandalone || task.optString("photoId").isEmpty() || task.optString("photoId").equals(photo.get());
         boolean waitingForPage = task.optBoolean("auto") && state.startsWith("running") &&
             (!isTargetPost || (!task.optString("pagingDriver").startsWith("native") && (showing() || open.get() != null)));
         long total = "profile".equals(kind) ? task.optLong("profilesTotal") : "discovery".equals(kind) ? task.getJSONObject("params").optLong("target", 20) : task.optLong("total");
@@ -1373,7 +1375,7 @@ public final class CollectorPanel {
         LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
         List<Button> buttons = new ArrayList<>();
         if (waitingForPage) {
-            if (!isTargetPost) buttons.add(primary("打开目标帖子继续", () -> openPost(task.optString("photoId"))));
+            if (!isTargetPost) buttons.add(primary("打开目标帖子继续", () -> openPost(task.optString("photoId"), task.optString("platform"))));
             else buttons.add(primary("返回" + hostName() + "继续", closePanel));
         }
         if ("paused".equals(state)) buttons.add(primary("继续", () -> taskAction("resume", id)));
@@ -1385,7 +1387,7 @@ public final class CollectorPanel {
         }
         if ("comment".equals(kind)) {
             buttons.add(button("查看评论", () -> showTaskComments(id)));
-            buttons.add(button("打开帖子", () -> openPost(task.optString("photoId"))));
+            buttons.add(button("打开帖子", () -> openPost(task.optString("photoId"), task.optString("platform"))));
         }
         buttons.add(button("记录", () -> events(id)));
         buttons.add(button("诊断", () -> copyDiagnostics(id)));
@@ -2676,16 +2678,24 @@ public final class CollectorPanel {
 
     // ---------------------------------------------------------------- navigation helpers
 
-    private void openPost(String id) {
+    private void openPost(String id) { openPost(id, ""); }
+    private void openPost(String id, String platform) {
         if (id.isEmpty()) return;
         if (page == PAGE_DATA || page == PAGE_ANALYSIS) saveReturnState(lastClickedAnchor);
-        String scheme = switch (hostPlatform()) { case "douyin" -> "snssdk1128://aweme/detail/"; case "xhs" -> "xhsdiscover://item/"; default -> "kwai://work/"; };
+        String plat = platform;
+        if (plat == null || plat.isEmpty()) {
+            plat = id.matches("[0-9a-fA-F]{24}") ? "xhs" : id.matches("\\d{19}") ? "douyin" : hostPlatform();
+        }
+        String scheme = "douyin".equals(plat) ? "snssdk1128://aweme/detail/" : "xhs".equals(plat) ? "xhsdiscover://item/" : "kwai://work/";
         launch(scheme + Uri.encode(id));
     }
-    private void openProfile(String id) {
+    private void openProfile(String id) { openProfile(id, ""); }
+    private void openProfile(String id, String platform) {
         if (id.isEmpty() || "null".equals(id)) return;
         saveReturnState(lastClickedAnchor);
-        String scheme = switch (hostPlatform()) { case "douyin" -> "snssdk1128://user/profile/"; case "xhs" -> "xhsdiscover://user/"; default -> "kwai://profile/"; };
+        String plat = platform;
+        if (plat == null || plat.isEmpty()) plat = hostPlatform();
+        String scheme = "douyin".equals(plat) ? "snssdk1128://user/profile/" : "xhs".equals(plat) ? "xhsdiscover://user/" : "kwai://profile/";
         launch(scheme + Uri.encode(id));
     }
     private void saveReturnState(String anchorId) {
@@ -2776,7 +2786,14 @@ public final class CollectorPanel {
     private void launch(String url) {
         try {
             if (showing()) open.get().dismiss();
-            activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)).setPackage(activity.getPackageName()));
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            String targetPkg = null;
+            if (url.startsWith("snssdk1128://")) targetPkg = Platforms.DOUYIN;
+            else if (url.startsWith("kwai://")) targetPkg = Platforms.KUAISHOU;
+            else if (url.startsWith("xhsdiscover://")) targetPkg = Platforms.XHS;
+            if (targetPkg != null) intent.setPackage(targetPkg);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            activity.startActivity(intent);
             if (url.startsWith("snssdk1128://aweme/detail/") || url.startsWith("kwai://work/")) {
                 handler.postDelayed(() -> clickCommentButton(activity, 0), 2000);
             }
