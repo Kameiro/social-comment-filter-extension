@@ -799,9 +799,27 @@ public final class CaptureProvider extends ContentProvider {
             if (!page.isNull("total")) post.put("commentTotal", page.opt("total"));
             db.execSQL("INSERT OR REPLACE INTO posts VALUES (?,?,?)", new Object[]{photo, post.toString(), System.currentTimeMillis()});
             if (!page.isNull("total")) db.execSQL("UPDATE tasks SET total=? WHERE id=?", new Object[]{page.getLong("total"), id});
+            JSONObject taskParams = before.optJSONObject("params");
+            int recentDays = taskParams != null ? taskParams.optInt("recentDays", 0) : 0;
+            long now = System.currentTimeMillis();
+            long cutoff = recentDays > 0 ? now - recentDays * 86400000L : 0L;
             for (int i = 0; i < rows.length(); i++) {
                 JSONObject row = rows.getJSONObject(i);
                 if (!photo.equals(row.getString("photoId"))) throw new IllegalArgumentException("Mixed post data");
+
+                // 硬性时间记录门禁：如果设置了时间范围，只能记录该时间之内的评论，超期或未知时间的评论直接不入库
+                if (recentDays > 0) {
+                    long created = row.optLong("created", 0L);
+                    if (created <= 0L) {
+                        String timeStr = row.optString("time", "");
+                        if (timeStr.isEmpty()) timeStr = row.optString("createdText", "");
+                        created = InitialCommentFilter.parseRelativeTime(timeStr, now);
+                    }
+                    if (created <= 0L) continue; // 未知时间无法证明在时间窗口内，不予记录
+                    if (created < 100000000000L) created *= 1000L;
+                    if (created < cutoff) continue; // 超出时间范围，不予记录
+                }
+
                 String parent = row.optString("rootId");
                 if (parent.equals(row.getString("commentId"))) parent = "";
                 ContentValues values = new ContentValues(); values.put("task", id); values.put("id", row.getString("commentId"));
@@ -820,7 +838,7 @@ public final class CaptureProvider extends ContentProvider {
                     if (!userJson.isEmpty()) {
                         try { hasProfile = new JSONObject(userJson).has("profileCapturedAt"); } catch (Throwable ignored) {}
                     }
-                    if (needsProfiles(before.optJSONObject("params")) && !hasProfile && matchesCommentStage(before.optJSONObject("params"), row)) {
+                    if (needsProfiles(taskParams) && !hasProfile && matchesCommentStage(taskParams, row)) {
                         db.execSQL("INSERT OR IGNORE INTO profile_targets (task, user, status, issue, sec_uid, attempts, updated) VALUES (?, ?, 'pending', NULL, ?, 0, ?)",
                             new Object[]{id, userId, secUid, System.currentTimeMillis()});
                     }

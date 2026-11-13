@@ -2108,16 +2108,16 @@ public final class CollectorPanel {
     /** [key, label] pairs for the non-default conditions. */
     private String[][] conditionParts(JSONObject f, boolean forCollect) {
         List<String[]> out = new ArrayList<>();
-        // Display the same priority used by the collector: time first, then the
-        // keyword/comment-IP relation group, followed by the exclusion veto.
-        if (f.optInt("recentDays") > 0) out.add(new String[]{"recentDays", "[初筛 1] 近 " + f.optInt("recentDays") + " 天"});
+        // Display the priority: time gate first (top level, strictly required, non-matching not recorded),
+        // then the keyword/comment-IP relation group, followed by the exclusion veto.
+        if (f.optInt("recentDays") > 0) out.add(new String[]{"recentDays", "[时间门禁] 仅近 " + f.optInt("recentDays") + " 天 (超期不记录)"});
         if (!f.optString("keyword").isEmpty()) out.add(new String[]{"keyword", "[初筛] 含 " + f.optString("keyword")});
 
         String commentIp = f.optString("commentIpRegion").trim();
         if (commentIp.isEmpty() && "comment".equals(f.optString("ipSource"))) commentIp = f.optString("ipRegion").trim();
         if (!commentIp.isEmpty()) {
             boolean isOr = "or".equalsIgnoreCase(f.optString("relation")) && !f.optString("keyword").isEmpty();
-            out.add(new String[]{"commentIpRegion", "[初筛] " + (isOr ? "或 " : "") + "评论IP " + commentIp});
+            out.add(new String[]{"commentIpRegion", "[初筛] " + (isOr ? "或 " : "且 ") + "评论IP " + commentIp});
         }
         if (!f.optString("excludeKeyword").isEmpty()) out.add(new String[]{"excludeKeyword", "[初筛] 排除 " + f.optString("excludeKeyword")});
 
@@ -2155,20 +2155,24 @@ public final class CollectorPanel {
     private void filterSheet(boolean forCollect) {
         LinearLayout fields = vertical(); fields.setPadding(dp(20), dp(4), dp(20), dp(8));
 
-        // Block 1: ① 初次筛选（评论直接可用）
-        sectionBlock(fields, "① 初次筛选（评论直接可用）", "先按时间过滤；再按关键词与评论 IP 的关系筛选；只有命中初筛的评论才会进入二次主页采集");
-        EditText days = input("只看最近多少天内评论（空为不限，如：30）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
+        // Block 0: ⏱️ 评论时间范围（最高层级 · 硬性记录门禁）
+        sectionBlock(fields, "⏱️ 评论时间范围（最高层级 · 硬性门禁）", "设置后仅记录/采集指定天数内的评论，超期评论完全不入库；永远必须同时满足，不参与任何‘或者’关系");
+        EditText days = input("只看最近多少天内评论（空为不限；如填 30 则只记录近 30 天评论）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
+
+        // Block 1: 🔍 内容与属地筛选（仅对时间范围内的评论生效）
+        sectionBlock(fields, "🔍 内容与属地初筛（仅对达标时间的评论生效）", "先过时间门禁，再按关键词与评论 IP 的关系筛选；只有达标评论才会进入二次主页采集");
         EditText keyword = input("包含关键词，多个用逗号分隔（如：词1, 词2）", filters.optString("keyword"), false); fields.addView(keyword);
 
         String initCommentIp = filters.optString("commentIpRegion");
         if (initCommentIp.isEmpty() && "comment".equals(filters.optString("ipSource"))) initCommentIp = filters.optString("ipRegion");
-        EditText commentIp = input("评论 IP 属地（如：浙江、杭州，多个用逗号分隔）", initCommentIp, false); fields.addView(commentIp);
+        EditText commentIp = input("评论发表 IP 属地（如：浙江、杭州，多个用逗号分隔）", initCommentIp, false); fields.addView(commentIp);
 
         int[] relation = {"or".equalsIgnoreCase(filters.optString("relation")) ? 1 : 0};
-        fields.addView(segmented(new String[]{"同时满足 (AND)", "满足其一 (OR)"}, relation[0], index -> relation[0] = index));
-        fields.addView(muted("包含关键词与评论 IP 的关系：同时满足两个条件，或满足其一（排除词始终一票否决）", 11));
+        fields.addView(segmented(new String[]{"【关键词】与【评论IP】均需满足 (AND)", "【关键词】与【评论IP】满足其一即可 (OR)"}, relation[0], index -> relation[0] = index));
+        fields.addView(muted("注：该关系仅控制【包含关键词】与【评论IP属地】两者之间；时间范围与排除词为独立最高门禁，永远同时满足", 11));
+
         EditText exclude = input("排除关键词，多个用逗号分隔（如：词4, 词5）", filters.optString("excludeKeyword"), false); fields.addView(exclude);
-        fields.addView(muted("若命中排除词，该评论会被排除；排除词不受 AND/OR 关系影响", 11));
+        fields.addView(muted("若命中排除词，该评论会被直接排除（一票否决，不受 AND/OR 影响）", 11));
 
         // Block 2: ② 二次筛选（补充主页资料后）
         sectionBlock(fields, "② 二次筛选（补充主页资料后）", "初筛命中后，自动调取主页资料补充主页IP、最近发帖地点及性别年龄");
