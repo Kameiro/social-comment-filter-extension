@@ -10,7 +10,16 @@ import org.json.JSONObject;
 /** Whitelists public model fields; never serializes entire platform objects. */
 public final class PublicMapper {
     private PublicMapper() {}
-    static String avatarUrl(Object user) { return urlText(first(user, "mAvatar", "mAvatars")); }
+    public static String avatarUrl(Object user) {
+        if (user == null) return "";
+        return imageUrlForAndroid(urlText(first(user, "mAvatar", "mAvatars", "mHeadUrl", "mHeadUrls", "headUrl", "headUrls", "avatar", "avatars", "avatarUrl", "authorAvatar")));
+    }
+    public static String imageUrlForAndroid(String url) {
+        if (url == null) return "";
+        String clean = url.trim();
+        if (clean.startsWith("http://")) clean = "https://" + clean.substring(7);
+        return clean.replace(".heic", ".jpeg").replace(".heif", ".jpeg");
+    }
     private static String text(Object value) { return value == null ? "" : String.valueOf(value); }
     private static void put(JSONObject out, String key, Object value) throws Exception { out.put(key, value == null ? JSONObject.NULL : value); }
     private static Object first(Object object, String... names) {

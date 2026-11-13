@@ -1074,12 +1074,7 @@ public final class CollectorPanel {
         barP.rightMargin = dp(8);
         line.addView(colorBar, barP);
 
-        TextView channelBadge = text(style.label, 11, true);
-        channelBadge.setTextColor(style.badgeText);
-        GradientDrawable badgeShape = round(style.badgeBg, 6);
-        badgeShape.setStroke(dp(1), style.cardStroke);
-        channelBadge.setBackground(badgeShape);
-        channelBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+        TextView channelBadge = platformBadge(style);
         LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
         cbP.rightMargin = dp(8);
         line.addView(channelBadge, cbP);
@@ -1223,14 +1218,20 @@ public final class CollectorPanel {
         }
     }
 
-    private PlatformStyle platformStyle(JSONObject task) {
-        String plat = task != null ? task.optString("platform") : "";
-        if (plat.isEmpty() && task != null) {
-            JSONObject pObj = task.optJSONObject("params");
+    private PlatformStyle platformStyle(JSONObject object) {
+        String plat = object != null ? object.optString("platform") : "";
+        if (plat.isEmpty() && object != null) {
+            JSONObject pObj = object.optJSONObject("params");
             if (pObj != null) plat = pObj.optString("platform");
         }
-        if (plat.isEmpty() && task != null) {
-            String pId = task.optString("photoId");
+        if (plat.isEmpty() && object != null) {
+            JSONObject uObj = object.optJSONObject("user");
+            if (uObj != null) plat = uObj.optString("platform");
+        }
+        if (plat.isEmpty() && object != null) {
+            String pId = object.optString("photoId");
+            if (pId.isEmpty()) pId = object.optString("postId");
+            if (pId.isEmpty()) pId = object.optString("userId");
             if (!pId.isEmpty()) {
                 plat = pId.matches("[0-9a-fA-F]{24}") ? "xhs" : pId.matches("\\d{19}") ? "douyin" : "kuaishou";
             }
@@ -1242,21 +1243,31 @@ public final class CollectorPanel {
             int primary = Color.rgb(0xFF, 0x24, 0x42);
             int badgeBg = dark ? Color.argb(0x38, 0xFF, 0x24, 0x42) : Color.argb(0x1F, 0xFF, 0x24, 0x42);
             int badgeText = dark ? Color.rgb(0xFF, 0x64, 0x7C) : Color.rgb(0xE1, 0x1D, 0x48);
-            int stroke = dark ? Color.argb(0x4D, 0xFF, 0x24, 0x42) : Color.argb(0x33, 0xFF, 0x24, 0x42);
+            int stroke = dark ? Color.argb(0x55, 0xFF, 0x24, 0x42) : Color.argb(0x38, 0xFF, 0x24, 0x42);
             return new PlatformStyle("xhs", "小红书", primary, badgeBg, badgeText, stroke);
         } else if ("douyin".equals(plat)) {
             int primary = Color.rgb(0x02, 0x84, 0xC7);
             int badgeBg = dark ? Color.argb(0x38, 0x02, 0x84, 0xC7) : Color.argb(0x1F, 0x02, 0x84, 0xC7);
             int badgeText = dark ? Color.rgb(0x38, 0xBD, 0xF8) : Color.rgb(0x02, 0x84, 0xC7);
-            int stroke = dark ? Color.argb(0x4D, 0x02, 0x84, 0xC7) : Color.argb(0x33, 0x02, 0x84, 0xC7);
+            int stroke = dark ? Color.argb(0x55, 0x02, 0x84, 0xC7) : Color.argb(0x38, 0x02, 0x84, 0xC7);
             return new PlatformStyle("douyin", "抖音", primary, badgeBg, badgeText, stroke);
         } else {
             int primary = Color.rgb(0xFF, 0x66, 0x00);
             int badgeBg = dark ? Color.argb(0x38, 0xFF, 0x66, 0x00) : Color.argb(0x1F, 0xFF, 0x66, 0x00);
             int badgeText = dark ? Color.rgb(0xFB, 0x92, 0x3C) : Color.rgb(0xC2, 0x41, 0x0C);
-            int stroke = dark ? Color.argb(0x4D, 0xFF, 0x66, 0x00) : Color.argb(0x33, 0xFF, 0x66, 0x00);
+            int stroke = dark ? Color.argb(0x55, 0xFF, 0x66, 0x00) : Color.argb(0x38, 0xFF, 0x66, 0x00);
             return new PlatformStyle("kuaishou", "快手", primary, badgeBg, badgeText, stroke);
         }
+    }
+
+    private TextView platformBadge(PlatformStyle style) {
+        TextView badge = text(style.label, 11, true);
+        badge.setTextColor(style.badgeText);
+        GradientDrawable shape = round(style.badgeBg, 6);
+        shape.setStroke(dp(1), style.cardStroke);
+        badge.setBackground(shape);
+        badge.setPadding(dp(6), dp(1), dp(6), dp(1));
+        return badge;
     }
 
     private void taskCard(LinearLayout parent, JSONObject task, boolean live) throws Exception {
@@ -1276,12 +1287,7 @@ public final class CollectorPanel {
         barP.rightMargin = dp(8);
         line.addView(colorBar, barP);
 
-        TextView channelBadge = text(style.label, 11, true);
-        channelBadge.setTextColor(style.badgeText);
-        GradientDrawable badgeShape = round(style.badgeBg, 6);
-        badgeShape.setStroke(dp(1), style.cardStroke);
-        channelBadge.setBackground(badgeShape);
-        channelBadge.setPadding(dp(6), dp(1), dp(6), dp(1));
+        TextView channelBadge = platformBadge(style);
         LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
         cbP.rightMargin = dp(8);
         line.addView(channelBadge, cbP);
@@ -1560,6 +1566,10 @@ public final class CollectorPanel {
         for (int i = 0; i < items.length(); i++) {
             LinearLayout card = card(page);
             JSONObject row = items.getJSONObject(i), user = row.optJSONObject("user");
+            PlatformStyle style = platformStyle(row);
+            GradientDrawable cardBg = round(sc.surfaceContainerLow, 20);
+            cardBg.setStroke(dp(1), style.cardStroke);
+            card.setBackground(cardBg);
             String uid = row.optString("userId");
             String cid = row.optString("commentId", row.optString("id"));
             if (!cid.isEmpty()) card.setTag(R_ANCHOR, cid);
@@ -1595,6 +1605,18 @@ public final class CollectorPanel {
             authorBox.setPadding(dp(8), 0, 0, 0);
             LinearLayout authorLine = horizontal();
             authorLine.setGravity(Gravity.CENTER_VERTICAL);
+
+            View colorBar = new View(uiContext);
+            colorBar.setBackground(round(style.primary, 2));
+            LinearLayout.LayoutParams barP = new LinearLayout.LayoutParams(dp(3), dp(13));
+            barP.rightMargin = dp(6);
+            authorLine.addView(colorBar, barP);
+
+            TextView channelBadge = platformBadge(style);
+            LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
+            cbP.rightMargin = dp(6);
+            authorLine.addView(channelBadge, cbP);
+
             TextView author = text(name, 15, true);
             Motion.press(author);
             author.setOnClickListener(view -> openUser.run());
@@ -1693,7 +1715,15 @@ public final class CollectorPanel {
         String postLoc = row.optString("latestPostLocation");
         if (postLoc.isEmpty() && user != null) postLoc = user.optString("latestPostLocation");
         String postLocText = postLoc.isEmpty() || "null".equals(postLoc) ? "" : " · 发帖地: " + postLoc;
-        info.addView(text("用户: " + name + (uid.isEmpty() ? "" : " (" + uid + ")"), 13, true));
+        PlatformStyle style = platformStyle(row);
+        LinearLayout userLine = horizontal();
+        userLine.setGravity(Gravity.CENTER_VERTICAL);
+        TextView channelBadge = platformBadge(style);
+        LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
+        cbP.rightMargin = dp(6);
+        userLine.addView(channelBadge, cbP);
+        userLine.addView(text("用户: " + name + (uid.isEmpty() ? "" : " (" + uid + ")"), 13, true));
+        info.addView(userLine);
         info.addView(muted("性别: " + gText + " · 评论 IP: " + commentIp + " · 主页 IP: " + mainIp + postLocText, 12));
         info.addView(muted("时间: " + date(row.optLong("created")) + " · 赞: " + number(row, "likes") + " · 回复: " + number(row, "replies"), 12));
         if (!cid.isEmpty()) info.addView(muted("评论 ID: " + cid, 11));
@@ -1741,10 +1771,28 @@ public final class CollectorPanel {
             LinearLayout card = card(page);
             JSONObject row = items.getJSONObject(i); String id = row.optString("postId");
             if (!id.isEmpty()) card.setTag(R_ANCHOR, id);
+            PlatformStyle style = platformStyle(row);
+            GradientDrawable cardBg = round(sc.surfaceContainerLow, 20);
+            cardBg.setStroke(dp(1), style.cardStroke);
+            card.setBackground(cardBg);
+
             LinearLayout heading = horizontal();
             CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择作品 " + id); select.setChecked(selectedPosts.contains(id));
             select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedPosts.add(id); else selectedPosts.remove(id); render(); });
             heading.addView(select);
+
+            View colorBar = new View(uiContext);
+            colorBar.setBackground(round(style.primary, 2));
+            LinearLayout.LayoutParams barP = new LinearLayout.LayoutParams(dp(3), dp(14));
+            barP.leftMargin = dp(6);
+            barP.rightMargin = dp(6);
+            heading.addView(colorBar, barP);
+
+            TextView channelBadge = platformBadge(style);
+            LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
+            cbP.rightMargin = dp(8);
+            heading.addView(channelBadge, cbP);
+
             String rawTitle = row.optString("title");
             TextView title = text(rawTitle.isEmpty() || "null".equals(rawTitle) ? "作品 " + id : rawTitle, 15, true); title.setMaxLines(2); title.setEllipsize(TextUtils.TruncateAt.END);
             heading.addView(title, new LinearLayout.LayoutParams(0, -2, 1)); card.addView(heading);
@@ -1790,16 +1838,34 @@ public final class CollectorPanel {
             LinearLayout card = card(page);
             JSONObject user = items.getJSONObject(i); String id = user.optString("userId");
             if (!id.isEmpty()) card.setTag(R_ANCHOR, id);
+            PlatformStyle style = platformStyle(user);
+            GradientDrawable cardBg = round(sc.surfaceContainerLow, 20);
+            cardBg.setStroke(dp(1), style.cardStroke);
+            card.setBackground(cardBg);
+
             LinearLayout heading = horizontal();
             CheckBox select = tint(new CheckBox(uiContext)); select.setContentDescription("选择用户 " + id); select.setChecked(selectedUsers.contains(id));
             select.setOnCheckedChangeListener((view, checked) -> { if (checked) selectedUsers.add(id); else selectedUsers.remove(id); render(); });
             heading.addView(select);
             heading.addView(thumbnail(user, "avatarUrl", "authorAvatarUrl"), new LinearLayout.LayoutParams(dp(32), dp(32)));
+
+            View colorBar = new View(uiContext);
+            colorBar.setBackground(round(style.primary, 2));
+            LinearLayout.LayoutParams barP = new LinearLayout.LayoutParams(dp(3), dp(14));
+            barP.leftMargin = dp(8);
+            barP.rightMargin = dp(6);
+            heading.addView(colorBar, barP);
+
+            TextView channelBadge = platformBadge(style);
+            LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
+            cbP.rightMargin = dp(8);
+            heading.addView(channelBadge, cbP);
+
             TextView name = text(user.optString("nickname", id), 15, true); name.setOnClickListener(view -> {
                 lastClickedAnchor = id;
                 userDetail(id, user.optString("nickname", id));
             });
-            name.setPadding(dp(10), 0, 0, 0);
+            name.setPadding(0, 0, 0, 0);
             heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); card.addView(heading);
             card.addView(muted("性别 " + gender(user.optString("gender")) + " · 年龄 " + number(user, "age") + " · 评论 IP " + number(user, "lastCommentIpRegion"), 12));
             card.addView(muted("主页 IP " + number(user, "profileIpRegion") + " · 所在地 " + number(user, "location"), 12));
@@ -1872,6 +1938,11 @@ public final class CollectorPanel {
                     userText.setPadding(dp(10), 0, 0, 0);
                     LinearLayout nameLine = horizontal();
                     nameLine.setGravity(Gravity.CENTER_VERTICAL);
+                    PlatformStyle style = platformStyle(user);
+                    TextView channelBadge = platformBadge(style);
+                    LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
+                    cbP.rightMargin = dp(6);
+                    nameLine.addView(channelBadge, cbP);
                     String displayName = user.optString("nickname", name == null || name.isEmpty() ? id : name);
                     nameLine.addView(text(displayName, 16, true));
 
@@ -1962,6 +2033,10 @@ public final class CollectorPanel {
 
                     LinearLayout card = card(list);
                     card.setTag(R_ANCHOR, uid);
+                    PlatformStyle style = platformStyle(user);
+                    GradientDrawable cardBg = round(sc.surfaceContainerLow, 20);
+                    cardBg.setStroke(dp(1), style.cardStroke);
+                    card.setBackground(cardBg);
 
                     LinearLayout line = horizontal();
                     line.setGravity(Gravity.CENTER_VERTICAL);
@@ -1987,6 +2062,18 @@ public final class CollectorPanel {
                     authorBox.setPadding(dp(8), 0, 0, 0);
                     LinearLayout authorLine = horizontal();
                     authorLine.setGravity(Gravity.CENTER_VERTICAL);
+
+                    View colorBar = new View(uiContext);
+                    colorBar.setBackground(round(style.primary, 2));
+                    LinearLayout.LayoutParams barP = new LinearLayout.LayoutParams(dp(3), dp(13));
+                    barP.rightMargin = dp(6);
+                    authorLine.addView(colorBar, barP);
+
+                    TextView channelBadge = platformBadge(style);
+                    LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
+                    cbP.rightMargin = dp(6);
+                    authorLine.addView(channelBadge, cbP);
+
                     TextView author = text(nickname, 15, true);
                     author.setOnClickListener(view -> {
                         lastClickedAnchor = finalUid;

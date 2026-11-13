@@ -136,6 +136,12 @@ public final class MapperTest {
         check(stats.getInt("likesReceived") == 3 && stats.getInt("replyCount") == 2, "Actual interactions summed");
         check(stats.getInt("unknownLikes") == 1 && stats.getInt("unknownReplies") == 1, "Missing interactions not made up");
         check(stats.getBoolean("excluded") && analysis.getString("basis").equals("stored_public_comments_only"), "Explicit exclusion and honest scope");
+        String ksHeif = "http://p4.a.yximgs.com/kimg/uhead/AB/2026/08/12/02/test.heif";
+        check("https://p4.a.yximgs.com/kimg/uhead/AB/2026/08/12/02/test.jpeg".equals(PublicMapper.imageUrlForAndroid(ksHeif)), "Kuaishou avatar upgrades to HTTPS and JPEG");
+        String dyHeic = "https://p3.douyinpic.com/100x100.heic";
+        check("https://p3.douyinpic.com/100x100.jpeg".equals(PublicMapper.imageUrlForAndroid(dyHeic)), "Douyin avatar converts to JPEG");
+        Object headUser = new Object() { public String mHeadUrl = "http://example.com/h.jpg"; };
+        check("https://example.com/h.jpg".equals(PublicMapper.avatarUrl(headUser)), "PublicMapper supports mHeadUrl fallback and upgrades HTTP");
         System.out.println("PASS: " + assertions + " mapper/analysis assertions");
     }
 }

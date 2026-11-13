@@ -317,15 +317,46 @@ final class PostInfoPanel {
     private static void copy(Activity activity, String value) { ClipboardManager manager = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE); if (manager != null) manager.setPrimaryClip(ClipData.newPlainText("作品文案", value == null ? "" : value)); }
     private static void toast(Activity activity, String value) { Toast.makeText(activity, value, Toast.LENGTH_SHORT).show(); }
 
+    private static final android.util.LruCache<String, Bitmap> avatarCache = new android.util.LruCache<>(300);
+
     static void loadImage(ImageView target, String url) {
+        if (url == null || url.trim().isEmpty()) return;
         String loadUrl = imageUrlForAndroid(url);
-        new Thread(() -> { try { byte[] bytes = download(loadUrl); Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length); if (bitmap != null) new Handler(Looper.getMainLooper()).post(() -> { target.setImageBitmap(bitmap); Motion.fadeIn(target, 260); }); } catch (Exception ignored) {} }, "post-info-image").start();
+        Bitmap cached = avatarCache.get(loadUrl);
+        if (cached != null) {
+            target.setImageBitmap(cached);
+            return;
+        }
+        target.setTag(loadUrl);
+        new Thread(() -> {
+            Bitmap bitmap = null;
+            try {
+                byte[] bytes = download(loadUrl);
+                bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+            } catch (Throwable e1) {
+                if (!loadUrl.equals(url)) {
+                    try {
+                        byte[] bytes = download(url);
+                        bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
+                    } catch (Throwable ignored) {}
+                }
+            }
+            if (bitmap != null) {
+                avatarCache.put(loadUrl, bitmap);
+                final Bitmap bmp = bitmap;
+                new Handler(Looper.getMainLooper()).post(() -> {
+                    if (loadUrl.equals(target.getTag())) {
+                        target.setImageBitmap(bmp);
+                        Motion.fadeIn(target, 220);
+                    }
+                });
+            }
+        }, "post-info-image").start();
     }
 
-    /** Douyin's 100x100 avatar CDN commonly serves HEIC; the same path with JPEG decodes everywhere. */
-    private static String imageUrlForAndroid(String url) {
-        if (url == null) return "";
-        return url.replace(".heic", ".jpeg").replace(".heif", ".jpeg");
+    /** Douyin's 100x100 avatar CDN commonly serves HEIC; Kuaishou CDN commonly returns http and heif. */
+    static String imageUrlForAndroid(String url) {
+        return PublicMapper.imageUrlForAndroid(url);
     }
     private enum Kind { VIDEO, IMAGE, AUDIO, FILE }
 
@@ -491,9 +522,30 @@ final class PostInfoPanel {
     }
 
     private static byte[] download(String url) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection(); connection.setConnectTimeout(10000); connection.setReadTimeout(15000); connection.setRequestProperty("User-Agent", "Mozilla/5.0");
-        if (connection.getResponseCode() < 200 || connection.getResponseCode() >= 300) throw new IllegalStateException("HTTP " + connection.getResponseCode());
-        try (InputStream input = connection.getInputStream(); ByteArrayOutputStream output = new ByteArrayOutputStream()) { byte[] buffer = new byte[8192]; int total = 0, count; while ((count = input.read(buffer)) != -1) { total += count; if (total > 12 * 1024 * 1024) throw new IllegalStateException("图片过大"); output.write(buffer, 0, count); } return output.toByteArray(); }
-        finally { connection.disconnect(); }
+        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
+        connection.setConnectTimeout(10000);
+        connection.setReadTimeout(15000);
+        connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14)");
+        int code = connection.getResponseCode();
+        if (code >= 300 && code < 400) {
+            String redirect = connection.getHeaderField("Location");
+            if (redirect != null && !redirect.isEmpty()) {
+                connection.disconnect();
+                return download(redirect);
+            }
+        }
+        if (code < 200 || code >= 300) throw new IllegalStateException("HTTP " + code);
+        try (InputStream input = connection.getInputStream(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int total = 0, count;
+            while ((count = input.read(buffer)) != -1) {
+                total += count;
+                if (total > 12 * 1024 * 1024) throw new IllegalStateException("图片过大");
+                output.write(buffer, 0, count);
+            }
+            return output.toByteArray();
+        } finally {
+            connection.disconnect();
+        }
     }
 }
