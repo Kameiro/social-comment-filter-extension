@@ -2153,73 +2153,126 @@ public final class CollectorPanel {
 
     /** Condition editor shared by data views and collection tasks (desktop field set). */
     private void filterSheet(boolean forCollect) {
-        LinearLayout fields = vertical(); fields.setPadding(dp(20), dp(4), dp(20), dp(8));
+        LinearLayout fields = vertical(); fields.setPadding(dp(16), dp(10), dp(16), dp(16));
 
-        // Block 0: ⏱️ 评论时间范围（最高层级 · 硬性记录门禁）
-        sectionBlock(fields, "⏱️ 评论时间范围（最高层级 · 硬性门禁）", "设置后仅记录/采集指定天数内的评论，超期评论完全不入库；永远必须同时满足，不参与任何‘或者’关系");
-        EditText days = input("只看最近多少天内评论（空为不限；如填 30 则只记录近 30 天评论）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true); fields.addView(days);
+        // Card 0: ⏱️ 评论时间范围（最高层级 · 硬性门禁）
+        LinearLayout card0 = expressiveCard(fields, "⏱️ 最高门禁", "评论发布时间范围", "严格门禁规则：仅记录与采集指定天数内的评论，超期评论入库前直接淘汰。该条件独立生效，永远必须同时满足。", primary);
+        EditText days = input("只看最近多少天（如填 30 表示仅抓取近 30 天内；留空为不限）", filters.optInt("recentDays") > 0 ? String.valueOf(filters.optInt("recentDays")) : "", true);
+        card0.addView(days);
+        card0.addView(cardNote("💡 提示：该选项为最高优先级的物理入库门禁；如设置 30 天，则 31 天前的老评论完全不计入数据库与统计，不参与后续计算。"));
 
-        // Block 1: 🔍 内容与属地筛选（仅对时间范围内的评论生效）
-        sectionBlock(fields, "🔍 内容与属地初筛（仅对达标时间的评论生效）", "先过时间门禁，再按关键词与评论 IP 的关系筛选；只有达标评论才会进入二次主页采集");
-        EditText keyword = input("包含关键词，多个用逗号分隔（如：词1, 词2）", filters.optString("keyword"), false); fields.addView(keyword);
+        // Card 1: 🔍 第一阶段 · 评论内容与发表属地初筛
+        LinearLayout card1 = expressiveCard(fields, "阶段一 · 初筛", "评论内容与发表属地", "在通过时间门禁的前提下，对评论正文和评论所在地的 IP 进行极速筛选。只有达标评论才会触发第二阶段主页资料调取。", 0);
+
+        EditText keyword = input("包含关键词（多个词用逗号分隔，如：价格, 怎么买）", filters.optString("keyword"), false);
+        card1.addView(keyword);
 
         String initCommentIp = filters.optString("commentIpRegion");
         if (initCommentIp.isEmpty() && "comment".equals(filters.optString("ipSource"))) initCommentIp = filters.optString("ipRegion");
-        EditText commentIp = input("评论发表 IP 属地（如：浙江、杭州，多个用逗号分隔）", initCommentIp, false); fields.addView(commentIp);
+        EditText commentIp = input("评论发表 IP 属地（如：浙江、杭州，多个用逗号隔开）", initCommentIp, false);
+        card1.addView(commentIp);
 
         int[] relation = {"or".equalsIgnoreCase(filters.optString("relation")) ? 1 : 0};
-        fields.addView(segmented(new String[]{"【关键词】与【评论IP】均需满足 (AND)", "【关键词】与【评论IP】满足其一即可 (OR)"}, relation[0], index -> relation[0] = index));
-        fields.addView(muted("注：该关系仅控制【包含关键词】与【评论IP属地】两者之间；时间范围与排除词为独立最高门禁，永远同时满足", 11));
+        card1.addView(segmented(new String[]{"【同时满足】关键词 且 评论IP", "【满足其一】关键词 或 评论IP"}, relation[0], index -> relation[0] = index));
+        card1.addView(cardNote("💡 逻辑说明：上述关系仅控制【包含关键词】与【评论IP属地】两者的组合逻辑；时间门禁与排除词不受影响，永远独立必须满足。"));
 
-        EditText exclude = input("排除关键词，多个用逗号分隔（如：词4, 词5）", filters.optString("excludeKeyword"), false); fields.addView(exclude);
-        fields.addView(muted("若命中排除词，该评论会被直接排除（一票否决，不受 AND/OR 影响）", 11));
+        EditText exclude = input("排除关键词（命中一票否决，如：广告, 推广）", filters.optString("excludeKeyword"), false);
+        card1.addView(exclude);
+        card1.addView(cardNote("⛔ 一票否决：只要评论中含有任意一个排除词，立即过滤淘汰，不受 AND/OR 影响。"));
 
-        // Block 2: ② 二次筛选（补充主页资料后）
-        sectionBlock(fields, "② 二次筛选（补充主页资料后）", "初筛命中后，自动调取主页资料补充主页IP、最近发帖地点及性别年龄");
+        // Card 2: 👤 第二阶段 · 用户主页与发帖补充核验
+        LinearLayout card2 = expressiveCard(fields, "阶段二 · 画像", "用户主页与发帖深入核验", "初筛通过后，后台自动拉取评论作者的主页资料，进一步校验其常驻省份、最新发帖城市以及性别年龄画像。", 0);
+
         String initProfileIp = filters.optString("profileIpRegion");
         if (initProfileIp.isEmpty() && !"comment".equals(filters.optString("ipSource")) && !"post".equals(filters.optString("ipSource"))) initProfileIp = filters.optString("ipRegion");
-        EditText profileIp = input("主页 IP 属地（如：北京、河北，多个用逗号分隔）", initProfileIp, false); fields.addView(profileIp);
+        EditText profileIp = input("作者主页 IP 属地（如：北京、河北，多个用逗号分隔）", initProfileIp, false);
+        card2.addView(profileIp);
+        card2.addView(cardNote("📌 说明：校验用户个人主页展示的“IP 属地”（当前或常驻省份）。"));
 
         String initPostIp = filters.optString("postIpRegion");
         if (initPostIp.isEmpty() && "post".equals(filters.optString("ipSource"))) initPostIp = filters.optString("ipRegion");
-        EditText postIp = input("最近发帖地（如：杭州；抖音精确到省市，小红书/快手为省）", initPostIp, false); fields.addView(postIp);
+        EditText postIp = input("最近发帖地点（如：杭州，支持省份或城市）", initPostIp, false);
+        card2.addView(postIp);
+        card2.addView(cardNote("📌 说明：自动读取作者首个作品的属地标签（抖音可精确到省市如“浙江·杭州”，小红书/快手为省）。"));
+
+        TextView genderLabel = text("目标用户性别", 13, true);
+        genderLabel.setTextColor(foreground);
+        LinearLayout.LayoutParams gLp = new LinearLayout.LayoutParams(-1, -2);
+        gLp.bottomMargin = dp(6);
+        card2.addView(genderLabel, gLp);
 
         String[] genderKeys = {"female", "male", "unknown"};
         boolean[] genderOn = new boolean[3];
         String savedGender = filters.optString("gender", "all");
         if ("female-or-unknown".equals(savedGender)) savedGender = "female,unknown";
         for (int i = 0; i < 3; i++) genderOn[i] = ("," + savedGender + ",").contains("," + genderKeys[i] + ",");
-        fields.addView(multiChips(new String[]{"女", "男", "未知"}, genderOn));
-        fields.addView(muted("可多选；都不选表示不限性别", 11));
+        card2.addView(multiChips(new String[]{"女", "男", "未知"}, genderOn));
+        card2.addView(cardNote("💡 建议勾选【女】和【未知】（许多女性用户未在资料中公开性别）；若全不选或全选，则表示不限性别。"));
+
+        TextView ageLabel = text("年龄区间", 13, true);
+        ageLabel.setTextColor(foreground);
+        LinearLayout.LayoutParams aLp = new LinearLayout.LayoutParams(-1, -2);
+        aLp.bottomMargin = dp(6);
+        card2.addView(ageLabel, aLp);
 
         LinearLayout ages = horizontal();
-        EditText min = input("年龄下限", filters.has("minAge") ? filters.optString("minAge") : "", true);
-        EditText max = input("年龄上限", filters.has("maxAge") ? filters.optString("maxAge") : "", true);
-        ages.addView(min, new LinearLayout.LayoutParams(0, dp(52), 1)); ages.addView(max, new LinearLayout.LayoutParams(0, dp(52), 1)); fields.addView(ages);
+        EditText min = input("年龄下限 (如 18)", filters.has("minAge") ? filters.optString("minAge") : "", true);
+        EditText max = input("年龄上限 (如 35)", filters.has("maxAge") ? filters.optString("maxAge") : "", true);
+        LinearLayout.LayoutParams minLp = new LinearLayout.LayoutParams(0, dp(52), 1); minLp.rightMargin = dp(6);
+        LinearLayout.LayoutParams maxLp = new LinearLayout.LayoutParams(0, dp(52), 1); maxLp.leftMargin = dp(6);
+        ages.addView(min, minLp); ages.addView(max, maxLp);
+        LinearLayout.LayoutParams agesLp = new LinearLayout.LayoutParams(-1, -2);
+        agesLp.bottomMargin = dp(10);
+        card2.addView(ages, agesLp);
+        card2.addView(cardNote("📌 说明：依据作者公开资料估算；如留空则表示不限年龄。"));
 
-        // Block 3: 采集与排序
-        sectionBlock(fields, "③ 采集与排序", forCollect ? "控制翻页上限与采集模式" : "数据列表排序规则");
+        // Card 3: ⚙️ 采集控制与排序规则
+        LinearLayout card3 = expressiveCard(fields, "⚙️ 配置", forCollect ? "采集控制与排序规则" : "数据列表呈现规则", forCollect ? "配置本次采集任务的翻页模式、最大读取页数及目标评论停止阈值。" : "配置评论在数据浏览面板中的排序方式。", 0);
         EditText target = null, pages = null;
         String[] pagingKeys = {"auto", "native", "ui"};
         int[] pagingIndex = {0};
         if (forCollect) {
-            target = input("目标评论数，达到后停止（空为全部）", filters.optInt("targetCount") > 0 ? String.valueOf(filters.optInt("targetCount")) : "", true); fields.addView(target);
-            pages = input("最多读取页数（空为全部）", filters.optInt("maxPages") > 0 ? String.valueOf(filters.optInt("maxPages")) : "", true); fields.addView(pages);
+            target = input("目标评论总数（达到后自动停止，留空为不限）", filters.optInt("targetCount") > 0 ? String.valueOf(filters.optInt("targetCount")) : "", true);
+            card3.addView(target);
+            pages = input("最多抓取页数（留空为采集至末页）", filters.optInt("maxPages") > 0 ? String.valueOf(filters.optInt("maxPages")) : "", true);
+            card3.addView(pages);
             for (int i = 0; i < pagingKeys.length; i++) if (pagingKeys[i].equals(filters.optString("pagingMode", "auto"))) pagingIndex[0] = i;
-            fields.addView(segmented(new String[]{"自动", "原生接口", "页面滚动"}, pagingIndex[0], index -> pagingIndex[0] = index));
+            card3.addView(segmented(new String[]{"自动（优先原生）", "原生接口", "页面滚动"}, pagingIndex[0], index -> pagingIndex[0] = index));
+            card3.addView(cardNote("💡 翻页模式说明：原生接口直连底层请求，极速且抗风控；页面滚动为无障碍手势滑动备用。"));
         }
+
+        TextView sortLabel = text("数据列表排序", 13, true);
+        sortLabel.setTextColor(foreground);
+        LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(-1, -2);
+        sLp.bottomMargin = dp(6);
+        card3.addView(sortLabel, sLp);
+
         String[] sortKeys = {"captured_desc", "created_desc", "created_asc", "likes_desc", "captured_asc"};
         Spinner sorts = new Spinner(uiContext);
-        sorts.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item, new String[]{"最新抓取", "最新评论", "最早评论", "点赞最多", "最早抓取"}));
-        sorts.setMinimumHeight(dp(48)); fields.addView(sorts);
+        sorts.setAdapter(new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_dropdown_item, new String[]{"最新抓取优先", "最新发布优先", "最早发布优先", "点赞最多优先", "最早抓取优先"}));
+        sorts.setMinimumHeight(dp(48));
+        GradientDrawable spinnerBg = round(M3.mix(sc.surfaceContainerHigh, sc.surfaceContainer, 0.45f), 14);
+        spinnerBg.setStroke(dp(1), sc.outlineVariant);
+        sorts.setBackground(spinnerBg);
+        sorts.setPadding(dp(14), dp(8), dp(14), dp(8));
+        LinearLayout.LayoutParams sortsLp = new LinearLayout.LayoutParams(-1, -2);
+        sortsLp.bottomMargin = dp(6);
+        card3.addView(sorts, sortsLp);
         for (int i = 0; i < sortKeys.length; i++) if (sortKeys[i].equals(filters.optString("sort", "captured_desc"))) sorts.setSelection(i);
+        card3.addView(cardNote("📌 说明：决定本地数据库查询和展示时的排序基准。"));
 
         final EditText fTarget = target, fPages = pages;
-        ScrollView scroll = new ScrollView(activity); scroll.addView(fields);
-        alert().setTitle(forCollect ? "采集条件" : "筛选条件").setView(scroll)
-            .setNeutralButton("重置", (dialog, which) -> { filters = new JSONObject(); saveFilters(); render(); })
+        ScrollView scroll = new ScrollView(activity);
+        scroll.setClipToPadding(false);
+        scroll.setOverScrollMode(View.OVER_SCROLL_IF_CONTENT_SCROLLS);
+        scroll.addView(fields);
+
+        AlertDialog dialog = alert()
+            .setTitle(forCollect ? "🎯 采集条件配置" : "🔍 筛选条件配置")
+            .setView(scroll)
+            .setNeutralButton("重置全部", (d, which) -> { filters = new JSONObject(); saveFilters(); render(); })
             .setNegativeButton("取消", null)
-            .setPositiveButton("应用", (dialog, which) -> {
+            .setPositiveButton("应用生效", (d, which) -> {
                 try {
                     JSONObject next = new JSONObject()
                         .put("keyword", keyword.getText().toString().trim())
@@ -2228,17 +2281,92 @@ public final class CollectorPanel {
                         .put("profileIpRegion", profileIp.getText().toString().trim())
                         .put("postIpRegion", postIp.getText().toString().trim())
                         .put("relation", relation[0] == 1 ? "or" : "and")
-                        .put("gender", genderValue(genderKeys, genderOn)).put("sort", sortKeys[sorts.getSelectedItemPosition()])
+                        .put("gender", genderValue(genderKeys, genderOn))
+                        .put("sort", sortKeys[sorts.getSelectedItemPosition()])
                         .put("pagingMode", pagingKeys[pagingIndex[0]]);
-                    putNumber(next, "minAge", min); putNumber(next, "maxAge", max);
+                    putNumber(next, "minAge", min);
+                    putNumber(next, "maxAge", max);
                     putNumber(next, "recentDays", days);
                     if (fTarget != null) putNumber(next, "targetCount", fTarget);
                     else if (filters.has("targetCount")) next.put("targetCount", filters.get("targetCount"));
                     if (fPages != null) putNumber(next, "maxPages", fPages);
                     else if (filters.has("maxPages")) next.put("maxPages", filters.get("maxPages"));
-                    filters = next; saveFilters(); render();
+                    filters = next;
+                    saveFilters();
+                    render();
                 } catch (Exception error) { error(error); }
-            }).show();
+            }).create();
+
+        dialog.show();
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(round(sc.surfaceContainer, 28));
+        }
+        try {
+            Button pos = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            if (pos != null) { pos.setTextColor(primary); pos.setTypeface(M3.medium()); }
+            Button neg = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
+            if (neg != null) { neg.setTextColor(secondary); }
+            Button neu = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+            if (neu != null) { neu.setTextColor(errorColor); }
+        } catch (Throwable ignored) {}
+    }
+
+    private TextView cardNote(String text) {
+        TextView note = new TextView(activity);
+        M3.type(note, 12, false, secondary);
+        note.setText(text);
+        note.setLineSpacing(dp(2), 1.25f);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(dp(2), 0, dp(2), dp(10));
+        note.setLayoutParams(lp);
+        return note;
+    }
+
+    private LinearLayout expressiveCard(LinearLayout parent, String badgeText, String titleText, String subtitleText, int accentColor) {
+        LinearLayout card = vertical();
+        card.setPadding(dp(16), dp(16), dp(16), dp(14));
+        GradientDrawable bg = round(sc.surfaceContainerLow, 20);
+        bg.setStroke(dp(1), sc.outlineVariant);
+        card.setBackground(bg);
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
+        cardParams.setMargins(0, 0, 0, dp(14));
+        parent.addView(card, cardParams);
+
+        LinearLayout header = horizontal();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        if (badgeText != null && !badgeText.isEmpty()) {
+            TextView badge = new TextView(activity);
+            M3.type(badge, 11, true, accentColor != 0 ? accentColor : primary);
+            badge.setText(badgeText);
+            badge.setGravity(Gravity.CENTER);
+            badge.setPadding(dp(8), dp(3), dp(8), dp(3));
+            GradientDrawable badgeBg = round(M3.mix(accentColor != 0 ? accentColor : primary, sc.surfaceContainerLow, 0.15f), 12);
+            badge.setBackground(badgeBg);
+            header.addView(badge, new LinearLayout.LayoutParams(-2, -2));
+        }
+
+        TextView title = new TextView(activity);
+        M3.type(title, 15, true, foreground);
+        title.setText(titleText);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-2, -2);
+        if (badgeText != null && !badgeText.isEmpty()) titleParams.leftMargin = dp(8);
+        header.addView(title, titleParams);
+
+        LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(-1, -2);
+        headerParams.bottomMargin = subtitleText != null && !subtitleText.isEmpty() ? dp(6) : dp(12);
+        card.addView(header, headerParams);
+
+        if (subtitleText != null && !subtitleText.isEmpty()) {
+            TextView sub = new TextView(activity);
+            M3.type(sub, 12, false, secondary);
+            sub.setText(subtitleText);
+            sub.setLineSpacing(dp(2), 1.25f);
+            LinearLayout.LayoutParams subParams = new LinearLayout.LayoutParams(-1, -2);
+            subParams.bottomMargin = dp(12);
+            card.addView(sub, subParams);
+        }
+
+        return card;
     }
 
     private static void putNumber(JSONObject target, String key, EditText field) throws Exception {
@@ -2852,8 +2980,9 @@ public final class CollectorPanel {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-2, dp(40)); params.leftMargin = dp(leftMargin); return params;
     }
     private LinearLayout card(LinearLayout parent) {
-        LinearLayout card = vertical(); card.setPadding(dp(16), dp(16), dp(16), dp(16)); card.setBackground(round(surfaceContainer, M3.SHAPE_LARGE));
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(10)); parent.addView(card, params); return card;
+        LinearLayout card = vertical(); card.setPadding(dp(16), dp(16), dp(16), dp(16));
+        GradientDrawable shape = round(sc.surfaceContainerLow, 20); shape.setStroke(dp(1), sc.outlineVariant); card.setBackground(shape);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2); params.setMargins(0, 0, 0, dp(14)); parent.addView(card, params); return card;
     }
     /** Rounded pill; removable chips show "×" and clear on tap, action chips are outlined. */
     private TextView chip(String label, boolean removable, Runnable action) {
@@ -2861,34 +2990,39 @@ public final class CollectorPanel {
         chip.setText(removable ? label + "  ✕" : label);
         chip.setGravity(Gravity.CENTER_VERTICAL); chip.setMinHeight(dp(32)); chip.setSingleLine(true); chip.setEllipsize(TextUtils.TruncateAt.END); chip.setMaxWidth(dp(240));
         chip.setPadding(dp(12), dp(4), dp(12), dp(4));
-        GradientDrawable shape = round(removable ? sc.secondaryContainer : Color.TRANSPARENT, M3.SHAPE_SMALL);
-        if (!removable) shape.setStroke(dp(1), sc.outline); else shape.setStroke(dp(1), sc.secondaryContainer);
+        GradientDrawable shape = round(removable ? sc.secondaryContainer : Color.TRANSPARENT, 16);
+        if (!removable) shape.setStroke(dp(1), sc.outlineVariant); else shape.setStroke(dp(1), sc.secondaryContainer);
         chip.setBackground(shape); chip.setOnClickListener(view -> action.run()); Motion.press(chip);
         return chip;
     }
     /** M3 segmented button: outlined pill, the selected segment filled with the secondary container. */
     private View segmented(String[] options, int selected, Consumer<Integer> onSelect) {
         LinearLayout row = horizontal();
-        GradientDrawable frame = round(Color.TRANSPARENT, 20); frame.setStroke(dp(1), sc.outline); row.setBackground(frame); row.setClipToOutline(true);
+        GradientDrawable frame = round(M3.mix(sc.surfaceContainerHigh, sc.surfaceContainer, 0.35f), 22); frame.setStroke(dp(1), sc.outlineVariant); row.setBackground(frame); row.setClipToOutline(true);
+        row.setPadding(dp(2), dp(2), dp(2), dp(2));
         TextView[] items = new TextView[options.length];
         for (int i = 0; i < options.length; i++) {
             final int index = i;
             TextView item = M3.type(new TextView(activity), M3.LABEL_LARGE, true, secondary); item.setText(options[i]);
-            item.setGravity(Gravity.CENTER); item.setSingleLine(true); item.setEllipsize(TextUtils.TruncateAt.END); item.setPadding(dp(4), 0, dp(4), 0);
+            item.setGravity(Gravity.CENTER); item.setSingleLine(true); item.setEllipsize(TextUtils.TruncateAt.END); item.setPadding(dp(8), 0, dp(8), 0);
             item.setOnClickListener(view -> {
                 for (int j = 0; j < items.length; j++) styleSegment(items[j], j == index);
                 onSelect.accept(index);
             });
             styleSegment(item, i == selected); items[i] = item;
-            row.addView(item, new LinearLayout.LayoutParams(0, dp(40), 1));
-            if (i < options.length - 1) { View divider = new View(activity); divider.setBackgroundColor(sc.outline); row.addView(divider, new LinearLayout.LayoutParams(dp(1), -1)); }
+            row.addView(item, new LinearLayout.LayoutParams(0, dp(42), 1));
+            if (i < options.length - 1) { View divider = new View(activity); divider.setBackgroundColor(sc.outlineVariant); row.addView(divider, new LinearLayout.LayoutParams(dp(1), dp(22))); }
         }
-        LinearLayout wrapper = vertical(); wrapper.setPadding(0, dp(4), 0, dp(4)); wrapper.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        LinearLayout wrapper = vertical();
+        LinearLayout.LayoutParams wrapLp = new LinearLayout.LayoutParams(-1, -2);
+        wrapLp.setMargins(0, dp(4), 0, dp(10));
+        wrapper.setLayoutParams(wrapLp);
+        wrapper.addView(row, new LinearLayout.LayoutParams(-1, -2));
         return wrapper;
     }
     private void styleSegment(TextView item, boolean on) {
-        item.setBackgroundColor(on ? sc.secondaryContainer : Color.TRANSPARENT);
-        item.setTextColor(on ? sc.onSecondaryContainer : foreground); item.setText(on ? "✓ " + item.getText().toString().replaceFirst("^✓ ", "") : item.getText().toString().replaceFirst("^✓ ", ""));
+        item.setBackground(round(on ? sc.secondaryContainer : Color.TRANSPARENT, 20));
+        item.setTextColor(on ? sc.onSecondaryContainer : sc.onSurfaceVariant); item.setText(on ? "✓ " + item.getText().toString().replaceFirst("^✓ ", "") : item.getText().toString().replaceFirst("^✓ ", ""));
     }
     private CheckBox tint(CheckBox box) { box.setButtonTintList(ColorStateList.valueOf(primary)); return box; }
     private GradientDrawable round(int color, int radius) { GradientDrawable shape = new GradientDrawable(); shape.setColor(color); shape.setCornerRadius(dp(radius)); return shape; }
@@ -2920,8 +3054,19 @@ public final class CollectorPanel {
         (dataContent != null ? dataContent : body).addView(controls);
     }
     private EditText input(String hint, String value, boolean numeric) {
-        EditText view = new EditText(uiContext); view.setHint(hint); view.setText(value); view.setTextSize(14); view.setTextColor(foreground); view.setHintTextColor(secondary);
-        view.setSingleLine(true); view.setMinHeight(dp(56)); view.setPadding(dp(16), dp(8), dp(16), dp(8)); GradientDrawable field = round(Color.TRANSPARENT, M3.SHAPE_EXTRA_SMALL); field.setStroke(dp(1), sc.outline); view.setBackground(field); if (numeric) view.setInputType(InputType.TYPE_CLASS_NUMBER); return view;
+        EditText view = new EditText(uiContext); view.setHint(hint); view.setText(value); view.setTextSize(14); view.setTextColor(foreground); view.setHintTextColor(M3.mix(secondary, foreground, 0.2f));
+        view.setSingleLine(true); view.setMinHeight(dp(50)); view.setPadding(dp(14), dp(10), dp(14), dp(10));
+        int bg = M3.mix(sc.surfaceContainerHigh, sc.surfaceContainer, 0.45f);
+        int strokeNormal = sc.outlineVariant;
+        GradientDrawable field = round(bg, 14); field.setStroke(dp(1), strokeNormal); view.setBackground(field);
+        view.setOnFocusChangeListener((v, hasFocus) -> {
+            GradientDrawable d = round(bg, 14); d.setStroke(dp(hasFocus ? 2 : 1), hasFocus ? primary : strokeNormal); view.setBackground(d);
+        });
+        if (numeric) view.setInputType(InputType.TYPE_CLASS_NUMBER);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.bottomMargin = dp(10);
+        view.setLayoutParams(lp);
+        return view;
     }
 
     /** Minimal wrapping row for chips. */
@@ -2967,19 +3112,22 @@ public final class CollectorPanel {
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
             TextView item = M3.type(new TextView(activity), M3.LABEL_LARGE, true, secondary); item.setText(labels[i]);
-            item.setGravity(Gravity.CENTER); item.setMinHeight(dp(40)); item.setPadding(dp(16), 0, dp(16), 0);
+            item.setGravity(Gravity.CENTER); item.setMinHeight(dp(42)); item.setPadding(dp(16), 0, dp(16), 0);
             Runnable paint = () -> {
-                GradientDrawable shape = round(on[index] ? sc.secondaryContainer : Color.TRANSPARENT, M3.SHAPE_SMALL);
-                shape.setStroke(dp(1), on[index] ? sc.secondaryContainer : sc.outline);
-                item.setBackground(shape); item.setTextColor(on[index] ? sc.onSecondaryContainer : secondary);
+                GradientDrawable shape = round(on[index] ? sc.secondaryContainer : M3.mix(sc.surfaceContainerHigh, sc.surfaceContainer, 0.4f), 21);
+                shape.setStroke(dp(1), on[index] ? sc.secondaryContainer : sc.outlineVariant);
+                item.setBackground(shape); item.setTextColor(on[index] ? sc.onSecondaryContainer : sc.onSurfaceVariant);
                 item.setText((on[index] ? "✓ " : "") + labels[index]);
             };
             paint.run();
             item.setOnClickListener(view -> { on[index] = !on[index]; paint.run(); });
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(40), 1);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(42), 1);
             if (i > 0) params.leftMargin = dp(8);
             row.addView(item, params);
         }
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(-1, -2);
+        rowLp.setMargins(0, 0, 0, dp(10));
+        row.setLayoutParams(rowLp);
         return row;
     }
     private static String ipSourceName(String source) { return "comment".equals(source) ? "评论IP" : "post".equals(source) ? "发帖地点" : "主页IP"; }
