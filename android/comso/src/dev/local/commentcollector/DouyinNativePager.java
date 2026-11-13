@@ -32,7 +32,10 @@ final class DouyinNativePager {
     private static volatile Object profileProxy;
     private static volatile Method profileMethod;
 
-    static boolean ready() { return proxy != null && method != null; }
+    static boolean ready() { return proxy != null && method != null && args != null; }
+    static boolean ready(String expectPost) {
+        return proxy != null && method != null && args != null && (expectPost == null || expectPost.isEmpty() || expectPost.equals(post()));
+    }
     static boolean profileReady() { return profileProxy != null && profileMethod != null; }
     static String post() { Object[] a = args; return a != null && a.length > 0 && a[0] != null ? String.valueOf(a[0]) : ""; }
     static String lastCapturedPost() { return lastCapturedPost == null ? "" : lastCapturedPost; }
@@ -77,11 +80,14 @@ final class DouyinNativePager {
             xposed.hook(invoke).intercept(chain -> {
                 Method called = (Method) chain.getArg(1);
                 if (called != null && "fetchCommentListV2Post".equals(called.getName()) && called.getDeclaringClass() == api) {
+                    if (replaying.get() != null) {
+                        return chain.proceed();
+                    }
                     Object[] raw = (Object[]) chain.getArg(2);
                     if (raw != null) {
                         proxy = chain.getArg(0); method = called; args = raw.clone(); capturedAt = System.currentTimeMillis();
                         String current = post();
-                        if (replaying.get() == null && !current.isEmpty()) {
+                        if (!current.isEmpty()) {
                             lastCapturedPost = current;
                             java.util.function.Consumer<String> cb = onPostCaptured;
                             if (cb != null) cb.accept(current);
@@ -99,31 +105,16 @@ final class DouyinNativePager {
     /** Replays the captured request from a worker thread; the parsed list reaches DouyinComments via the model hook. */
     static Object fetch(long cursor, String expectPost) {
         Object p = proxy; Method m = method; Object[] a = args;
-        if (p == null || m == null) return null;
+        if (p == null || m == null || a == null) return null;
+        if (expectPost != null && !expectPost.isEmpty() && !expectPost.equals(post())) {
+            Log.w(TAG, "douyin_native_fetch_skipped: not bound to post=" + expectPost + " current=" + post());
+            return null;
+        }
         try {
-            Object[] copy;
-            if (a != null) {
-                copy = a.clone();
-                if (copy.length > 0) copy[0] = expectPost;
-                if (copy.length > 1) copy[1] = cursor;
-                if (copy.length > 2 && copy[2] instanceof Integer && ((Integer) copy[2]) <= 0) copy[2] = 20;
-            } else {
-                Class<?>[] types = m.getParameterTypes();
-                java.lang.annotation.Annotation[][] notes = m.getParameterAnnotations();
-                copy = new Object[types.length];
-                for (int i = 0; i < types.length; i++) {
-                    String name = paramName(notes[i]);
-                    if ("aweme_id".equals(name) || "item_id".equals(name) || (i == 0 && types[0] == String.class)) {
-                        copy[i] = expectPost;
-                    } else if ("cursor".equals(name) || (i == 1 && (types[1] == long.class || types[1] == Long.class))) {
-                        copy[i] = cursor;
-                    } else if ("count".equals(name) || (i == 2 && (types[2] == int.class || types[2] == Integer.class))) {
-                        copy[i] = 20;
-                    } else {
-                        copy[i] = zero(types[i]);
-                    }
-                }
-            }
+            Object[] copy = a.clone();
+            if (copy.length > 0) copy[0] = expectPost;
+            if (copy.length > 1) copy[1] = cursor;
+            if (copy.length > 2 && copy[2] instanceof Integer && ((Integer) copy[2]) <= 0) copy[2] = 20;
             synchronized (shown) {
                 if (!expectPost.equals(shownPost) || cursor == 0) { shown.clear(); shownPost = expectPost; }
                 if (a != null && !replayStarted) {
@@ -141,12 +132,19 @@ final class DouyinNativePager {
             }
             replaying.set(Boolean.TRUE);
             Object task;
-            try { task = m.invoke(p, copy); } finally { replaying.set(null); }
+            try {
+                task = m.invoke(p, copy);
+            } finally { replaying.set(null); }
             if (task != null) {
-                try { task.getClass().getMethod("waitForCompletion").invoke(task); } catch (NoSuchMethodException ignored) {}
+                try {
+                    Method waitM = task.getClass().getMethod("waitForCompletion");
+                    waitM.invoke(task);
+                } catch (Throwable ignored) {}
             }
             Object result = null;
-            if (task != null) { try { result = task.getClass().getMethod("getResult").invoke(task); } catch (Throwable ignored) {} }
+            if (task != null) {
+                try { result = task.getClass().getMethod("getResult").invoke(task); } catch (Throwable ignored) {}
+            }
             String outcome = " result=" + (result == null ? "null" : result.getClass().getName());
             if (result != null) try {
                 org.json.JSONObject page = DouyinComments.page(result, expectPost);

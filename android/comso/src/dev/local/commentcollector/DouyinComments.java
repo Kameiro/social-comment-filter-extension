@@ -49,15 +49,18 @@ final class DouyinComments {
         if (!paging) return;
         new Thread(() -> {
             boolean running = false, unknown = false;
+            String taskPhoto = "";
             try {
                 JSONObject task = CollectorClient.call(context, "status", new JSONObject());
                 String plat = task.optString("platform");
                 boolean platformMismatch = (!plat.isEmpty() && !"douyin".equals(plat)) || task.optString("photoId").matches("[0-9a-fA-F]{24}");
                 JSONObject params = task.optJSONObject("params");
+                taskPhoto = task.optString("photoId");
                 nativeMode = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto"));
                 running = !platformMismatch && "comment".equals(task.optString("kind")) && task.optString("status").startsWith("running");
             } catch (Throwable ignored) { unknown = true; }
             final boolean go = running, failed = unknown;
+            final String photo = taskPhoto;
             main.post(() -> {
                 if (!paging) return;
                 if (failed) { main.postDelayed(this::tick, 2000); return; } // collector briefly unreachable: keep going
@@ -66,7 +69,7 @@ final class DouyinComments {
                 if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) { lastPageAt = System.currentTimeMillis(); main.postDelayed(this::tick, 800); return; }
                 idleTicks = System.currentTimeMillis() - lastPageAt > 1500 ? idleTicks + 1 : 0;
                 if (idleTicks > 8) { stopPaging("no_new_page"); return; }
-                if (nativeMode && DouyinNativePager.ready()) {
+                if (nativeMode && DouyinNativePager.ready(photo)) {
                     stopPaging("handled_by_native_driver");
                     return;
                 }
@@ -285,7 +288,7 @@ final class DouyinComments {
         if (photo.isEmpty()) return 3000;
         long taskId = task.optLong("taskId"), generation = task.optLong("generation");
         JSONObject params = task.optJSONObject("params");
-        boolean isNative = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto")) && DouyinNativePager.ready();
+        boolean isNative = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto")) && DouyinNativePager.ready(photo);
 
         if (isNative) {
             if ("running".equals(status)) {
@@ -324,8 +327,8 @@ final class DouyinComments {
             }
         } else {
             if (status.startsWith("running")) maybeOpenPost(task);
-            if (!"running-replies".equals(status)) return 3000;
-            if (!DouyinNativePager.ready() || !photo.equals(DouyinNativePager.post())) return 3000;
+            if (!"running-replies".equals(status)) return 2000;
+            if (!DouyinNativePager.ready(photo)) return 3000;
             if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) return 1000;
             long tid = task.optLong("taskId"), gen = task.optLong("generation");
             JSONObject listing = CollectorClient.call(context, "pending_reply_ids", new JSONObject().put("taskId", tid).put("generation", gen));
@@ -349,29 +352,41 @@ final class DouyinComments {
     private void maybeOpenPost(JSONObject task) {
         String photo = task.optString("photoId");
         if (photo.isEmpty() || !photo.matches("\\d+")) return;
-        if (DouyinNativePager.ready() && photo.equals(DouyinNativePager.post())) return;           // already bound
+        if (DouyinNativePager.ready(photo)) return;           // already bound
         if (System.currentTimeMillis() - lastPageAt < 20000) return;                               // pages are flowing
-        if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 8000) return; // the user is busy
-        if (System.currentTimeMillis() - lastOpenAt < 45000) return;
+        if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) return; // the user is busy
+        if (System.currentTimeMillis() - lastOpenAt < 10000) return;
         android.app.Activity host = activity.get();
         if (host == null || host.isFinishing()) return;                                            // never pull Douyin to the front
         String key = task.optLong("taskId") + ":" + task.optLong("generation");
         int[] tries = openAttempts.computeIfAbsent(key, k -> new int[1]);
-        if (tries[0] >= 3) { if (tries[0]++ == 3) Log.i(TAG, "douyin_open_post_gave_up post=" + photo); return; }
+        if (tries[0] >= 5) { if (tries[0]++ == 5) Log.i(TAG, "douyin_open_post_gave_up post=" + photo); return; }
         tries[0]++; lastOpenAt = System.currentTimeMillis();
         Log.i(TAG, "douyin_open_post post=" + photo + " attempt=" + tries[0]);
         main.post(() -> {
             try {
-                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://www.iesdouyin.com/share/video/" + photo + "/"));
+                android.view.View root = host.getWindow().getDecorView();
+                // If comment drawer is not open, check if current screen has comment button (already on this video)
+                android.view.View drawer = findList(root, host.getResources().getDisplayMetrics().heightPixels, null);
+                if (drawer == null) {
+                    android.view.View button = findCommentButton(root);
+                    if (button != null) {
+                        Log.i(TAG, "douyin_auto_click_comment_button for post=" + photo);
+                        button.performClick();
+                        return;
+                    }
+                }
+                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("snssdk1128://aweme/detail/" + photo));
                 intent.setPackage(host.getPackageName());
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
                 host.startActivity(intent);
-                main.postDelayed(() -> openCommentDrawer(photo, 0), 3500);
+                main.postDelayed(() -> openCommentDrawer(photo, 0), 2000);
             } catch (Throwable error) { Log.w(TAG, "douyin_open_post_failed", error); }
         });
     }
 
     private void openCommentDrawer(String photo, int attempt) {
-        if (attempt > 10 || (DouyinNativePager.ready() && photo.equals(DouyinNativePager.post()))) return;
+        if (attempt > 10 || DouyinNativePager.ready(photo)) return;
         android.app.Activity host = activity.get();
         if (host != null) {
             android.view.View root = host.getWindow().getDecorView();
