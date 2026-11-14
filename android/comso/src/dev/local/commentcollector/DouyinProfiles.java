@@ -14,6 +14,7 @@ import java.util.Calendar;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import org.json.JSONObject;
 
@@ -32,6 +33,14 @@ final class DouyinProfiles {
         thread.setDaemon(true);
         return thread;
     });
+    private static final int NATIVE_PROFILE_CONCURRENCY = 2;
+    private final ExecutorService nativeProfileWorker = Executors.newFixedThreadPool(NATIVE_PROFILE_CONCURRENCY, runnable -> {
+        Thread thread = new Thread(runnable, "douyin-profile-native");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final AtomicInteger nativeProfileInFlight = new AtomicInteger();
+    private volatile long nativeProfilePausedTask = -1;
     private final ConcurrentHashMap<String, Long> recent = new ConcurrentHashMap<>();
     private Field ipField;
     private volatile boolean ticking;
@@ -295,35 +304,26 @@ final class DouyinProfiles {
                 boolean running = status.startsWith("running");
                 if (("comment".equals(kind) || "profile".equals(kind)) && running) {
                     long taskId = task.optLong("taskId");
+                    boolean nativeReady = DouyinNativePager.profileReady();
+                    if (nativeReady && nativeProfileInFlight.get() >= NATIVE_PROFILE_CONCURRENCY) {
+                        delay = 250;
+                        main.postDelayed(this::tick, delay);
+                        return;
+                    }
                     JSONObject next = CollectorClient.call(context, "profile_queue_next", new JSONObject().put("taskId", taskId));
                     if (!next.optBoolean("empty")) {
                         String uid = next.optString("userId");
                         String secUid = next.optString("secUid");
-                        if (DouyinNativePager.profileReady()) {
-                            Object resp = DouyinNativePager.fetchProfile(uid, secUid);
-                            if (resp != null) {
-                                String verify = ModelReader.text(resp, "secondVerifyType");
-                                if (!verify.isEmpty()) {
-                                    Log.w(TAG, "douyin_profile_verify_triggered uid=" + uid);
-                                    CollectorClient.call(context, "pause", new JSONObject().put("taskId", taskId).put("code", "platform_block"));
-                                    main.postDelayed(this::tick, 10000);
-                                    return;
-                                }
-                                Object u = ModelReader.get(resp, "user");
-                                if (u != null) {
-                                    String ip = ModelReader.text(u, "ipLocation").replaceFirst("^\\s*IP\\s*属地\\s*[:：]?\\s*", "").trim();
-                                    JSONObject prof = profile(u, uid, ip);
-                                    CollectorClient.call(context, "record_profile", new JSONObject().put("taskId", taskId).put("user", prof));
-                                    Log.i(TAG, "douyin_profile_native_recorded uid=" + uid + " ip=" + ip + " gender=" + prof.optString("gender"));
-                                    delay = 750;
-                                } else {
-                                    CollectorClient.call(context, "profile_queue_fail", new JSONObject().put("taskId", taskId).put("userId", uid).put("issue", "profile_no_user"));
-                                    delay = 600;
-                                }
-                            } else {
-                                CollectorClient.call(context, "profile_queue_fail", new JSONObject().put("taskId", taskId).put("userId", uid).put("issue", "profile_not_returned"));
-                                delay = 800;
+                        if (nativeReady) {
+                            nativeProfileInFlight.incrementAndGet();
+                            try {
+                                nativeProfileWorker.execute(() -> fetchNativeProfile(taskId, uid, secUid));
+                            } catch (Throwable error) {
+                                nativeProfileInFlight.decrementAndGet();
+                                try { CollectorClient.call(context, "profile_queue_fail", new JSONObject().put("taskId", taskId).put("userId", uid).put("issue", "profile_worker_rejected")); } catch (Throwable ignored) {}
+                                Log.w(TAG, "douyin_profile_native_schedule_failed uid=" + uid, error);
                             }
+                            delay = 250;
                         } else {
                             Activity host = activity.get();
                             if (host != null && !host.isFinishing()) {
@@ -338,6 +338,54 @@ final class DouyinProfiles {
             } catch (Throwable error) { Log.w(TAG, "douyin_profile_tick_failed", error); }
             main.postDelayed(this::tick, delay);
         });
+    }
+
+    private void fetchNativeProfile(long taskId, String uid, String secUid) {
+        long started = SystemClock.elapsedRealtime();
+        long fetchedAt = started;
+        long parsedAt = started;
+        try {
+            Object resp = DouyinNativePager.fetchProfile(uid, secUid);
+            fetchedAt = SystemClock.elapsedRealtime();
+            if (resp != null) {
+                String verify = ModelReader.text(resp, "secondVerifyType");
+                if (!verify.isEmpty()) {
+                    Log.w(TAG, "douyin_profile_verify_triggered uid=" + uid);
+                    if (markNativeProfilePaused(taskId)) {
+                        CollectorClient.call(context, "pause", new JSONObject().put("taskId", taskId).put("code", "platform_block"));
+                    }
+                    return;
+                }
+                Object u = ModelReader.get(resp, "user");
+                if (u != null) {
+                    String ip = ModelReader.text(u, "ipLocation").replaceFirst("^\\s*IP\\s*属地\\s*[:：]?\\s*", "").trim();
+                    JSONObject prof = profile(u, uid, ip);
+                    parsedAt = SystemClock.elapsedRealtime();
+                    CollectorClient.call(context, "record_profile", new JSONObject().put("taskId", taskId).put("user", prof));
+                    long savedAt = SystemClock.elapsedRealtime();
+                    Log.i(TAG, "douyin_profile_native_timing uid=" + uid + " fetchMs=" + (fetchedAt - started)
+                        + " parseMs=" + (parsedAt - fetchedAt) + " saveMs=" + (savedAt - parsedAt)
+                        + " totalMs=" + (savedAt - started));
+                    return;
+                }
+                CollectorClient.call(context, "profile_queue_fail", new JSONObject().put("taskId", taskId).put("userId", uid).put("issue", "profile_no_user"));
+            } else {
+                CollectorClient.call(context, "profile_queue_fail", new JSONObject().put("taskId", taskId).put("userId", uid).put("issue", "profile_not_returned"));
+            }
+        } catch (Throwable error) {
+            Log.w(TAG, "douyin_profile_native_failed uid=" + uid, error);
+            try { CollectorClient.call(context, "profile_queue_fail", new JSONObject().put("taskId", taskId).put("userId", uid).put("issue", "profile_fetch_failed")); } catch (Throwable ignored) {}
+        } finally {
+            nativeProfileInFlight.decrementAndGet();
+        }
+    }
+
+    private boolean markNativeProfilePaused(long taskId) {
+        synchronized (this) {
+            if (nativeProfilePausedTask == taskId) return false;
+            nativeProfilePausedTask = taskId;
+            return true;
+        }
     }
 
     private void drive(long taskId, Activity host, String uid) throws Exception {
