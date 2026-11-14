@@ -2219,8 +2219,9 @@ public final class CollectorPanel {
     private void messageSettings() {
         LinearLayout content = vertical(); content.setPadding(dp(16), dp(4), dp(16), dp(8));
         LinearLayout rows = vertical(); content.addView(rows);
-        JSONArray saved = new JSONArray();
-        try { saved = api("settings_get", new JSONObject().put("name", "messages")).optJSONArray("items"); } catch (Exception ignored) {}
+        JSONObject response = null;
+        try { response = api("settings_get", new JSONObject().put("name", "messages")); } catch (Exception ignored) {}
+        JSONArray saved = MessageTemplateStore.items(response);
         List<EditText[]> fields = new ArrayList<>();
         Runnable addRow = () -> {
             LinearLayout row = vertical(); row.setPadding(0, dp(8), 0, dp(8));
@@ -2257,8 +2258,8 @@ public final class CollectorPanel {
     private void directMessageDialog(JSONArray ids) {
         if (ids == null || ids.length() == 0) { Toast.makeText(activity, "请先选择用户", Toast.LENGTH_SHORT).show(); return; }
         try {
-            JSONArray items = api("settings_get", new JSONObject().put("name", "messages")).optJSONArray("items");
-            if (items == null || items.length() == 0) {
+            JSONArray items = MessageTemplateStore.items(api("settings_get", new JSONObject().put("name", "messages")));
+            if (items.length() == 0) {
                 Toast.makeText(activity, "请先在“我的 → 私信设置”里添加模板", Toast.LENGTH_LONG).show(); return;
             }
             String[] labels = new String[items.length()];
