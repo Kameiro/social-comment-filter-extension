@@ -114,6 +114,13 @@ final class DouyinHooks {
 
         installDoubleTap();
         hostLoader = loader;
+        // Install immediately after the host loader is ready. Activity lifecycle
+        // callbacks can be missed when Douyin restores a detail process, which
+        // leaves native comment tasks running without a captured request template.
+        new Thread(() -> {
+            try { DouyinNativePager.install(xposed, loader); }
+            catch (Throwable error) { Log.w(TAG, "douyin_native_initial_install_failed", error); }
+        }, "douyin-native-initial-install").start();
         awaitApplication(0);
         DouyinComments.hook(xposed, loader, list -> {
             Context app = context;

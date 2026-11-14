@@ -383,6 +383,8 @@ final class DouyinComments {
         } else {
             if (nativeRequested && status.startsWith("running")) {
                 remindNative(task);
+                String visiblePost = currentPost == null ? "" : currentPost.get();
+                if (photo.equals(visiblePost)) maybeOpenPost(task, true);
                 return 1500;
             }
             if (status.startsWith("running")) maybeOpenPost(task);
@@ -431,6 +433,7 @@ final class DouyinComments {
                 // If comment drawer is not open, check if current screen has comment button (already on this video)
                 android.view.View drawer = findList(root, host.getResources().getDisplayMetrics().heightPixels, null);
                 String visiblePost = currentPost == null ? "" : currentPost.get();
+                if (drawer != null) { commentOpenRequested.add(key); return; }
                 if (drawer == null && photo.equals(visiblePost)) {
                     android.view.View button = findCommentButton(root);
                     if (button != null) {
