@@ -2,6 +2,7 @@ package dev.local.commentcollector;
 
 import android.app.Activity;
 import android.app.Application;
+import android.app.AlertDialog;
 import android.app.Dialog;
 import android.content.Context;
 import android.content.Intent;
@@ -59,6 +60,8 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
     private long lastHeartbeat;
     private String stage = "idle", errorType = "";
     private final List<WeakReference<View>> windows = new ArrayList<>();
+    private WeakReference<AlertDialog> reminder = new WeakReference<>(null);
+    private boolean startReminderPending, awayReminderShown;
 
     AutoPager(Context context, Supplier<String> lastPhoto, Consumer<JSONObject> bootstrap, NativeCommentPager nativePager) {
         this.context = context; this.lastPhoto = lastPhoto; this.bootstrap = bootstrap; this.nativePager = nativePager;
@@ -96,7 +99,10 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             if (result == null || result.containsKey("error")) return;
             String json = result.getString("data", result.getString("json", "{}"));
             JSONObject state = new JSONObject(json);
-            if (!state.optString("status").startsWith("running")) { running = false; stage = state.optString("status"); nativePager.idle(); target.reset(); return; }
+            if (!state.optString("status").startsWith("running")) {
+                running = false; stage = state.optString("status"); nativePager.idle(); target.reset();
+                startReminderPending = false; awayReminderShown = false; dismissReminder(); return;
+            }
             String taskPlatform = state.optString("platform");
             if ((!taskPlatform.isEmpty() && !"kuaishou".equals(taskPlatform))
                 || state.optString("photoId").matches("[0-9a-fA-F]{24}")) {
@@ -107,7 +113,8 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             if (taskId != state.optLong("taskId") || generation != state.optLong("generation")) {
                 taskId = state.optLong("taskId"); pages = -1; comments = -1; actions = 0; lastClick = ""; repliesStarted = false;
                 generation = state.optLong("generation"); navigationRequested = false; profileUser = ""; navigatedAt = 0;
-                target.reset(); nativePager.idle();
+                target.reset(); nativePager.idle(); awayReminderShown = false;
+                startReminderPending = "comment".equals(state.optString("kind"));
                 if ("comment".equals(state.optString("kind"))) { bootstrap.accept(state); return; }
             }
             if (!state.optBoolean("auto")) { running = false; return; }
@@ -121,6 +128,10 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             }
             Activity foreground = activity.get();
             if (foreground == null) { stage = "waiting_foreground"; lastProgress = SystemClock.elapsedRealtime(); return; }
+            if (startReminderPending && "comment".equals(state.optString("kind"))) {
+                showCaptureReminder(foreground, false, state.optString("photoId"));
+                startReminderPending = false;
+            }
             if (CollectorPanel.showing()) {
                 stage = "database_open";
                 if ("comment".equals(state.optString("kind"))) {
@@ -150,6 +161,10 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 boolean onTarget = TargetPostGate.onTarget(postForeground(foreground), state.optString("photoId"), lastPhoto.get());
                 decisionOnTarget = onTarget; decisionListShown = false;
                 if (!onTarget) {
+                    if (!awayReminderShown) {
+                        showCaptureReminder(foreground, true, state.optString("photoId"));
+                        awayReminderShown = true;
+                    }
                     target.newVisit();
                     // The user is elsewhere (feed, another post, a pendant page). Wait; never pump, pause or count this time.
                     stage = target.exhausted() ? "waiting_target_post_manual" : "waiting_target_post";
@@ -161,6 +176,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                     }
                     return;
                 }
+                awayReminderShown = false;
                 // Once Kuaishou has created its native pager, it can load the next
                 // page while the drawer is closed. Keep the old UI path for tasks
                 // that have no bound native pager or explicitly selected UI mode.
@@ -338,6 +354,42 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
         Activity currentActivity = activity.get();
         return currentActivity != null && currentActivity.hasWindowFocus() ? currentActivity.getWindow().getDecorView() : null;
     }
+    private void showCaptureReminder(Activity foreground, boolean away, String photo) {
+        if (foreground == null || foreground.isFinishing() || android.os.Build.VERSION.SDK_INT >= 17 && foreground.isDestroyed()) return;
+        AlertDialog current = reminder.get();
+        if (current != null && current.isShowing()) return;
+        String message = away
+            ? "当前已离开任务目标作品，采集已暂停。请返回目标作品后继续。评论区可以关闭，但不要滑到其他作品或离开快手。"
+            : "采集期间请保持任务目标作品在前台。评论区可以关闭，采集面板也可以打开；滑到其他作品、离开快手或锁屏会暂停任务。";
+        AlertDialog.Builder builder = new AlertDialog.Builder(foreground, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("快手采集提示")
+            .setMessage(message);
+        if (away) {
+            builder.setNegativeButton("稍后处理", null)
+                .setPositiveButton("返回目标作品", (dialog, which) -> {
+                    try { launch(foreground, "kwai://work/" + Uri.encode(photo)); }
+                    catch (Throwable error) { Log.w("CommentCollector", "target_post_reminder_launch_failed"); }
+                });
+        } else {
+            builder.setPositiveButton("知道了", null);
+        }
+        try {
+            AlertDialog value = builder.create();
+            value.setOnDismissListener(dialog -> {
+                AlertDialog shown = reminder.get();
+                if (shown == dialog) reminder.clear();
+            });
+            reminder = new WeakReference<>(value);
+            value.show();
+        } catch (Throwable error) { Log.w("CommentCollector", "target_post_reminder_unavailable"); }
+    }
+
+    private void dismissReminder() {
+        AlertDialog current = reminder.get();
+        if (current != null) try { current.dismiss(); } catch (Throwable ignored) {}
+        reminder.clear();
+    }
+
     private void launch(Activity activity, String uri) { activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(uri)).setPackage("com.smile.gifmaker")); }
     private void profiles(JSONObject task, Activity activity) throws Exception {
         closeProfileActivity(activity);
