@@ -31,6 +31,13 @@ final class DouyinNativePager {
 
     private static volatile Object profileProxy;
     private static volatile Method profileMethod;
+    /**
+     * Retrofit's generated proxy is shared by all profile workers.  Keep proxy method
+     * construction serialized (the invocation handler is app-owned and its thread
+     * safety is not part of our contract), while allowing the returned Rx observable
+     * subscriptions to run concurrently so the two native slots still overlap network IO.
+     */
+    private static final Object PROFILE_INVOKE_LOCK = new Object();
 
     static boolean ready() { return proxy != null && method != null && args != null; }
     /** A captured Douyin comment request is reusable for another work: fetch() replaces item_id. */
@@ -233,7 +240,10 @@ final class DouyinNativePager {
         Object p = profileProxy; Method m = profileMethod;
         if (p == null || m == null) return null;
         try {
-            Object obs = m.invoke(p, userId, secUserId == null ? "" : secUserId, "");
+            Object obs;
+            synchronized (PROFILE_INVOKE_LOCK) {
+                obs = m.invoke(p, userId, secUserId == null ? "" : secUserId, "");
+            }
             if (obs == null) return null;
             Method blockingFirst = obs.getClass().getMethod("blockingFirst");
             return blockingFirst.invoke(obs);

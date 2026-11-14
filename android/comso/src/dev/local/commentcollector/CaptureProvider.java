@@ -27,6 +27,12 @@ public final class CaptureProvider extends ContentProvider {
     public static final Uri URI = Uri.parse("content://dev.local.commentcollector.capture");
     private static volatile CaptureProvider instance;
     private SQLiteDatabase db;
+    // Reused by mergeRecord for the hot profile backfill path; keeping this set
+    // immutable avoids allocating an Arrays.asList wrapper for every incoming key.
+    private static final java.util.Set<String> PROFILE_OVERWRITE_FIELDS =
+        java.util.Collections.unmodifiableSet(new java.util.HashSet<>(Arrays.asList(
+            "gender", "age", "bio", "location", "profileIpRegion",
+            "latestPostLocation", "latestPostCity", "latestPostAt")));
 
     @Override public boolean onCreate() {
         instance = this;
@@ -409,27 +415,42 @@ public final class CaptureProvider extends ContentProvider {
             if ("profile_queue_next".equals(method)) {
                 long targetTask = input.optLong("taskId", activeId());
                 if (targetTask == 0) { out.putString("data", new JSONObject().put("empty", true).toString()); return out; }
-                long staleThreshold = System.currentTimeMillis() - 15000L;
-                db.execSQL("UPDATE profile_targets SET status='pending', attempts=attempts+1 WHERE task=? AND status='running' AND updated < ?",
-                    new Object[]{targetTask, staleThreshold});
-                db.execSQL("UPDATE profile_targets SET status='failed', issue='profile_timeout' WHERE task=? AND status='pending' AND attempts >= 3",
-                    new Object[]{targetTask});
+                long leaseMs = input.optLong("leaseMs", 15000L);
+                // Native profile calls use a longer lease because their Retrofit
+                // observable may block while establishing a cold connection.  Keep
+                // the bound finite so crashed workers are still recovered.
+                leaseMs = Math.max(15000L, Math.min(120000L, leaseMs));
+                long staleThreshold = System.currentTimeMillis() - leaseMs;
                 String user = null;
                 String secUid = "";
-                try (Cursor cursor = db.rawQuery("SELECT user, coalesce(sec_uid,'') FROM profile_targets WHERE task=? AND status='pending' ORDER BY updated ASC, user ASC LIMIT 1",
-                    new String[]{String.valueOf(targetTask)})) {
-                    if (cursor.moveToFirst()) {
-                        user = cursor.getString(0);
-                        secUid = cursor.getString(1);
+                db.beginTransaction();
+                try {
+                    // Claiming is one transaction so concurrent callers cannot select
+                    // the same pending row before either one marks it running.
+                    db.execSQL("UPDATE profile_targets SET status='pending', attempts=attempts+1 WHERE task=? AND status='running' AND updated < ?",
+                        new Object[]{targetTask, staleThreshold});
+                    db.execSQL("UPDATE profile_targets SET status='failed', issue='profile_timeout' WHERE task=? AND status='pending' AND attempts >= 3",
+                        new Object[]{targetTask});
+                    try (Cursor cursor = db.rawQuery("SELECT user, coalesce(sec_uid,'') FROM profile_targets WHERE task=? AND status='pending' ORDER BY updated ASC, user ASC LIMIT 1",
+                        new String[]{String.valueOf(targetTask)})) {
+                        if (cursor.moveToFirst()) {
+                            user = cursor.getString(0);
+                            secUid = cursor.getString(1);
+                        }
                     }
+                    if (user != null && !user.isEmpty()) {
+                        db.execSQL("UPDATE profile_targets SET status='running', updated=? WHERE task=? AND user=?",
+                            new Object[]{System.currentTimeMillis(), targetTask, user});
+                    }
+                    db.setTransactionSuccessful();
+                } finally {
+                    db.endTransaction();
                 }
                 if (user == null || user.isEmpty()) {
                     finishProfiles(targetTask);
                     out.putString("data", new JSONObject().put("empty", true).toString());
                     return out;
                 }
-                db.execSQL("UPDATE profile_targets SET status='running', updated=? WHERE task=? AND user=?",
-                    new Object[]{System.currentTimeMillis(), targetTask, user});
                 JSONObject res = new JSONObject().put("empty", false).put("userId", user).put("secUid", secUid).put("taskId", targetTask);
                 out.putString("data", res.toString());
                 return out;
@@ -942,7 +963,7 @@ public final class CaptureProvider extends ContentProvider {
         JSONObject merged = previous.isEmpty() ? new JSONObject() : new JSONObject(previous);
         java.util.Iterator<String> keys = incoming.keys();
         while (keys.hasNext()) { String key = keys.next(); Object value = incoming.opt(key);
-            if (incoming.has("profileCapturedAt") && Arrays.asList("gender", "age", "bio", "location", "profileIpRegion", "latestPostLocation", "latestPostCity", "latestPostAt").contains(key)) { merged.put(key, value); continue; }
+            if (incoming.has("profileCapturedAt") && PROFILE_OVERWRITE_FIELDS.contains(key)) { merged.put(key, value); continue; }
             if ("lastCommentAt".equals(key) && merged.optLong(key) > incoming.optLong(key)) continue;
             if (value != null && value != JSONObject.NULL && !(value instanceof String && ((String) value).isEmpty())) merged.put(key, value);
         }
