@@ -1303,9 +1303,11 @@ public final class CollectorPanel {
         line.addView(text("#" + task.optLong("taskId") + " " + kindName(kind), 15, true), new LinearLayout.LayoutParams(0, -2, 1));
         boolean isStandalone = photo == null || photo.get().isEmpty();
         boolean isTargetPost = isStandalone || task.optString("photoId").isEmpty() || task.optString("photoId").equals(photo.get());
+        boolean nativeDriver = task.optString("pagingDriver").startsWith("native");
+        boolean needsTargetUi = !isTargetPost && !nativeDriver;
         boolean waitingForPage = task.optBoolean("auto") && state.startsWith("running") &&
-            (!isTargetPost || (!task.optString("pagingDriver").startsWith("native") && (showing() || open.get() != null)));
-        TextView badge = text(!isTargetPost && state.startsWith("running") ? "需打开帖子" : waitingForPage ? "等待返回应用" : state(state), 12, true);
+            (needsTargetUi || (!nativeDriver && (showing() || open.get() != null)));
+        TextView badge = text(needsTargetUi && state.startsWith("running") ? "需打开帖子" : waitingForPage ? "等待返回应用" : state(state), 12, true);
         boolean bad = "paused".equals(state) || "stopped".equals(state) || "failed".equals(state), good = "complete".equals(state);
         badge.setTextColor(bad ? sc.onErrorContainer : good ? sc.onPrimaryContainer : sc.onSecondaryContainer); badge.setPadding(dp(10), dp(3), dp(10), dp(3));
         badge.setBackground(round(bad ? sc.errorContainer : good ? sc.primaryContainer : sc.secondaryContainer, 8)); line.addView(badge);
@@ -1347,8 +1349,10 @@ public final class CollectorPanel {
         long id = task.getLong("taskId"); String state = task.optString("status"), kind = task.optString("kind");
         boolean isStandalone = photo == null || photo.get().isEmpty();
         boolean isTargetPost = isStandalone || task.optString("photoId").isEmpty() || task.optString("photoId").equals(photo.get());
+        boolean nativeDriver = task.optString("pagingDriver").startsWith("native");
+        boolean needsTargetUi = !isTargetPost && !nativeDriver;
         boolean waitingForPage = task.optBoolean("auto") && state.startsWith("running") &&
-            (!isTargetPost || (!task.optString("pagingDriver").startsWith("native") && (showing() || open.get() != null)));
+            (needsTargetUi || (!nativeDriver && (showing() || open.get() != null)));
         long total = "profile".equals(kind) ? task.optLong("profilesTotal") : "discovery".equals(kind) ? task.getJSONObject("params").optLong("target", 20) : task.optLong("total");
         long read = "profile".equals(kind) ? task.optLong("profilesDone") : "discovery".equals(kind) ? task.optLong("discoveredPosts") : task.optLong("comments");
         if ("profile".equals(kind)) card.addView(text("成功 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位 · 失败 " + task.optInt("profilesFailed") + " 位", 13, false));
@@ -1396,7 +1400,7 @@ public final class CollectorPanel {
         LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
         List<Button> buttons = new ArrayList<>();
         if (waitingForPage) {
-            if (!isTargetPost) buttons.add(primary("打开目标帖子继续", () -> openPost(task.optString("photoId"), task.optString("platform"))));
+            if (needsTargetUi) buttons.add(primary("打开目标帖子继续", () -> openPost(task.optString("photoId"), task.optString("platform"))));
             else buttons.add(primary("返回" + hostName() + "继续", closePanel));
         }
         if ("paused".equals(state)) buttons.add(primary("继续", () -> taskAction("resume", id)));
