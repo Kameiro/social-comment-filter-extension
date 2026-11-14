@@ -357,8 +357,16 @@ public final class CollectorPanel {
         pill.setElevation(dp(activity, 4)); pill.setVisibility(View.GONE);
         int pillHeight = size; // same height as the button so the two read as one capsule
         FrameLayout.LayoutParams pillParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, pillHeight, Gravity.TOP | Gravity.START);
-        pill.setOnClickListener(view -> show(activity, currentPhoto));
-        button.setOnClickListener(view -> show(activity, currentPhoto));
+        Runnable openCollector = () -> {
+            try {
+                Log.i("CommentCollector", "collector_button_open platform_activity=" + activity.getClass().getSimpleName());
+                show(activity, currentPhoto);
+            } catch (Throwable error) {
+                Log.w("CommentCollector", "collector_button_open_failed", error);
+            }
+        };
+        pill.setOnClickListener(view -> openCollector.run());
+        button.setOnClickListener(view -> openCollector.run());
 
         // Edge docking: the button can be dragged anywhere; on release it snaps to the nearest side and slides mostly out
         // of sight. Touching (or swiping on) the exposed sliver slides it back out; it tucks away again after a moment.
@@ -437,7 +445,7 @@ public final class CollectorPanel {
                             snap.setDuration(220); snap.setInterpolator(Motion.ENTER);
                             snap.addUpdateListener(animation -> { params.leftMargin = (Integer) animation.getAnimatedValue(); button.setLayoutParams(params); place.run(); });
                             snap.start();
-                        } else if (event.getAction() == MotionEvent.ACTION_UP) button.performClick();
+                        } else if (event.getAction() == MotionEvent.ACTION_UP) openCollector.run();
                         main.removeCallbacks(tuck[0]); main.postDelayed(tuck[0], moving ? 700 : 2600);
                         return true;
                     }
