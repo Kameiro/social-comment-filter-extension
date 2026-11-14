@@ -469,13 +469,17 @@ final class DouyinComments {
         String key = task.optLong("taskId") + ":" + task.optLong("generation");
         main.post(() -> {
             if (key.equals(reminderKey)) return;
+            // Do not interrupt a cold app launch. Show the explanation after
+            // the user actually touches Douyin, when there is a real chance to
+            // follow the one-time initialization instruction.
+            if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch > 5000L) return;
             android.app.Activity host = activity.get();
             if (host == null || host.isFinishing() || host.isDestroyed()) return;
             reminderKey = key;
             try {
                 nativeReminder = new AlertDialog.Builder(host, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                    .setTitle("抖音采集提示")
-                    .setMessage("还没有捕获到抖音的原生评论请求。请手动打开任意一个作品的评论区一次；捕获后，目标任务会后台抓取，你可以继续浏览其他作品。")
+                    .setTitle("还差一步")
+                    .setMessage("请打开任意一个视频的评论区一次。准备好后你可以继续刷视频，系统会在后台采集目标视频。")
                     .setPositiveButton("知道了", null)
                     .create();
                 nativeReminder.show();
@@ -492,7 +496,7 @@ final class DouyinComments {
             if (nativeReminder != null && nativeReminder.isShowing()) nativeReminder.dismiss();
             android.app.Activity host = activity.get();
             if (host != null && !host.isFinishing() && !host.isDestroyed())
-                android.widget.Toast.makeText(host, "已捕获抖音评论请求，目标任务可后台抓取", android.widget.Toast.LENGTH_SHORT).show();
+                android.widget.Toast.makeText(host, "准备好了，可以继续正常刷视频", android.widget.Toast.LENGTH_SHORT).show();
         });
     }
 
