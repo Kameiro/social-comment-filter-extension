@@ -452,7 +452,8 @@ final class DouyinComments {
         if (host != null) {
             android.view.View root = host.getWindow().getDecorView();
             android.view.View drawer = findList(root, host.getResources().getDisplayMetrics().heightPixels, null);
-            android.view.View button = drawer == null ? findCommentButton(root) : null;
+            String visiblePost = currentPost == null ? "" : currentPost.get();
+            android.view.View button = drawer == null && photo.equals(visiblePost) ? findCommentButton(root) : null;
             if (button != null) { Log.i(TAG, "douyin_open_comments click"); button.performClick(); }
         }
         main.postDelayed(() -> openCommentDrawer(photo, attempt + 1), 1500);
