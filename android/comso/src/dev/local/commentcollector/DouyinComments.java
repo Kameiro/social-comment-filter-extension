@@ -305,6 +305,7 @@ final class DouyinComments {
     private volatile long lastReplyNote;
     private final java.util.Set<String> replySkipped = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private volatile String cacheTaskKey = "";
+    private final java.util.Set<String> commentOpenRequested = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private void resetTaskCaches(long taskId, long generation, String photo) {
         String key = taskId + ":" + generation + ":" + photo;
@@ -313,6 +314,7 @@ final class DouyinComments {
         furthest.clear();
         replySkipped.clear();
         openAttempts.clear();
+        commentOpenRequested.clear();
     }
 
     void startReplyDriver() {
@@ -419,6 +421,7 @@ final class DouyinComments {
         android.app.Activity host = activity.get();
         if (host == null || host.isFinishing()) return;                                            // never pull Douyin to the front
         String key = task.optLong("taskId") + ":" + task.optLong("generation");
+        if (commentOpenRequested.contains(key)) return;
         int[] tries = openAttempts.computeIfAbsent(key, k -> new int[1]);
         if (tries[0] >= 5) { if (tries[0]++ == 5) Log.i(TAG, "douyin_open_post_gave_up post=" + photo); return; }
         tries[0]++; lastOpenAt = System.currentTimeMillis();
@@ -432,11 +435,13 @@ final class DouyinComments {
                 if (drawer == null && photo.equals(visiblePost)) {
                     android.view.View button = findCommentButton(root);
                     if (button != null) {
+                        commentOpenRequested.add(key);
                         Log.i(TAG, "douyin_auto_click_comment_button for post=" + photo);
                         button.performClick();
                         return;
                     }
                 }
+                commentOpenRequested.add(key);
                 android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("snssdk1128://aweme/detail/" + photo));
                 intent.setPackage(host.getPackageName());
                 intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -454,9 +459,10 @@ final class DouyinComments {
             android.view.View drawer = findList(root, host.getResources().getDisplayMetrics().heightPixels, null);
             String visiblePost = currentPost == null ? "" : currentPost.get();
             android.view.View button = drawer == null && photo.equals(visiblePost) ? findCommentButton(root) : null;
-            if (button != null) { Log.i(TAG, "douyin_open_comments click"); button.performClick(); }
+            if (drawer != null) return;
+            if (button != null) { Log.i(TAG, "douyin_open_comments click"); button.performClick(); return; }
         }
-        main.postDelayed(() -> openCommentDrawer(photo, attempt + 1), 1500);
+        if (attempt < 3) main.postDelayed(() -> openCommentDrawer(photo, attempt + 1), 1500);
     }
 
     private void remindNative(JSONObject task) {
