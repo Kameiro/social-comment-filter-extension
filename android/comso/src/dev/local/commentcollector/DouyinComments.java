@@ -1,5 +1,6 @@
 package dev.local.commentcollector;
 
+import android.app.AlertDialog;
 import android.content.Context;
 import android.os.Bundle;
 import android.util.Log;
@@ -31,6 +32,7 @@ final class DouyinComments {
     private final WeakIdentityMap<String> seen = new WeakIdentityMap<>();
     private final Context context;
     private final java.util.function.Supplier<android.app.Activity> activity;
+    private final java.util.function.Supplier<String> currentPost;
     private final android.os.Handler main = new android.os.Handler(android.os.Looper.getMainLooper());
     private volatile boolean paging;
     private volatile long lastPageAt;
@@ -40,11 +42,17 @@ final class DouyinComments {
     // Furthest top-level cursor loaded per task+post, so a restart (app reloads page 1) resumes there instead of at the top.
     private final java.util.Map<String, Long> furthest = new java.util.concurrent.ConcurrentHashMap<>();
     static final boolean DEBUG_FORCE_UI = false;
+    private String reminderKey = "";
+    private String readyNoticeKey = "";
+    private AlertDialog nativeReminder;
 
 
     static volatile java.util.function.Consumer<String> onPostObserved;
 
-    DouyinComments(Context context, java.util.function.Supplier<android.app.Activity> activity) { this.context = context; this.activity = activity; }
+    DouyinComments(Context context, java.util.function.Supplier<android.app.Activity> activity,
+                   java.util.function.Supplier<String> currentPost) {
+        this.context = context; this.activity = activity; this.currentPost = currentPost;
+    }
 
     /** Keeps scrolling the open comment list while a comment task is running and more pages remain. */
     private void startPaging() {
@@ -65,8 +73,10 @@ final class DouyinComments {
         statusWorker.execute(() -> {
             boolean running = false, unknown = false;
             String taskPhoto = "";
+            JSONObject taskSnapshot = null;
             try {
                 JSONObject task = CollectorClient.call(context, "status", new JSONObject());
+                taskSnapshot = task;
                 String plat = task.optString("platform");
                 boolean platformMismatch = (!plat.isEmpty() && !"douyin".equals(plat)) || task.optString("photoId").matches("[0-9a-fA-F]{24}");
                 JSONObject params = task.optJSONObject("params");
@@ -76,6 +86,7 @@ final class DouyinComments {
             } catch (Throwable ignored) { unknown = true; }
             final boolean go = running, failed = unknown;
             final String photo = taskPhoto;
+            final JSONObject snapshot = taskSnapshot;
             main.post(() -> {
                 statusQueued.set(false);
                 if (!paging) return;
@@ -86,7 +97,16 @@ final class DouyinComments {
                 idleTicks = System.currentTimeMillis() - lastPageAt > 1500 ? idleTicks + 1 : 0;
                 if (idleTicks > 8) { stopPaging("no_new_page"); return; }
                 if (nativeMode && DouyinNativePager.ready(photo)) {
+                    announceNativeReady(snapshot);
                     stopPaging("handled_by_native_driver");
+                    return;
+                }
+                if (nativeMode) {
+                    // Wait for this task's own native request instead of scrolling
+                    // whichever comment drawer happens to be visible.
+                    remindNative(snapshot);
+                    if (snapshot != null) maybeOpenPost(snapshot, true);
+                    main.postDelayed(this::tick, 1500);
                     return;
                 }
                 scrollComments();
@@ -320,7 +340,8 @@ final class DouyinComments {
         long taskId = task.optLong("taskId"), generation = task.optLong("generation");
         JSONObject params = task.optJSONObject("params");
         resetTaskCaches(taskId, generation, photo);
-        boolean isNative = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto")) && DouyinNativePager.ready(photo);
+        boolean nativeRequested = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto"));
+        boolean isNative = nativeRequested && DouyinNativePager.ready(photo);
 
         if (isNative) {
             if ("running".equals(status)) {
@@ -358,6 +379,11 @@ final class DouyinComments {
                 return 350;
             }
         } else {
+            if (nativeRequested && status.startsWith("running")) {
+                remindNative(task);
+                maybeOpenPost(task, true);
+                return 1500;
+            }
             if (status.startsWith("running")) maybeOpenPost(task);
             if (!"running-replies".equals(status)) return 2000;
             if (!DouyinNativePager.ready(photo)) return 3000;
@@ -381,11 +407,13 @@ final class DouyinComments {
     private final java.util.Map<String, int[]> openAttempts = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile long lastOpenAt;
 
-    private void maybeOpenPost(JSONObject task) {
+    private void maybeOpenPost(JSONObject task) { maybeOpenPost(task, false); }
+
+    private void maybeOpenPost(JSONObject task, boolean nativeRequired) {
         String photo = task.optString("photoId");
         if (photo.isEmpty() || !photo.matches("\\d+")) return;
         if (DouyinNativePager.ready(photo)) return;           // already bound
-        if (System.currentTimeMillis() - lastPageAt < 20000) return;                               // pages are flowing
+        if (!nativeRequired && System.currentTimeMillis() - lastPageAt < 20000) return;             // pages are flowing
         if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch < 4000) return; // the user is busy
         if (System.currentTimeMillis() - lastOpenAt < 10000) return;
         android.app.Activity host = activity.get();
@@ -400,7 +428,8 @@ final class DouyinComments {
                 android.view.View root = host.getWindow().getDecorView();
                 // If comment drawer is not open, check if current screen has comment button (already on this video)
                 android.view.View drawer = findList(root, host.getResources().getDisplayMetrics().heightPixels, null);
-                if (drawer == null) {
+                String visiblePost = currentPost == null ? "" : currentPost.get();
+                if (drawer == null && photo.equals(visiblePost)) {
                     android.view.View button = findCommentButton(root);
                     if (button != null) {
                         Log.i(TAG, "douyin_auto_click_comment_button for post=" + photo);
@@ -427,6 +456,38 @@ final class DouyinComments {
             if (button != null) { Log.i(TAG, "douyin_open_comments click"); button.performClick(); }
         }
         main.postDelayed(() -> openCommentDrawer(photo, attempt + 1), 1500);
+    }
+
+    private void remindNative(JSONObject task) {
+        if (task == null) return;
+        String key = task.optLong("taskId") + ":" + task.optLong("generation");
+        main.post(() -> {
+            if (key.equals(reminderKey)) return;
+            android.app.Activity host = activity.get();
+            if (host == null || host.isFinishing() || host.isDestroyed()) return;
+            reminderKey = key;
+            try {
+                nativeReminder = new AlertDialog.Builder(host, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                    .setTitle("抖音采集提示")
+                    .setMessage("正在初始化目标作品的原生评论分页。系统会自动打开目标评论区；初始化完成后，你可以继续浏览其他抖音作品。")
+                    .setPositiveButton("知道了", null)
+                    .create();
+                nativeReminder.show();
+            } catch (Throwable error) { Log.w(TAG, "douyin_native_reminder_failed", error); }
+        });
+    }
+
+    private void announceNativeReady(JSONObject task) {
+        if (task == null) return;
+        String key = task.optLong("taskId") + ":" + task.optLong("generation");
+        if (key.equals(readyNoticeKey)) return;
+        readyNoticeKey = key;
+        main.post(() -> {
+            if (nativeReminder != null && nativeReminder.isShowing()) nativeReminder.dismiss();
+            android.app.Activity host = activity.get();
+            if (host != null && !host.isFinishing() && !host.isDestroyed())
+                android.widget.Toast.makeText(host, "抖音原生分页已就绪，现在可以浏览其他作品", android.widget.Toast.LENGTH_SHORT).show();
+        });
     }
 
     private static android.view.View findCommentButton(android.view.View view) {

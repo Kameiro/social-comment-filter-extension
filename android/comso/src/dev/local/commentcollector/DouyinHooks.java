@@ -118,7 +118,7 @@ final class DouyinHooks {
         DouyinComments.hook(xposed, loader, list -> {
             Context app = context;
             if (app == null) return;
-            synchronized (DouyinHooks.this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
+            synchronized (DouyinHooks.this) { if (comments == null) comments = new DouyinComments(app, () -> activity, this::resolveCurrentPostId); }
             DouyinComments target = comments;
             String fallbackPost = resolveCurrentPostId();
             target.observeAsync(list, fallbackPost);
@@ -391,7 +391,7 @@ final class DouyinHooks {
     private void attach(Application app) {
         if (context != null) return;
         context = app;
-        synchronized (this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
+        synchronized (this) { if (comments == null) comments = new DouyinComments(app, () -> activity, this::resolveCurrentPostId); }
         comments.startReplyDriver();
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
             @Override public void onActivityResumed(Activity value) {

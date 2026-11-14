@@ -140,6 +140,7 @@ APK、第三方安装包、截图、用户数据和密钥留在上级 `runtime/`
 三个平台的评论抓取驱动保持独立：快手由 `KuaishouModule → AutoPager → NativeCommentPager` 负责，抖音由 `DouyinHooks → DouyinComments → DouyinNativePager` 负责，小红书由 `XhsHooks → XhsComments → XhsNativePager` 负责。三者只通过任务状态、页面 JSON 合约和 `CaptureProvider` 落库，不共享分页游标、评论列表状态或平台原生对象。
 
 - **抖音**（已在模拟器 Vector 环境实测）：当前视频取自 `BaseListFragmentPanel.getCurrentAweme()`；发布地点优先取 POI，其次由 `Aweme.city`（6 位行政区划代码）映射到「省 市」（`ChinaCities`），最后才是 IP 属地。浏览过的视频会写入帖子库。
+- 抖音评论任务选择“自动/原生接口”时，若目标作品的原生分页器尚未绑定，模块会独立识别当前作品并自动打开目标评论区完成初始化，同时弹出提醒；原生分页就绪后可以继续浏览其他作品。明确选择“页面滚动”时仍按界面滚动采集。
 - **小红书**（9.51.0）：笔记模型为 `NoteFeed`，`F0()` 是该版本的 ID 访问器；地点优先取 POI / 用户设置的位置，否则用笔记的 IP 属地（省级）。评论响应模型为 `com.xingin.entities.q`，已接入原生列表读取和任务落库。真机已验证正文双击、作品信息、评论页原生响应、JSON 游标和折叠页；任务运行态的落库筛选仍需单独验证。若双击无反应，日志搜 `xhs_double_tap_no_note`。
 - 双击识别由 `DoubleTapDetector` 统一实现（Hook `dispatchTouchEvent`，只在视频区域内生效，避开右侧按钮栏、顶部标签和底部栏）。
 
