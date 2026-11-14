@@ -422,6 +422,7 @@ public final class KuaishouModule extends XposedModule {
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
             @Override public void onActivityResumed(Activity value) {
                 activeActivity = value;
+                DirectMessageRunner.onActivityResumed(value);
                 if (isFeedActivity(value.getClass().getName())) {
                     resetTap();
                     Log.i(TAG, "current_post_reset activity=" + value.getClass().getName());

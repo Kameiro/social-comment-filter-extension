@@ -521,7 +521,7 @@ public final class CaptureProvider extends ContentProvider {
             }
             if ("settings_get".equals(method) || "settings_save".equals(method)) {
                 String name = input.optString("name", "filters");
-                if (!name.matches("filters|analysis|ui|cloud|video_info")) throw new IllegalArgumentException("未知设置组");
+                if (!name.matches("filters|analysis|ui|cloud|video_info|messages")) throw new IllegalArgumentException("未知设置组");
                 if ("settings_save".equals(method)) db.execSQL("INSERT OR REPLACE INTO settings VALUES (?,?)", new Object[]{name, input.getJSONObject("value").toString()});
                 String value = scalar("SELECT data FROM settings WHERE name=?", name);
                 out.putString("data", value.isEmpty() ? "{}" : value); return out;

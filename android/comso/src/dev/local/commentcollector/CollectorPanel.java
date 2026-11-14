@@ -1843,6 +1843,12 @@ public final class CollectorPanel {
             Button fill = primary("补充选中 " + selectedUsers.size() + " 位用户的主页资料", () -> profileTask(new JSONArray(selectedUsers)));
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, dp(40)); params.setMargins(dp(12), 0, dp(12), dp(4));
             (dataContent != null ? dataContent : body).addView(fill, params);
+            Button message = primary("给选中用户发私信", () -> directMessageDialog(new JSONArray(selectedUsers)));
+            LinearLayout.LayoutParams messageParams = new LinearLayout.LayoutParams(-1, dp(40)); messageParams.setMargins(dp(12), 0, dp(12), dp(4));
+            (dataContent != null ? dataContent : body).addView(message, messageParams);
+            Button block = button("批量拉黑选中用户", () -> directBlockDialog(new JSONArray(selectedUsers)));
+            LinearLayout.LayoutParams blockParams = new LinearLayout.LayoutParams(-1, dp(40)); blockParams.setMargins(dp(12), 0, dp(12), dp(4));
+            (dataContent != null ? dataContent : body).addView(block, blockParams);
         }
         LinearLayout page = scrolling(); JSONArray items = data.getJSONArray("items");
         if (items.length() == 0) page.addView(empty("暂无已保存用户"));
@@ -2028,6 +2034,12 @@ public final class CollectorPanel {
     private void analysisPage() {
         LinearLayout top = vertical(); top.setPadding(dp(12), dp(2), dp(12), dp(4));
         top.addView(conditionChips(false)); body.addView(top);
+        Button message = primary("给选中用户发私信（0）", () -> directMessageDialog(new JSONArray(selectedUsers)));
+        message.setEnabled(!selectedUsers.isEmpty());
+        top.addView(message, new LinearLayout.LayoutParams(-1, dp(40)));
+        Button block = button("批量拉黑选中用户（0）", () -> directBlockDialog(new JSONArray(selectedUsers)));
+        block.setEnabled(!selectedUsers.isEmpty());
+        top.addView(block, new LinearLayout.LayoutParams(-1, dp(40)));
         LinearLayout list = scrolling(); TextView pending = muted("正在计算…", 14); list.addView(pending);
         new Thread(() -> {
             try { JSONObject data = api("analysis", new JSONObject(filters.toString())); handler.post(() -> {
@@ -2052,6 +2064,18 @@ public final class CollectorPanel {
 
                     LinearLayout line = horizontal();
                     line.setGravity(Gravity.CENTER_VERTICAL);
+
+                    CheckBox select = tint(new CheckBox(uiContext));
+                    select.setContentDescription("选择用户 " + uid);
+                    select.setChecked(selectedUsers.contains(uid));
+                    select.setOnCheckedChangeListener((view, checked) -> {
+                        if (checked) selectedUsers.add(uid); else selectedUsers.remove(uid);
+                        message.setEnabled(!selectedUsers.isEmpty());
+                        message.setText("给选中用户发私信（" + selectedUsers.size() + "）");
+                        block.setEnabled(!selectedUsers.isEmpty());
+                        block.setText("批量拉黑选中用户（" + selectedUsers.size() + "）");
+                    });
+                    line.addView(select);
 
                     TextView rank = text("#" + (i + 1), 13, true);
                     rank.setTextColor(primary);
@@ -2180,6 +2204,7 @@ public final class CollectorPanel {
         LinearLayout group = card(list); group.setPadding(0, dp(4), 0, dp(4));
         menuRow(group, android.R.drawable.ic_menu_myplaces, "登录账户", signedIn ? (config.optString("email") + " · " + syncStateText(config)) : "未登录 · 登录后与电脑端同步", this::accountSettings);
         menuRow(group, android.R.drawable.ic_menu_info_details, "视频信息设置", "双击帖子弹出的信息与下载按钮", this::videoInfoSettings);
+        menuRow(group, android.R.drawable.ic_dialog_email, "私信设置", "管理多条私信模板和发送内容", this::messageSettings);
         menuRow(group, android.R.drawable.ic_menu_preferences, "本机接口", "127.0.0.1:" + LocalApi.PORT + " · 接口密钥、导出任务", this::apiSettings);
         LinearLayout group2 = card(list); group2.setPadding(0, dp(4), 0, dp(4));
         menuRow(group2, android.R.drawable.ic_menu_recent_history, "全部任务", "查看、续跑或诊断所有任务", () -> { page = PAGE_COLLECT; allTasks = true; offset = 0; render(); });
@@ -2189,6 +2214,82 @@ public final class CollectorPanel {
         TextView about = muted((runtimeText.isEmpty() ? "" : runtimeText + "\n") + "构建 " + BuildInfo.ID, 11);
         about.setPadding(dp(8), dp(12), dp(8), 0); list.addView(about);
         Motion.stagger(list, 0);
+    }
+
+    private void messageSettings() {
+        LinearLayout content = vertical(); content.setPadding(dp(16), dp(4), dp(16), dp(8));
+        LinearLayout rows = vertical(); content.addView(rows);
+        JSONArray saved = new JSONArray();
+        try { saved = api("settings_get", new JSONObject().put("name", "messages")).optJSONArray("items"); } catch (Exception ignored) {}
+        List<EditText[]> fields = new ArrayList<>();
+        Runnable addRow = () -> {
+            LinearLayout row = vertical(); row.setPadding(0, dp(8), 0, dp(8));
+            EditText name = input("模板名称", "", false);
+            EditText body = input("私信内容，可用 {昵称}、{平台}", "", false);
+            body.setSingleLine(false); body.setMinLines(3); body.setGravity(Gravity.TOP); body.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+            Button remove = button("删除这条模板", () -> { rows.removeView(row); fields.removeIf(pair -> pair[0] == name); });
+            row.addView(name); row.addView(body); row.addView(remove, new LinearLayout.LayoutParams(-1, dp(38)));
+            rows.addView(row); fields.add(new EditText[]{name, body});
+        };
+        for (int i = 0; i < saved.length(); i++) {
+            JSONObject item = saved.optJSONObject(i); if (item == null) continue;
+            addRow.run(); EditText[] pair = fields.get(fields.size() - 1);
+            pair[0].setText(item.optString("name")); pair[1].setText(item.optString("content"));
+        }
+        if (fields.isEmpty()) addRow.run();
+        content.addView(button("新增私信模板", addRow), new LinearLayout.LayoutParams(-1, dp(42)));
+        ScrollView scroll = new ScrollView(activity); scroll.addView(content);
+        showDialog(alert().setTitle("私信设置").setView(scroll).setNegativeButton("取消", null).setPositiveButton("保存", (dialog, which) -> {
+            try {
+                JSONArray items = new JSONArray();
+                for (EditText[] pair : fields) {
+                    String name = pair[0].getText().toString().trim(), text = pair[1].getText().toString().trim();
+                    if (text.isEmpty()) continue;
+                    if (text.length() > 500) throw new IllegalArgumentException("私信内容不能超过 500 字");
+                    items.put(new JSONObject().put("id", "m" + items.length()).put("name", name.isEmpty() ? "模板 " + (items.length() + 1) : name).put("content", text));
+                }
+                api("settings_save", new JSONObject().put("name", "messages").put("value", new JSONObject().put("items", items)));
+                Toast.makeText(activity, "私信模板已保存", Toast.LENGTH_SHORT).show();
+            } catch (Exception error) { error(error); }
+        }));
+    }
+
+    private void directMessageDialog(JSONArray ids) {
+        if (ids == null || ids.length() == 0) { Toast.makeText(activity, "请先选择用户", Toast.LENGTH_SHORT).show(); return; }
+        try {
+            JSONArray items = api("settings_get", new JSONObject().put("name", "messages")).optJSONArray("items");
+            if (items == null || items.length() == 0) {
+                Toast.makeText(activity, "请先在“我的 → 私信设置”里添加模板", Toast.LENGTH_LONG).show(); return;
+            }
+            String[] labels = new String[items.length()];
+            for (int i = 0; i < items.length(); i++) labels[i] = items.optJSONObject(i).optString("name", "模板 " + (i + 1));
+            LinearLayout content = vertical(); content.setPadding(dp(16), dp(4), dp(16), dp(4));
+            content.addView(muted("将依次打开聊天并尝试发送给 " + ids.length() + " 位用户。平台可能限制频率。", 13));
+            Spinner spinner = new Spinner(uiContext); ArrayAdapter<String> adapter = new ArrayAdapter<>(uiContext, android.R.layout.simple_spinner_item, labels); adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item); spinner.setAdapter(adapter); content.addView(spinner);
+            TextView preview = text(items.optJSONObject(0).optString("content"), 14, false); preview.setPadding(dp(4), dp(10), dp(4), dp(10)); content.addView(preview);
+            spinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+                @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) { preview.setText(items.optJSONObject(position).optString("content")); }
+                @Override public void onNothingSelected(AdapterView<?> parent) {}
+            });
+            showDialog(alert().setTitle("发送私信").setView(content).setNegativeButton("取消", null).setPositiveButton("确认发送", (dialog, which) -> {
+                int pos = Math.max(0, spinner.getSelectedItemPosition());
+                String template = items.optJSONObject(pos).optString("content");
+                DirectMessageRunner.start(activity, hostPlatform(), ids, template);
+                selectedUsers.clear();
+            }));
+        } catch (Exception error) { error(error); }
+    }
+
+    private void directBlockDialog(JSONArray ids) {
+        if (ids == null || ids.length() == 0) { Toast.makeText(activity, "请先选择用户", Toast.LENGTH_SHORT).show(); return; }
+        showDialog(alert()
+            .setTitle("批量拉黑")
+            .setMessage("将依次打开这 " + ids.length() + " 位用户的主页并尝试拉黑。拉黑后可能影响你在平台上看到对方的内容，是否继续？")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确认拉黑", (dialog, which) -> {
+                DirectMessageRunner.startBlock(activity, hostPlatform(), ids);
+                selectedUsers.clear();
+            }));
     }
 
     private void menuRow(LinearLayout parent, int iconRes, String title, String subtitle, Runnable action) {

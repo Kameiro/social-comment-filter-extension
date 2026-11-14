@@ -414,6 +414,7 @@ final class XhsHooks {
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
             @Override public void onActivityResumed(Activity value) {
                 activity = value;
+                DirectMessageRunner.onActivityResumed(value);
                 if (isDetailActivity(value)) {
                     refreshDetailNote(value);
                 }

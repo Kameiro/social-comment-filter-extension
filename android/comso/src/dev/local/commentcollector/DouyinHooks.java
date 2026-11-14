@@ -396,6 +396,7 @@ final class DouyinHooks {
         app.registerActivityLifecycleCallbacks(new Application.ActivityLifecycleCallbacks() {
             @Override public void onActivityResumed(Activity value) {
                 activity = value;
+                DirectMessageRunner.onActivityResumed(value);
                 Log.i(TAG, "douyin_resumed " + value.getClass().getSimpleName() + " loader=" + (hostLoader != null));
                 if (hostLoader != null) new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start();
                 if (comments != null) comments.ensurePaging();
