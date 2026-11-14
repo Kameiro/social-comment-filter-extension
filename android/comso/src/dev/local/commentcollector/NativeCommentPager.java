@@ -92,8 +92,42 @@ final class NativeCommentPager {
 
     /** True after native paging stalled for this task and UI paging was selected as the recovery path. */
     synchronized boolean uiFallbackActive(JSONObject task) {
-        return task != null && ("ui".equals(task.optString("pagingDriver"))
-            || (uiFallbackTask == task.optLong("taskId") && uiFallbackGeneration == task.optLong("generation")));
+        if (task == null) return false;
+        JSONObject params = task.optJSONObject("params");
+        // Kuaishou starts an "auto" task with the UI driver before its native
+        // pager is created. That initial value is an intent/default, not a
+        // native-stall decision. An explicit UI task remains UI-only, while a
+        // native stall is identified by the task/generation pair we recorded.
+        if (params != null && "ui".equals(params.optString("pagingMode"))) return true;
+        return uiFallbackTask == task.optLong("taskId") && uiFallbackGeneration == task.optLong("generation");
+    }
+
+    /**
+     * True when Kuaishou's native comment pager is already attached to the current
+     * post and can be driven without keeping the comment drawer visible. The UI
+     * fallback still needs a visible RecyclerView, so AutoPager uses this as the
+     * decision point before opening the drawer.
+     */
+    synchronized boolean canPumpDetached(JSONObject task) {
+        if (context == null || task == null || !"comment".equals(task.optString("kind"))
+            || !task.optBoolean("auto") || !task.optString("status").startsWith("running")
+            || task.optBoolean("platformBlocked") || uiFallbackActive(task)) return false;
+        JSONObject params = task.optJSONObject("params");
+        if (params != null && "ui".equals(params.optString("pagingMode"))) return false;
+        String photo = task.optString("photoId");
+        if (photo.isEmpty()) return false;
+        for (int i = pagers.size() - 1; i >= 0; i--) {
+            Object candidate = pagers.get(i).get();
+            if (candidate == null) continue;
+            try {
+                Object item = SnapshotMapper.field(candidate, "b");
+                Object id = SnapshotMapper.invoke(item, "getKId", new Class<?>[0]);
+                if (id != null && photo.equals(String.valueOf(id))) return true;
+            } catch (Throwable ignored) {
+                // A stale/obfuscated pager is ignored; pump() will select UI fallback.
+            }
+        }
+        return false;
     }
 
     private boolean uiFallbackActiveForCurrentTask() {

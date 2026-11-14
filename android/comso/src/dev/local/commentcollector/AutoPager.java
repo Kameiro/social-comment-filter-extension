@@ -47,6 +47,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
     private long taskId;
     private long generation;
     private int pages = -1;
+    private int comments = -1;
     private long lastProgress;
     private String lastClick = "";
     private int actions;
@@ -104,13 +105,20 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             }
             if (!running) { actions = 0; lastProgress = SystemClock.elapsedRealtime(); running = true; }
             if (taskId != state.optLong("taskId") || generation != state.optLong("generation")) {
-                taskId = state.optLong("taskId"); pages = -1; actions = 0; lastClick = ""; repliesStarted = false;
+                taskId = state.optLong("taskId"); pages = -1; comments = -1; actions = 0; lastClick = ""; repliesStarted = false;
                 generation = state.optLong("generation"); navigationRequested = false; profileUser = ""; navigatedAt = 0;
                 target.reset(); nativePager.idle();
                 if ("comment".equals(state.optString("kind"))) { bootstrap.accept(state); return; }
             }
             if (!state.optBoolean("auto")) { running = false; return; }
-            if (pages != state.optInt("pages")) { pages = state.optInt("pages"); lastProgress = SystemClock.elapsedRealtime(); }
+            pages = state.optInt("pages");
+            // A new page snapshot can contain only duplicate root/reply rows.
+            // Progress must be based on newly stored comments, otherwise UI fallback
+            // can keep scrolling the same reply pages forever.
+            if (comments != state.optInt("comments")) {
+                comments = state.optInt("comments");
+                lastProgress = SystemClock.elapsedRealtime();
+            }
             Activity foreground = activity.get();
             if (foreground == null) { stage = "waiting_foreground"; lastProgress = SystemClock.elapsedRealtime(); return; }
             if (CollectorPanel.showing()) {
@@ -118,10 +126,11 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 if ("comment".equals(state.optString("kind"))) {
                     boolean onTarget = TargetPostGate.onTarget(postForeground(foreground), state.optString("photoId"), lastPhoto.get());
                     if (!onTarget) { stage = "waiting_target_post"; nativePager.leftTarget(state.optString("photoId")); }
-                    else if (commentListShown(foreground)) nativePager.pump(state, true);
+                    else if (commentListShown(foreground) || nativePager.canPumpDetached(state))
+                        nativePager.pump(state, postForeground(foreground));
                     else nativePager.suspend();
                 }
-                lastProgress = SystemClock.elapsedRealtime(); return;
+                return;
             }
             if (SystemClock.elapsedRealtime() - lastProgress > 60000) {
                 pause("discovery".equals(state.optString("kind")) ? "no_new_search_page" :
@@ -152,12 +161,18 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                     }
                     return;
                 }
-                // On the post: only pump while its comment list is shown, otherwise let the UI path open the comments first.
+                // Once Kuaishou has created its native pager, it can load the next
+                // page while the drawer is closed. Keep the old UI path for tasks
+                // that have no bound native pager or explicitly selected UI mode.
                 boolean shown = commentListShown(foreground);
-                decisionListShown = shown;
-                if (shown) {
+                boolean detachedNative = !shown && nativePager.canPumpDetached(state);
+                decisionListShown = shown || detachedNative;
+                if (shown || detachedNative) {
                     target.newVisit();
-                    if (nativePager.pump(state, true)) { lastProgress = SystemClock.elapsedRealtime(); return; }
+                    if (nativePager.pump(state, postForeground(foreground))) {
+                        stage = detachedNative ? "native_background_paging" : "comment_loading";
+                        lastProgress = SystemClock.elapsedRealtime(); return;
+                    }
                     try {
                         String nativeState = nativePager.diagnostics().optString("nativeState");
                         if (!nativeState.equals(lastPumpFalse)) { lastPumpFalse = nativeState; Log.i("CommentCollector", "native_pump_false nativeState=" + nativeState); }
