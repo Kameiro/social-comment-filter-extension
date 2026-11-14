@@ -102,10 +102,10 @@ final class DouyinComments {
                     return;
                 }
                 if (nativeMode) {
-                    // Wait for this task's own native request instead of scrolling
-                    // whichever comment drawer happens to be visible.
+                    // Wait for any real Douyin comment request. The native pager
+                    // can reuse that request template for this task's target ID,
+                    // so never navigate the user to the target just to bind it.
                     remindNative(snapshot);
-                    if (snapshot != null) maybeOpenPost(snapshot, true);
                     main.postDelayed(this::tick, 1500);
                     return;
                 }
@@ -383,7 +383,6 @@ final class DouyinComments {
         } else {
             if (nativeRequested && status.startsWith("running")) {
                 remindNative(task);
-                maybeOpenPost(task, true);
                 return 1500;
             }
             if (status.startsWith("running")) maybeOpenPost(task);
@@ -476,7 +475,7 @@ final class DouyinComments {
             try {
                 nativeReminder = new AlertDialog.Builder(host, android.R.style.Theme_DeviceDefault_Dialog_Alert)
                     .setTitle("抖音采集提示")
-                    .setMessage("正在初始化目标作品的原生评论分页。系统会自动打开目标评论区；初始化完成后，你可以继续浏览其他抖音作品。")
+                    .setMessage("还没有捕获到抖音的原生评论请求。请手动打开任意一个作品的评论区一次；捕获后，目标任务会后台抓取，你可以继续浏览其他作品。")
                     .setPositiveButton("知道了", null)
                     .create();
                 nativeReminder.show();
@@ -493,7 +492,7 @@ final class DouyinComments {
             if (nativeReminder != null && nativeReminder.isShowing()) nativeReminder.dismiss();
             android.app.Activity host = activity.get();
             if (host != null && !host.isFinishing() && !host.isDestroyed())
-                android.widget.Toast.makeText(host, "抖音原生分页已就绪，现在可以浏览其他作品", android.widget.Toast.LENGTH_SHORT).show();
+                android.widget.Toast.makeText(host, "已捕获抖音评论请求，目标任务可后台抓取", android.widget.Toast.LENGTH_SHORT).show();
         });
     }
 

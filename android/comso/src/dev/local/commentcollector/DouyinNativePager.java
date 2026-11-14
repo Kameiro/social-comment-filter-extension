@@ -33,9 +33,8 @@ final class DouyinNativePager {
     private static volatile Method profileMethod;
 
     static boolean ready() { return proxy != null && method != null && args != null; }
-    static boolean ready(String expectPost) {
-        return proxy != null && method != null && args != null && (expectPost == null || expectPost.isEmpty() || expectPost.equals(post()));
-    }
+    /** A captured Douyin comment request is reusable for another work: fetch() replaces item_id. */
+    static boolean ready(String expectPost) { return proxy != null && method != null && args != null; }
     static boolean profileReady() { return profileProxy != null && profileMethod != null; }
     static String post() { Object[] a = args; return a != null && a.length > 0 && a[0] != null ? String.valueOf(a[0]) : ""; }
     static String lastCapturedPost() { return lastCapturedPost == null ? "" : lastCapturedPost; }
@@ -106,10 +105,6 @@ final class DouyinNativePager {
     static Object fetch(long cursor, String expectPost) {
         Object p = proxy; Method m = method; Object[] a = args;
         if (p == null || m == null || a == null) return null;
-        if (expectPost != null && !expectPost.isEmpty() && !expectPost.equals(post())) {
-            Log.w(TAG, "douyin_native_fetch_skipped: not bound to post=" + expectPost + " current=" + post());
-            return null;
-        }
         try {
             Object[] copy = a.clone();
             if (copy.length > 0) copy[0] = expectPost;
@@ -153,7 +148,7 @@ final class DouyinNativePager {
                     for (int i = 0; i < rows.length(); i++) shown.add(rows.getJSONObject(i).optString("commentId"));
                 }
             } catch (Throwable ignored) {}
-            Log.i(TAG, "douyin_native_fetched post=" + expectPost + " cursor=" + cursor + outcome);
+            Log.i(TAG, "douyin_native_fetched target=" + expectPost + " template=" + post() + " cursor=" + cursor + outcome);
             return result;
         } catch (Throwable error) { Log.w(TAG, "douyin_native_fetch_failed", error); return null; }
     }
