@@ -125,6 +125,18 @@ final class DirectMessageRunner {
         View root = activity.getWindow() == null ? null : activity.getWindow().getDecorView();
         if (root == null) return;
         if ("block".equals(action)) { tryBlock(activity, root); return; }
+        if (!looksLikeChat(activity)) {
+            View privateButton = findPrivateButton(root);
+            if (privateButton != null && privateButton.isClickable()) {
+                privateButton.performClick();
+                MAIN.postDelayed(() -> trySend(activity), 1200);
+                return;
+            }
+            if (android.os.SystemClock.uptimeMillis() - waitingSince < 10000) {
+                MAIN.postDelayed(() -> trySend(activity), 1000); return;
+            }
+            finish("没有进入私信页面，已停止发送"); return;
+        }
         EditText input = findComposer(root, activity.getResources().getDisplayMetrics().heightPixels);
         if (input == null) {
             View privateButton = findPrivateButton(root);
@@ -227,6 +239,11 @@ final class DirectMessageRunner {
     private static String text(View view) {
         if (view instanceof android.widget.TextView) return ((android.widget.TextView) view).getText().toString();
         CharSequence desc = view.getContentDescription(); return desc == null ? "" : desc.toString();
+    }
+
+    private static boolean looksLikeChat(Activity activity) {
+        String name = activity.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+        return name.contains("chat") || name.contains("conversation") || name.contains("message") || name.contains("im.");
     }
 
     private static void flatten(View view, List<View> out) {
