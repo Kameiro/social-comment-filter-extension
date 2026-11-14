@@ -67,5 +67,8 @@ public final class NativePagerTest {
         open.newVisit();                                    // left and returned, or drawer opened
         assert !open.openExhausted() && open.tryOpenComments(131000, 0);
         System.out.println("PASS: target post gate assertions");
+        assert NativePageGate.isUiFallbackState("native_fallback_ui");
+        assert !NativePageGate.isUiFallbackState("native_eof_pending");
+        System.out.println("PASS: native stall fallback policy assertion");
     }
 }

@@ -27,6 +27,11 @@ final class DouyinProfiles {
     private final Supplier<Activity> activity;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
+    private final ExecutorService profileWorker = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "douyin-profile-driver");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final ConcurrentHashMap<String, Long> recent = new ConcurrentHashMap<>();
     private Field ipField;
     private volatile boolean ticking;
@@ -185,7 +190,7 @@ final class DouyinProfiles {
         recent.put(uid, now);
         Log.i(TAG, "douyin_profile_seen uid=" + uid + " ip=" + ip + " city=" + text(user, "cityName") + "/" + text(user, "city") + " province=" + text(user, "province") + " gender=" + text(user, "gender") + " birthday=" + text(user, "birthday"));
         final String region = ip;
-        new Thread(() -> {
+        profileWorker.execute(() -> {
             try {
                 JSONObject task = CollectorClient.call(context, "status", new JSONObject());
                 if (!task.optString("status").startsWith("running")) return;
@@ -197,7 +202,7 @@ final class DouyinProfiles {
                 // Stay on the page until the posts have loaded (or a few seconds pass) so the latest post location is captured too.
                 if (uid.equals(openedUser)) main.postDelayed(this::closeProfilePage, latest.get(uid) == null ? 7000 : 700);
             } catch (Throwable error) { Log.w(TAG, "douyin_profile_failed", error); }
-        }, "douyin-profile").start();
+        });
     }
 
     private JSONObject profile(Object user, String uid, String region) throws Exception {
@@ -276,7 +281,7 @@ final class DouyinProfiles {
     }
 
     private void tick() {
-        new Thread(() -> {
+        profileWorker.execute(() -> {
             long delay = 3000;
             try {
                 JSONObject task = CollectorClient.call(context, "status", new JSONObject());
@@ -332,7 +337,7 @@ final class DouyinProfiles {
                 }
             } catch (Throwable error) { Log.w(TAG, "douyin_profile_tick_failed", error); }
             main.postDelayed(this::tick, delay);
-        }, "douyin-profile-driver").start();
+        });
     }
 
     private void drive(long taskId, Activity host, String uid) throws Exception {

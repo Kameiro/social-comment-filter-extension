@@ -7,6 +7,7 @@ import java.lang.reflect.Method;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -14,6 +15,19 @@ import org.json.JSONObject;
 final class DouyinComments {
     private static final String TAG = "CommentCollector";
     private final ExecutorService writer = Executors.newSingleThreadExecutor();
+    // Reuse one worker for periodic status checks. Creating a platform Thread for
+    // every 0.8–1.1 second tick causes needless allocation and thread teardown.
+    private final ExecutorService statusWorker = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "douyin-auto-page-worker");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final ExecutorService captureWorker = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "douyin-comment-worker");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final AtomicBoolean statusQueued = new AtomicBoolean();
     private final WeakIdentityMap<String> seen = new WeakIdentityMap<>();
     private final Context context;
     private final java.util.function.Supplier<android.app.Activity> activity;
@@ -47,7 +61,8 @@ final class DouyinComments {
 
     private void tick() {
         if (!paging) return;
-        new Thread(() -> {
+        if (!statusQueued.compareAndSet(false, true)) return;
+        statusWorker.execute(() -> {
             boolean running = false, unknown = false;
             String taskPhoto = "";
             try {
@@ -62,6 +77,7 @@ final class DouyinComments {
             final boolean go = running, failed = unknown;
             final String photo = taskPhoto;
             main.post(() -> {
+                statusQueued.set(false);
                 if (!paging) return;
                 if (failed) { main.postDelayed(this::tick, 2000); return; } // collector briefly unreachable: keep going
                 if (!go) { stopPaging("task_not_running"); return; }
@@ -76,7 +92,12 @@ final class DouyinComments {
                 scrollComments();
                 main.postDelayed(this::tick, 1100);
             });
-        }, "douyin-auto-page").start();
+        });
+    }
+
+    /** Queues a comment response on the existing worker instead of allocating a thread per response. */
+    void observeAsync(Object list, String currentPost) {
+        captureWorker.execute(() -> observe(list, currentPost));
     }
 
     /** Scrolls the lowest tall scrollable list on screen (the comment drawer) by almost one page. */
@@ -263,6 +284,16 @@ final class DouyinComments {
     private volatile boolean replyDriver;
     private volatile long lastReplyNote;
     private final java.util.Set<String> replySkipped = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private volatile String cacheTaskKey = "";
+
+    private void resetTaskCaches(long taskId, long generation, String photo) {
+        String key = taskId + ":" + generation + ":" + photo;
+        if (key.equals(cacheTaskKey)) return;
+        cacheTaskKey = key;
+        furthest.clear();
+        replySkipped.clear();
+        openAttempts.clear();
+    }
 
     void startReplyDriver() {
         if (replyDriver) return;
@@ -288,6 +319,7 @@ final class DouyinComments {
         if (photo.isEmpty()) return 3000;
         long taskId = task.optLong("taskId"), generation = task.optLong("generation");
         JSONObject params = task.optJSONObject("params");
+        resetTaskCaches(taskId, generation, photo);
         boolean isNative = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto")) && DouyinNativePager.ready(photo);
 
         if (isNative) {

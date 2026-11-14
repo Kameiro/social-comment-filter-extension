@@ -121,7 +121,7 @@ final class DouyinHooks {
             synchronized (DouyinHooks.this) { if (comments == null) comments = new DouyinComments(app, () -> activity); }
             DouyinComments target = comments;
             String fallbackPost = resolveCurrentPostId();
-            new Thread(() -> target.observe(list, fallbackPost), "douyin-comments").start();
+            target.observeAsync(list, fallbackPost);
         });
 
         DouyinProfiles.hook(xposed, loader, user -> {

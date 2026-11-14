@@ -7,6 +7,8 @@ import android.os.Looper;
 import android.util.Log;
 import java.lang.reflect.Method;
 import java.util.Collections;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Supplier;
 import org.json.JSONObject;
 
@@ -23,6 +25,11 @@ final class KuaishouProfiles {
     private final Supplier<Context> context;
     private final Supplier<Activity> activity;
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "ks-profile-driver");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile boolean ticking;
     private static volatile Method m1FetchMethod;
     private static volatile boolean m1LookupAttempted;
@@ -43,7 +50,7 @@ final class KuaishouProfiles {
     }
 
     private void tick() {
-        new Thread(() -> {
+        worker.execute(() -> {
             long delay = 3000;
             try {
                 Context app = context.get();
@@ -94,7 +101,7 @@ final class KuaishouProfiles {
                 Log.w(TAG, "kuaishou_profile_tick_failed", error);
             }
             main.postDelayed(this::tick, delay);
-        }, "ks-profile-driver").start();
+        });
     }
 
     static Object fetchNativeProfile(ClassLoader loader, String userId) {

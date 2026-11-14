@@ -167,34 +167,60 @@ public final class CaptureProvider extends ContentProvider {
     private JSONObject status(long id) throws Exception {
         JSONObject out = new JSONObject().put("taskId", id);
         if (id == 0) return out.put("status", "idle");
-        try (Cursor cursor = db.rawQuery("SELECT photo,status,pages,total,root_eof,auto,issue FROM tasks WHERE id=?", new String[]{String.valueOf(id)})) {
+        // Read the complete task snapshot once. Status is polled frequently by
+        // the three host modules, so separate scalar queries for these columns
+        // created avoidable SQLite round trips on every poll.
+        try (Cursor cursor = db.rawQuery("SELECT photo,status,pages,total,root_eof,auto,issue,kind,params,created,generation,root_evidence,paging_driver,native_loads,ui_scrolls FROM tasks WHERE id=?", new String[]{String.valueOf(id)})) {
             if (!cursor.moveToFirst()) return out.put("status", "idle");
             out.put("photoId", cursor.getString(0)).put("status", cursor.getString(1)).put("pages", cursor.getInt(2))
                 .put("total", cursor.isNull(3) ? JSONObject.NULL : cursor.getLong(3)).put("rootComplete", cursor.getInt(4) == 1)
                 .put("auto", cursor.getInt(5) == 1).put("issue", cursor.getString(6));
+            out.put("kind", cursor.getString(7));
+            out.put("params", new JSONObject(cursor.isNull(8) ? "{}" : cursor.getString(8)));
+            out.put("createdAt", cursor.isNull(9) ? 0L : cursor.getLong(9));
+            out.put("generation", cursor.isNull(10) ? 1L : cursor.getLong(10));
+            out.put("rootEvidence", cursor.isNull(11) ? "" : cursor.getString(11));
+            out.put("pagingDriver", cursor.isNull(12) ? "" : cursor.getString(12));
+            out.put("nativeLoads", cursor.isNull(13) ? 0 : cursor.getInt(13));
+            out.put("uiScrolls", cursor.isNull(14) ? 0 : cursor.getInt(14));
         }
-        out.put("comments", count("SELECT count(*) FROM comments WHERE task=?", id));
+        // Aggregate the comment counters in one SQLite scan. These counters are
+        // requested on every status poll, so separate scalar queries created a
+        // large amount of Cursor/JNI work without changing the result.
+        try (Cursor cursor = db.rawQuery(
+                "SELECT count(*), "
+                    + "coalesce(sum(CASE WHEN root='' AND replies>0 AND NOT EXISTS "
+                    + "(SELECT 1 FROM groups_eof g WHERE g.task=comments.task AND g.root=comments.id) THEN 1 ELSE 0 END),0), "
+                    + "coalesce(sum(CASE WHEN root='' THEN 1 ELSE 0 END),0), "
+                    + "coalesce(sum(CASE WHEN root<>'' THEN 1 ELSE 0 END),0), "
+                    + "coalesce(sum(CASE WHEN root='' AND replies>0 THEN 1 ELSE 0 END),0) "
+                    + "FROM comments WHERE task=?", new String[]{String.valueOf(id)})) {
+            if (cursor.moveToFirst()) {
+                out.put("comments", cursor.getLong(0));
+                out.put("pendingReplies", cursor.getLong(1));
+                out.put("rootComments", cursor.getLong(2));
+                out.put("replyComments", cursor.getLong(3));
+                out.put("replyGroups", cursor.getLong(4));
+            }
+        }
         out.put("rootPages", count("SELECT count(*) FROM pages WHERE task=? AND substr(fingerprint,1,1)=':'", id));
         out.put("platformCountGap", out.isNull("total") ? JSONObject.NULL : Math.max(0, out.optLong("total") - out.optLong("comments")));
-        out.put("pendingReplies", count("SELECT count(*) FROM comments c WHERE c.task=? AND c.root='' AND c.replies>0 AND NOT EXISTS (SELECT 1 FROM groups_eof g WHERE g.task=c.task AND g.root=c.id)", id));
-        out.put("kind", scalar("SELECT kind FROM tasks WHERE id=?", String.valueOf(id)));
-        out.put("params", new JSONObject(scalar("SELECT params FROM tasks WHERE id=?", String.valueOf(id))));
-        out.put("createdAt", Long.parseLong(scalar("SELECT created FROM tasks WHERE id=?", String.valueOf(id))));
-        out.put("rootComments", count("SELECT count(*) FROM comments WHERE task=? AND root=''", id));
-        out.put("replyComments", count("SELECT count(*) FROM comments WHERE task=? AND root<>''", id));
-        out.put("replyGroups", count("SELECT count(*) FROM comments WHERE task=? AND root='' AND replies>0", id));
         out.put("replyGroupsComplete", count("SELECT count(*) FROM groups_eof WHERE task=?", id));
-        out.put("generation", Long.parseLong(scalar("SELECT generation FROM tasks WHERE id=?", String.valueOf(id))));
         out.put("platformBlocked", !scalar("SELECT data FROM settings WHERE name='platform_block'").isEmpty());
-        out.put("profilesTotal", count("SELECT count(*) FROM profile_targets WHERE task=?", id));
-        out.put("profilesDone", count("SELECT count(*) FROM profile_targets WHERE task=? AND status='complete'", id));
-        out.put("profilesFailed", count("SELECT count(*) FROM profile_targets WHERE task=? AND status='failed'", id));
-        out.put("profilesPending", count("SELECT count(*) FROM profile_targets WHERE task=? AND status IN ('pending','running')", id));
+        try (Cursor cursor = db.rawQuery(
+                "SELECT count(*), "
+                    + "coalesce(sum(CASE WHEN status='complete' THEN 1 ELSE 0 END),0), "
+                    + "coalesce(sum(CASE WHEN status='failed' THEN 1 ELSE 0 END),0), "
+                    + "coalesce(sum(CASE WHEN status IN ('pending','running') THEN 1 ELSE 0 END),0) "
+                    + "FROM profile_targets WHERE task=?", new String[]{String.valueOf(id)})) {
+            if (cursor.moveToFirst()) {
+                out.put("profilesTotal", cursor.getLong(0));
+                out.put("profilesDone", cursor.getLong(1));
+                out.put("profilesFailed", cursor.getLong(2));
+                out.put("profilesPending", cursor.getLong(3));
+            }
+        }
         out.put("discoveredPosts", count("SELECT count(*) FROM discovered WHERE task=?", id));
-        out.put("rootEvidence", scalar("SELECT root_evidence FROM tasks WHERE id=?", String.valueOf(id)));
-        out.put("pagingDriver", scalar("SELECT paging_driver FROM tasks WHERE id=?", String.valueOf(id)));
-        out.put("nativeLoads", Integer.parseInt(scalar("SELECT native_loads FROM tasks WHERE id=?", String.valueOf(id))));
-        out.put("uiScrolls", Integer.parseInt(scalar("SELECT ui_scrolls FROM tasks WHERE id=?", String.valueOf(id))));
         JSONObject paramsObj = out.optJSONObject("params");
         String taskPlatform = paramsObj == null ? "" : paramsObj.optString("platform");
         String postId = out.optString("photoId");

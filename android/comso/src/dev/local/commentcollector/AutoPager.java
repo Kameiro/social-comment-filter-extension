@@ -206,7 +206,8 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 navigatedAt = SystemClock.elapsedRealtime(); lastProgress = navigatedAt; return;
             }
             if (state.optString("photoId").isEmpty() || !state.optString("photoId").equals(lastPhoto.get())) return;
-            if ("native".equals(state.getJSONObject("params").optString("pagingMode")) && hasComments && state.optInt("rootPages") > 0) {
+            if ("native".equals(state.getJSONObject("params").optString("pagingMode")) && hasComments && state.optInt("rootPages") > 0
+                && !nativePager.uiFallbackActive(state)) {
                 pause("native_adapter_unavailable"); return;
             }
             if (SystemClock.elapsedRealtime() - lastProgress > 60000) { pause("no_new_comment_page"); return; }

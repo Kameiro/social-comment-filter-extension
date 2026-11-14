@@ -28,6 +28,8 @@ final class NativeCommentPager {
     private Object idleReply;
     private long idleSince;
     private long replyTask, replyGeneration;
+    private long uiFallbackTask, uiFallbackGeneration;
+    private long activeTask, activeGeneration;
     /** pump() runs on the host main thread, so collector IPC (which can block for seconds) goes here. */
     private final java.util.concurrent.ExecutorService io = java.util.concurrent.Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "ks-native-io"); thread.setDaemon(true); return thread;
@@ -75,14 +77,43 @@ final class NativeCommentPager {
             } catch (Throwable ignored) { return false; }
         });
         gate.reset(); eofGuard.reset(); busySince = 0; idleReply = null;
-        state = "native_waiting_target_post";
+        state = uiFallbackActiveForCurrentTask() ? "native_fallback_ui" : "native_waiting_target_post";
     }
     /** On the post but the comment list is not shown yet: stop the timers without discarding the pager. */
-    synchronized void suspend() { gate.reset(); eofGuard.reset(); busySince = 0; state = "native_waiting_comment_list"; }
+    synchronized void suspend() {
+        gate.reset(); eofGuard.reset(); busySince = 0;
+        state = uiFallbackActiveForCurrentTask() ? "native_fallback_ui" : "native_waiting_comment_list";
+    }
 
     /** Called when no task is running (paused/finished): drop timing state so a resume starts clean. */
     synchronized void idle() {
         gate.reset(); eofGuard.reset(); busySince = 0; idleReply = null;
+    }
+
+    /** True after native paging stalled for this task and UI paging was selected as the recovery path. */
+    synchronized boolean uiFallbackActive(JSONObject task) {
+        return task != null && ("ui".equals(task.optString("pagingDriver"))
+            || (uiFallbackTask == task.optLong("taskId") && uiFallbackGeneration == task.optLong("generation")));
+    }
+
+    private boolean uiFallbackActiveForCurrentTask() {
+        return uiFallbackTask != 0 && uiFallbackTask == activeTask && uiFallbackGeneration == activeGeneration;
+    }
+
+    private synchronized void fallbackToUi(JSONObject task) {
+        uiFallbackTask = task.optLong("taskId");
+        uiFallbackGeneration = task.optLong("generation");
+        gate.reset();
+        eofGuard.reset();
+        busySince = 0;
+        state = "native_fallback_ui";
+        Log.w("CommentCollector", "native_stall_fallback_ui task=" + uiFallbackTask + " generation=" + uiFallbackGeneration);
+        JSONObject driver = new JSONObject();
+        try {
+            driver = bound(task).put("driver", "ui").put("uiScroll", false);
+            JSONObject request = driver;
+            io.execute(() -> { try { CollectorClient.call(context, "paging_driver", request); } catch (Exception ignored) {} });
+        } catch (Exception ignored) {}
     }
 
     /** @param postForeground the resumed activity is the post detail page (not a pendant/webview/settings page on top of it) */
@@ -90,9 +121,12 @@ final class NativeCommentPager {
         if (context == null || !"14.8.40.50567".equals(version)) { state = "unsupported_native_version"; return false; }
         if (!"comment".equals(task.optString("kind")) || !task.optBoolean("auto") ||
             !task.optString("status").startsWith("running") || task.optBoolean("platformBlocked")) return false;
-        if (replyTask != task.optLong("taskId") || replyGeneration != task.optLong("generation")) {
-            replyTask = task.optLong("taskId"); replyGeneration = task.optLong("generation"); idleReply = null;
+        activeTask = task.optLong("taskId");
+        activeGeneration = task.optLong("generation");
+        if (replyTask != activeTask || replyGeneration != activeGeneration) {
+            replyTask = activeTask; replyGeneration = activeGeneration; idleReply = null;
         }
+        if (uiFallbackActive(task)) { state = "native_fallback_ui"; return false; }
         if ("ui".equals(task.getJSONObject("params").optString("pagingMode"))) { state = "ui_requested"; return false; }
         if (!postForeground) {
             // The post is covered: its pager reports "no more" and loads would go nowhere. Wait, do not pause.
@@ -105,7 +139,7 @@ final class NativeCommentPager {
             Object id = SnapshotMapper.invoke(photo, "getKId", new Class<?>[0]);
             if (id != null && task.optString("photoId").equals(String.valueOf(id))) { pager = candidate; break; }
         }
-        if (pager == null) { state = "native_pager_not_bound"; return false; }
+        if (pager == null) { fallbackToUi(task); return false; }
         if (Boolean.TRUE.equals(call(pager, "h0"))) { pause(task, "manual_login_required"); return true; }
         boolean reply = task.optBoolean("rootComplete");
         Object root = null;
@@ -114,7 +148,7 @@ final class NativeCommentPager {
         Method load;
         if (!reply) {
             Object core = SnapshotMapper.field(pager, "c1");
-            if (core == null) { state = "native_core_not_bound"; return false; }
+            if (core == null) { fallbackToUi(task); return false; }
             if (busy(task, core)) return true;
             if (task.optInt("rootPages") == 0) {
                 // Refresh through the App when its first page predates the task.
@@ -128,7 +162,11 @@ final class NativeCommentPager {
                     if (Boolean.FALSE.equals(SnapshotMapper.invoke(response, "hasMore", new Class<?>[0]))) {
                         markRootEof(task, "native_response_has_more_false"); eofGuard.reset();
                     } else if (eofGuard.persistent(SystemClock.elapsedRealtime(), task.optLong("taskId"), task.optLong("generation"), System.identityHashCode(response))) {
-                        pause(task, "native_eof_unconfirmed"); eofGuard.reset(); gate.reset();
+                        // A stuck response is not evidence of EOF. Keep root_eof=0 and
+                        // hand the same task to AutoPager's UI driver so visible pages
+                        // can continue loading instead of pausing after a small prefix.
+                        fallbackToUi(task);
+                        return false;
                     } else state = "native_eof_pending";
                     return true;
                 }
@@ -146,19 +184,21 @@ final class NativeCommentPager {
             }
             if (root == null) {
                 Object core = SnapshotMapper.field(pager, "c1");
-                if (core == null) { state = "native_core_not_bound"; return false; }
+                if (core == null) { fallbackToUi(task); return false; }
                 if (busy(task, core)) return true;
                 if (call(core, "j0") == null) {
                     receiver = core; load = core.getClass().getMethod("refresh");
                 } else if (Boolean.TRUE.equals(call(pager, "k0"))) load = pager.getClass().getMethod("k");
                 else if (expandFolded(pager)) return true;
-                else { state = "native_pending_root_unavailable"; return false; }
+                else { fallbackToUi(task); return false; }
                 stream = "restore-replies"; state = "native_restore_reply_roots";
             } else {
                 load = null;
                 for (Method method : pager.getClass().getDeclaredMethods()) if (method.getName().equals("z") && method.getParameterCount() == 3 &&
                     method.getParameterTypes()[0].getName().equals("vnb.d") && method.getParameterTypes()[1].getName().equals("vnb.q")) { load = method; break; }
-                if (load == null || !load.getParameterTypes()[0].isInstance(root) || !load.getParameterTypes()[1].isInstance(root)) { state = "native_reply_signature_mismatch"; return false; }
+                if (load == null || !load.getParameterTypes()[0].isInstance(root) || !load.getParameterTypes()[1].isInstance(root)) {
+                    fallbackToUi(task); return false;
+                }
                 state = "native_reply_load";
             }
         }

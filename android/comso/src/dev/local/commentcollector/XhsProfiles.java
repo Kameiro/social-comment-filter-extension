@@ -6,6 +6,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import java.lang.reflect.Method;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.Calendar;
 import java.util.function.Supplier;
 import org.json.JSONObject;
@@ -21,6 +23,11 @@ final class XhsProfiles {
     private final Supplier<Context> context;
     private final Supplier<Activity> activity;
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "xhs-profile-driver");
+        thread.setDaemon(true);
+        return thread;
+    });
     private volatile boolean ticking;
 
     XhsProfiles(Supplier<Context> context, Supplier<Activity> activity) {
@@ -39,7 +46,7 @@ final class XhsProfiles {
     }
 
     private void tick() {
-        new Thread(() -> {
+        worker.execute(() -> {
             long delay = 3000;
             try {
                 Context app = context.get();
@@ -88,7 +95,7 @@ final class XhsProfiles {
                 Log.w(TAG, "xhs_profile_tick_failed", error);
             }
             main.postDelayed(this::tick, delay);
-        }, "xhs-profile-driver").start();
+        });
     }
 
     private JSONObject buildProfile(Object userInfo, String uid) throws Exception {

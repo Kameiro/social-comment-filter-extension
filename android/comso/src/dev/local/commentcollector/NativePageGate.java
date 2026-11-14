@@ -2,6 +2,7 @@ package dev.local.commentcollector;
 
 final class NativePageGate {
     private static final long RESPONSE_TIMEOUT_MS = 45000;
+    static boolean isUiFallbackState(String value) { return "native_fallback_ui".equals(value); }
     enum Decision { READY, WAIT, TIMEOUT }
     private long task, generation, lastRequest = -3000;
     private String stream = "";
