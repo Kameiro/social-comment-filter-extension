@@ -36,3 +36,14 @@ git diff --check
 
 - 电脑端扩展源码更新后，需要在浏览器扩展管理页重新加载扩展；安卓端加载 `dist/helium-android-extension`，不直接加载源码目录。
 - 提交前检查 `git status --short`、`git diff --stat`，确认没有把登录凭据、验证码内容、浏览器 Cookie 或运行时用户数据加入 Git。
+
+## Git 提交追溯
+
+- AI 创建的每个 Git commit 都在提交消息末尾空一行，附上 `AI-Client` 和 `AI-Session-ID` 两个 Git trailer。直接提交、修复提交和 AI 执行的 squash 合并均适用。
+- `AI-Client` 填执行提交的实际客户端名称，例如 `Codex Desktop`、`Codex CLI` 或 `Claude Code`。`AI-Session-ID` 填执行提交的当前会话 ID，优先从该客户端提供的会话信息读取，例如 Codex 的 `CODEX_THREAD_ID`。客户端无法提供 ID 时填写 `unavailable`，并在交付时说明。只记录会话标识，提交消息不得包含登录凭据或会话正文。
+- 提交后运行 `git log -1 --format='%(trailers:only)'` 核对两项记录。
+
+```text
+AI-Client: Codex Desktop
+AI-Session-ID: <当前会话 ID>
+```
