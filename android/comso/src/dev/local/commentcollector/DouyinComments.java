@@ -1,6 +1,5 @@
 package dev.local.commentcollector;
 
-import android.app.AlertDialog;
 import android.content.Context;
 import android.os.Bundle;
 import android.util.Log;
@@ -29,6 +28,7 @@ final class DouyinComments {
         return thread;
     });
     private final AtomicBoolean statusQueued = new AtomicBoolean();
+    private final AtomicBoolean guidanceQueued = new AtomicBoolean();
     private final WeakIdentityMap<String> seen = new WeakIdentityMap<>();
     private final Context context;
     private final java.util.function.Supplier<android.app.Activity> activity;
@@ -41,10 +41,12 @@ final class DouyinComments {
     private volatile boolean nativeMode;
     // Furthest top-level cursor loaded per task+post, so a restart (app reloads page 1) resumes there instead of at the top.
     private final java.util.Map<String, Long> furthest = new java.util.concurrent.ConcurrentHashMap<>();
+    private String nativeAttemptKey = "";
+    private int nativeStalls;
+    private volatile boolean nativeRootFetching;
+    private final Object nativeRootLock = new Object();
+    private final WeakIdentityMap<Boolean> nativeRootObjects = new WeakIdentityMap<>();
     static final boolean DEBUG_FORCE_UI = false;
-    private String reminderKey = "";
-    private String readyNoticeKey = "";
-    private AlertDialog nativeReminder;
 
 
     static volatile java.util.function.Consumer<String> onPostObserved;
@@ -97,7 +99,6 @@ final class DouyinComments {
                 idleTicks = System.currentTimeMillis() - lastPageAt > 1500 ? idleTicks + 1 : 0;
                 if (idleTicks > 8) { stopPaging("no_new_page"); return; }
                 if (nativeMode && DouyinNativePager.ready(photo)) {
-                    announceNativeReady(snapshot);
                     stopPaging("handled_by_native_driver");
                     return;
                 }
@@ -105,7 +106,6 @@ final class DouyinComments {
                     // Wait for any real Douyin comment request. The native pager
                     // can reuse that request template for this task's target ID,
                     // so never navigate the user to the target just to bind it.
-                    remindNative(snapshot);
                     main.postDelayed(this::tick, 1500);
                     return;
                 }
@@ -117,6 +117,9 @@ final class DouyinComments {
 
     /** Queues a comment response on the existing worker instead of allocating a thread per response. */
     void observeAsync(Object list, String currentPost) {
+        synchronized (nativeRootLock) {
+            if (nativeRootFetching || nativeRootObjects.containsKey(list)) return;
+        }
         captureWorker.execute(() -> observe(list, currentPost));
     }
 
@@ -344,30 +347,32 @@ final class DouyinComments {
         resetTaskCaches(taskId, generation, photo);
         boolean nativeRequested = !DEBUG_FORCE_UI && params != null && !"ui".equals(params.optString("pagingMode", "auto"));
         boolean isNative = nativeRequested && DouyinNativePager.ready(photo);
+        if (nativeRequested) tryGuidedOpen(task);
 
         if (isNative) {
             if ("running".equals(status)) {
-                try {
-                    JSONObject pd = new JSONObject().put("taskId", taskId).put("driver", "native-root");
-                    CollectorClient.call(context, "paging_driver", pd);
-                } catch (Throwable ignored) {}
                 String key = taskId + ":" + generation + ":" + photo;
                 long cursor = furthest.getOrDefault(key, 0L);
-                Object result = DouyinNativePager.fetch(cursor, photo);
+                if (!key.equals(nativeAttemptKey)) { nativeAttemptKey = key; nativeStalls = 0; }
+                Object result;
+                synchronized (nativeRootLock) { nativeRootFetching = true; }
+                try { result = DouyinNativePager.fetch(cursor, photo); }
+                catch (Throwable error) { synchronized (nativeRootLock) { nativeRootFetching = false; } throw error; }
+                synchronized (nativeRootLock) { if (result != null) nativeRootObjects.put(result, true); nativeRootFetching = false; }
                 if (result != null) {
-                    observe(result, photo);
-                    Object more = ModelReader.get(result, "hasMore");
-                    boolean hasMore = Boolean.TRUE.equals(more);
-                    if (!hasMore) {
-                        JSONObject eof = new JSONObject().put("taskId", taskId).put("generation", generation)
-                            .put("stream", "root").put("evidence", "native_response_has_more_false");
-                        try { CollectorClient.call(context, "native_eof", eof); } catch (Throwable ignored) {}
-                    }
+                    observe(result, photo, taskId, generation);
                 }
-                return 400;
+                JSONObject afterFetch = CollectorClient.call(context, "status", new JSONObject());
+                if (afterFetch.optLong("taskId") != taskId || afterFetch.optLong("generation") != generation || !"running".equals(afterFetch.optString("status"))) return 3000;
+                if (furthest.getOrDefault(key, 0L) > cursor) { nativeStalls = 0; return 400; }
+                if (++nativeStalls >= 5) {
+                    CollectorClient.call(context, "pause", new JSONObject().put("taskId", taskId).put("generation", generation).put("code", "douyin_native_page_unconfirmed"));
+                    nativeStalls = 0;
+                }
+                return 3000;
             } else if ("running-replies".equals(status)) {
                 try {
-                    JSONObject pd = new JSONObject().put("taskId", taskId).put("driver", "native-replies");
+                    JSONObject pd = new JSONObject().put("taskId", taskId).put("generation", generation).put("driver", "native-replies");
                     CollectorClient.call(context, "paging_driver", pd);
                 } catch (Throwable ignored) {}
                 JSONObject listing = CollectorClient.call(context, "pending_reply_ids", new JSONObject().put("taskId", taskId).put("generation", generation));
@@ -382,9 +387,9 @@ final class DouyinComments {
             }
         } else {
             if (nativeRequested && status.startsWith("running")) {
-                remindNative(task);
-                String visiblePost = currentPost == null ? "" : currentPost.get();
-                if (photo.equals(visiblePost)) maybeOpenPost(task, true);
+                if (!"native-waiting".equals(task.optString("pagingDriver"))) {
+                    CollectorClient.call(context, "paging_driver", new JSONObject().put("taskId", taskId).put("generation", generation).put("driver", "native-waiting"));
+                }
                 return 1500;
             }
             if (status.startsWith("running")) maybeOpenPost(task);
@@ -403,6 +408,41 @@ final class DouyinComments {
             return 500;
         }
         return 3000;
+    }
+
+    private void tryGuidedOpen(JSONObject task) {
+        if (!guidanceQueued.compareAndSet(false, true)) return;
+        try {
+            JSONObject guide = CollectorClient.call(context, "settings_get", new JSONObject().put("name", "douyin_guidance"));
+            long age = android.os.SystemClock.elapsedRealtime() - guide.optLong("startedAt");
+            long id = task.optLong("taskId"), generation = task.optLong("generation");
+            String post = task.optString("photoId");
+            if (guide.optLong("taskId") != id || guide.optLong("generation") != generation || guide.optBoolean("attempted") || guide.optLong("startedAt") <= 0 || age < 0 || age > 15000) { guidanceQueued.set(false); return; }
+            main.post(() -> {
+                try {
+                    android.app.Activity host = activity.get();
+                    if (host == null || host.isFinishing() || host.isDestroyed() || !host.getClass().getName().endsWith(".detail.ui.DetailActivity") || !post.equals(currentPost.get()) || hasVisibleDrawer(host)) return;
+                    java.util.ArrayList<android.view.View> matches = new java.util.ArrayList<>();
+                    findGuidedCommentButtons(host.getWindow().getDecorView(), matches);
+                    if (matches.size() != 1) return;
+                    JSONObject latest = CollectorClient.call(context, "status", new JSONObject());
+                    JSONObject freshGuide = CollectorClient.call(context, "settings_get", new JSONObject().put("name", "douyin_guidance"));
+                    long freshAge = android.os.SystemClock.elapsedRealtime() - freshGuide.optLong("startedAt");
+                    if (latest.optLong("taskId") != id || latest.optLong("generation") != generation || !latest.optString("status").startsWith("running") || !"douyin".equals(latest.optString("platform")) || !"comment".equals(latest.optString("kind")) || !post.equals(latest.optString("photoId")) || freshGuide.optLong("taskId") != id || freshGuide.optLong("generation") != generation || freshGuide.optBoolean("attempted") || freshAge < 0 || freshAge > 15000 || activity.get() != host || !post.equals(currentPost.get()) || hasVisibleDrawer(host)) return;
+                    freshGuide.put("attempted", true);
+                    CollectorClient.call(context, "settings_save", new JSONObject().put("name", "douyin_guidance").put("value", freshGuide));
+                    if (!matches.get(0).performClick()) Log.i(TAG, "douyin_guided_click_not_handled");
+                } catch (Throwable error) { Log.w(TAG, "douyin_guided_open_failed", error); }
+                finally { guidanceQueued.set(false); }
+            });
+        } catch (Throwable error) { guidanceQueued.set(false); Log.w(TAG, "douyin_guided_check_failed", error); }
+    }
+
+    private static void findGuidedCommentButtons(android.view.View view, java.util.List<android.view.View> matches) {
+        if (view == null || !view.isShown()) return;
+        CharSequence description = view.getContentDescription();
+        if (view.isClickable() && view.isEnabled() && description != null && description.toString().matches("^评论[0-9０-９]+，按钮$")) matches.add(view);
+        if (view instanceof android.view.ViewGroup group) for (int i = 0; i < group.getChildCount(); i++) findGuidedCommentButtons(group.getChildAt(i), matches);
     }
 
 
@@ -467,42 +507,6 @@ final class DouyinComments {
         if (attempt < 3) main.postDelayed(() -> openCommentDrawer(photo, attempt + 1), 1500);
     }
 
-    private void remindNative(JSONObject task) {
-        if (task == null) return;
-        String key = task.optLong("taskId") + ":" + task.optLong("generation");
-        main.post(() -> {
-            if (key.equals(reminderKey)) return;
-            // Do not interrupt a cold app launch. Show the explanation after
-            // the user actually touches Douyin, when there is a real chance to
-            // follow the one-time initialization instruction.
-            if (android.os.SystemClock.uptimeMillis() - DoubleTapDetector.lastUserTouch > 5000L) return;
-            android.app.Activity host = activity.get();
-            if (host == null || host.isFinishing() || host.isDestroyed()) return;
-            reminderKey = key;
-            try {
-                nativeReminder = new AlertDialog.Builder(host, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-                    .setTitle("还差一步")
-                    .setMessage("请打开任意一个视频的评论区一次。准备好后你可以继续刷视频，系统会在后台采集目标视频。")
-                    .setPositiveButton("知道了", null)
-                    .create();
-                nativeReminder.show();
-            } catch (Throwable error) { Log.w(TAG, "douyin_native_reminder_failed", error); }
-        });
-    }
-
-    private void announceNativeReady(JSONObject task) {
-        if (task == null) return;
-        String key = task.optLong("taskId") + ":" + task.optLong("generation");
-        if (key.equals(readyNoticeKey)) return;
-        readyNoticeKey = key;
-        main.post(() -> {
-            if (nativeReminder != null && nativeReminder.isShowing()) nativeReminder.dismiss();
-            android.app.Activity host = activity.get();
-            if (host != null && !host.isFinishing() && !host.isDestroyed())
-                android.widget.Toast.makeText(host, "准备好了，可以继续正常刷视频", android.widget.Toast.LENGTH_SHORT).show();
-        });
-    }
-
     private static android.view.View findCommentButton(android.view.View view) {
         if (view.getVisibility() != android.view.View.VISIBLE) return null;
         CharSequence description = view.getContentDescription();
@@ -553,9 +557,23 @@ final class DouyinComments {
 
     /** Called with each loaded comment list; stores it only while a comment task for this post is running. */
     void observe(Object list, String currentPost) {
+        synchronized (nativeRootLock) { if (nativeRootFetching || nativeRootObjects.containsKey(list)) return; }
+        observe(list, currentPost, 0, 0);
+    }
+
+    private void observe(Object list, String currentPost, long expectedTask, long expectedGeneration) {
         try {
+            if (expectedTask != 0) {
+                Object items = ModelReader.get(list, "items");
+                if (!(items instanceof List<?>)) return;
+                for (Object item : (List<?>) items) {
+                    String post = ModelReader.text(item, "awemeId");
+                    if (!post.isEmpty() && !post.equals(currentPost)) { Log.w(TAG, "douyin_root_page_other_post"); return; }
+                }
+            }
             JSONObject page = page(list, currentPost);
-            if (page == null) return;
+            if (page == null) { Log.w(TAG, "douyin_page_invalid_or_empty"); return; }
+            if (expectedTask != 0 && !DouyinRootPolicy.validPage(page, currentPost)) { Log.w(TAG, "douyin_root_page_invalid"); return; }
             // Douyin hands the same page over a second time as an empty-state copy (cursor 0, total 0, hasMore false);
             // it must not count as the end of the list.
             if (page.optString("rootId").isEmpty() && Boolean.FALSE.equals(page.opt("hasMore")) && "0".equals(page.optString("cursor", "0")) && page.optLong("total") == 0) return;
@@ -567,29 +585,52 @@ final class DouyinComments {
             }
             JSONObject task = CollectorClient.call(context, "status", new JSONObject());
             if (!"comment".equals(task.optString("kind")) || !task.optString("status").startsWith("running")) { Log.i(TAG, "douyin_comment_skipped task_not_running kind=" + task.optString("kind") + " status=" + task.optString("status")); return; }
+            if (expectedTask != 0 && (expectedTask != task.optLong("taskId") || expectedGeneration != task.optLong("generation"))) return;
             if (!task.optString("photoId").isEmpty() && !task.optString("photoId").equals(page.optString("photoId"))) { Log.i(TAG, "douyin_comment_skipped other_post task=" + task.optString("photoId") + " page=" + page.optString("photoId")); return; }
             String fingerprint = page.optString("cursor") + ":" + page.getJSONArray("rows").length() + ":" + task.optLong("taskId") + ":" + task.optLong("generation");
-            synchronized (seen) { if (fingerprint.equals(seen.put(list, fingerprint))) return; }
+            synchronized (seen) { if (fingerprint.equals(seen.get(list))) return; }
             lastPageAt = System.currentTimeMillis();
-            if (page.optString("rootId").isEmpty()) {
-                try {
-                    long loaded = Long.parseLong(page.optString("cursor"));
-                    String key = task.optLong("taskId") + ":" + task.optLong("generation") + ":" + page.optString("photoId");
-                    long best = furthest.merge(key, loaded, Math::max);
-                    nextCursor = best; // resume from the furthest page ever read, not from where the app happens to be
-                } catch (NumberFormatException ignored) {}
-            }
-            if (Boolean.FALSE.equals(page.opt("hasMore"))) main.post(() -> stopPaging("eof")); else if (page.optString("rootId").isEmpty()) main.post(this::startPaging);
             Log.i(TAG, "douyin_comment_page rows=" + page.getJSONArray("rows").length() + " more=" + page.opt("hasMore"));
             long taskId = task.optLong("taskId"), generation = task.optLong("generation");
-            writer.execute(() -> {
+            java.util.concurrent.Future<?> write = writer.submit(() -> {
                 try {
                     Bundle args = new Bundle(); args.putString("page", page.toString()); args.putLong("taskId", taskId); args.putLong("generation", generation);
                     Bundle result = CollectorClient.callRaw(context, "append", args);
-                    if (result != null && result.containsKey("error")) Log.w(TAG, "douyin_page_storage_failed " + result.getString("error"));
+                    if (result == null || !result.getBoolean("appended", false) || result.containsKey("error")) { Log.w(TAG, "douyin_page_storage_failed_or_rejected"); return; }
+                    synchronized (seen) { seen.put(list, fingerprint); }
+                    if (expectedTask != 0 && page.optString("rootId").isEmpty()) {
+                        try { CollectorClient.call(context, "paging_driver", new JSONObject().put("taskId", taskId).put("generation", generation).put("driver", "native-root")); } catch (Throwable ignored) { }
+                        notifyGuidedReady(taskId, generation);
+                    }
+                    if (page.optString("rootId").isEmpty() && (expectedTask == 0 || DouyinRootPolicy.advance(true, page.opt("hasMore"), true))) {
+                        try {
+                            long loaded = Long.parseLong(page.optString("cursor"));
+                            String key = taskId + ":" + generation + ":" + page.optString("photoId");
+                            nextCursor = furthest.merge(key, loaded, Math::max);
+                        } catch (NumberFormatException ignored) {}
+                    }
+                    if (Boolean.FALSE.equals(page.opt("hasMore"))) main.post(() -> stopPaging("eof")); else if (page.optString("rootId").isEmpty()) main.post(this::startPaging);
                 } catch (Exception error) { Log.w(TAG, "douyin_storage_unavailable"); }
             });
+            if (expectedTask != 0) write.get();
         } catch (Throwable error) { Log.w(TAG, "douyin_comment_mapping_failed", error); }
+    }
+
+    private void notifyGuidedReady(long taskId, long generation) {
+        try {
+            JSONObject current = CollectorClient.call(context, "status", new JSONObject());
+            JSONObject guidance = CollectorClient.call(context, "settings_get", new JSONObject().put("name", "douyin_guidance"));
+            if (current.optLong("taskId") != taskId || current.optLong("generation") != generation || !current.optString("status").startsWith("running") || !"douyin".equals(current.optString("platform")) || guidance.optLong("taskId") != taskId || guidance.optLong("generation") != generation) return;
+            CollectorClient.call(context, "settings_save", new JSONObject().put("name", "douyin_guidance").put("value", new JSONObject()));
+            main.post(() -> {
+                try {
+                    JSONObject latest = CollectorClient.call(context, "status", new JSONObject());
+                    if (latest.optLong("taskId") != taskId || latest.optLong("generation") != generation || !latest.optString("status").startsWith("running")) return;
+                } catch (Throwable ignored) { return; }
+                android.app.Activity host = activity.get();
+                if (host != null && !host.isFinishing() && !host.isDestroyed()) android.widget.Toast.makeText(host, "后台分页已开始，可以继续浏览", android.widget.Toast.LENGTH_SHORT).show();
+            });
+        } catch (Throwable error) { Log.w(TAG, "douyin_guidance_notice_failed", error); }
     }
 
     static void hook(io.github.libxposed.api.XposedInterface xposed, ClassLoader loader, java.util.function.Consumer<Object> sink) {

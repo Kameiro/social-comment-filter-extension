@@ -9,6 +9,9 @@ const json = join(runtime, 'json.jar');
 mkdirSync(join(runtime, 'test-classes'), { recursive: true });
 if (!existsSync(json)) execFileSync('curl', ['-fL', '-o', json, 'https://repo.maven.apache.org/maven2/org/json/json/20250517/json-20250517.jar'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/javac'), ['--release', '17', '-cp', json, '-d', join(runtime, 'test-classes'),
+  join(project, 'src/dev/local/commentcollector/DouyinRootPolicy.java'), join(project, 'tests/DouyinRootPolicyTest.java'),
+  join(project, 'src/dev/local/commentcollector/CurrentTargetPolicy.java'), join(project, 'tests/CurrentTargetPolicyTest.java'),
+  join(project, 'src/dev/local/commentcollector/VisibleTitleMatch.java'), join(project, 'tests/VisibleTitleMatchTest.java'),
   join(project, 'src/dev/local/commentcollector/SnapshotMapper.java'), join(project, 'src/dev/local/commentcollector/PublicMapper.java'),
   join(project, 'src/dev/local/commentcollector/Analysis.java'),
   join(project, 'src/dev/local/commentcollector/WeakIdentityMap.java'),
@@ -18,6 +21,9 @@ execFileSync(join(java, 'bin/javac'), ['--release', '17', '-cp', json, '-d', joi
   join(project, 'tests/com/kuaishou/android/model/mix/QSubComment.java'), join(project, 'tests/j6a/a.java'),
   join(project, 'tests/MapperTest.java'), join(project, 'tests/RecoveryTest.java'), join(project, 'tests/NativePagerTest.java'), join(project, 'tests/XhsMapperTest.java'), join(project, 'tests/XhsCommentMapperTest.java'), join(project, 'tests/XhsProfileMapperTest.java'), join(project, 'tests/DouyinUserMapperTest.java'), join(project, 'tests/InitialCommentFilterTest.java'), join(project, 'tests/CollectorBackoffTest.java'), join(project, 'src/dev/local/commentcollector/MessageTemplateStore.java'), join(project, 'tests/MessageTemplateStoreTest.java')], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.MapperTest'], { stdio: 'inherit' });
+execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.DouyinRootPolicyTest'], { stdio: 'inherit' });
+execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.CurrentTargetPolicyTest'], { stdio: 'inherit' });
+execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.VisibleTitleMatchTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.RecoveryTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.NativePagerTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.XhsMapperTest'], { stdio: 'inherit' });

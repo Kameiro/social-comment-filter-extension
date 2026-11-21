@@ -542,7 +542,7 @@ public final class CaptureProvider extends ContentProvider {
             }
             if ("settings_get".equals(method) || "settings_save".equals(method)) {
                 String name = input.optString("name", "filters");
-                if (!name.matches("filters|analysis|ui|cloud|video_info|messages")) throw new IllegalArgumentException("未知设置组");
+                if (!name.matches("filters|analysis|ui|cloud|video_info|messages|douyin_guidance")) throw new IllegalArgumentException("未知设置组");
                 if ("settings_save".equals(method)) db.execSQL("INSERT OR REPLACE INTO settings VALUES (?,?)", new Object[]{name, input.getJSONObject("value").toString()});
                 String value = scalar("SELECT data FROM settings WHERE name=?", name);
                 out.putString("data", value.isEmpty() ? "{}" : value); return out;
@@ -674,9 +674,12 @@ public final class CaptureProvider extends ContentProvider {
                     out.putString("data", status(id).toString()); return out;
                 }
                 String driver = input.optString("driver");
-                if (!Arrays.asList("ui", "native-root", "native-replies").contains(driver)) throw new IllegalArgumentException("分页模式无效");
+                boolean waiting = "native-waiting".equals(driver);
+                JSONObject driverParams = current.optJSONObject("params");
+                if (waiting && (!"douyin".equals(current.optString("platform")) || !"comment".equals(current.optString("kind")) || driverParams == null || "ui".equals(driverParams.optString("pagingMode", "auto")))) throw new IllegalArgumentException("分页模式无效");
+                if (!waiting && !Arrays.asList("ui", "native-root", "native-replies").contains(driver)) throw new IllegalArgumentException("分页模式无效");
                 boolean changed = !driver.equals(current.optString("pagingDriver"));
-                db.execSQL("UPDATE tasks SET paging_driver=?,native_loads=native_loads+?,ui_scrolls=ui_scrolls+? WHERE id=?", new Object[]{driver, input.optBoolean("nativeLoad") ? 1 : 0, input.optBoolean("uiScroll") ? 1 : 0, id});
+                if (changed || input.optBoolean("nativeLoad") || input.optBoolean("uiScroll")) db.execSQL("UPDATE tasks SET paging_driver=?,native_loads=native_loads+?,ui_scrolls=ui_scrolls+? WHERE id=?", new Object[]{driver, input.optBoolean("nativeLoad") ? 1 : 0, input.optBoolean("uiScroll") ? 1 : 0, id});
                 if (changed) event(id, "paging_driver:" + driver);
                 out.putString("data", status(id).toString()); return out;
             }
@@ -799,7 +802,7 @@ public final class CaptureProvider extends ContentProvider {
                 event(id, code);
             } else if ("append".equals(method) && id != 0) {
                 JSONObject page = new JSONObject(extras.getString("page"));
-                append(id, page);
+                out.putBoolean("appended", append(id, page));
             } else if ("export".equals(method)) {
                 if (id == 0) id = latestId();
                 export(id);
@@ -821,11 +824,11 @@ public final class CaptureProvider extends ContentProvider {
     private void event(long id, String code) {
         db.execSQL("INSERT INTO events VALUES (?,?,?)", new Object[]{id, System.currentTimeMillis(), code});
     }
-    private void append(long id, JSONObject page) throws Exception {
+    private boolean append(long id, JSONObject page) throws Exception {
         JSONObject before = status(id);
-        if (!"comment".equals(before.optString("kind")) || !before.optString("status").startsWith("running")) return;
+        if (!"comment".equals(before.optString("kind")) || !before.optString("status").startsWith("running")) return false;
         String photo = page.getString("photoId");
-        if (photo.isEmpty() || (!before.optString("photoId").isEmpty() && !photo.equals(before.getString("photoId")))) return;
+        if (photo.isEmpty() || (!before.optString("photoId").isEmpty() && !photo.equals(before.getString("photoId")))) return false;
         JSONArray rows = page.getJSONArray("rows");
         String root = page.optString("rootId");
         StringBuilder fingerprint = new StringBuilder(root).append(':').append(page.optString("cursor")).append(':').append(page.opt("hasMore"));
@@ -913,6 +916,7 @@ public final class CaptureProvider extends ContentProvider {
         } finally { db.endTransaction(); }
         enforceLimits(id);
         if ("complete".equals(status(id).optString("status"))) advance();
+        return true;
     }
     /**
      * Optional stop conditions from the task's own conditions: targetCount (matching comments) and

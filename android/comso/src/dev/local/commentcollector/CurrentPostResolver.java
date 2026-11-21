@@ -114,6 +114,58 @@ final class CurrentPostResolver {
         return resolveActivity(activity, -1, -1);
     }
 
+    /** A detail-only fallback: accept a unique model whose description is actually visible. */
+    Object resolveVisibleDescription(Activity activity) {
+        Class<?> photo = photoType;
+        if (activity == null || photo == null || activity.getWindow() == null) return null;
+        List<String> visible = new ArrayList<>();
+        ArrayDeque<View> views = new ArrayDeque<>();
+        views.add(activity.getWindow().getDecorView());
+        int viewCount = 0;
+        while (!views.isEmpty() && viewCount++ < 1200) {
+            View v = views.poll();
+            if (!v.isShown() || !v.getGlobalVisibleRect(new Rect())) continue;
+            String resource = "";
+            try { resource = v.getResources().getResourceEntryName(v.getId()); } catch (Throwable ignored) {}
+            if (v instanceof android.widget.TextView && "tv_desc".equals(resource)) {
+                CharSequence text = ((android.widget.TextView) v).getText();
+                if (text != null && text.length() >= 8) visible.add(text.toString());
+            }
+            if (v instanceof android.view.ViewGroup) {
+                android.view.ViewGroup group = (android.view.ViewGroup) v;
+                for (int i = 0; i < group.getChildCount(); i++) views.add(group.getChildAt(i));
+            }
+        }
+        Set<Object> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        ArrayDeque<Object[]> queue = new ArrayDeque<>();
+        queue.add(new Object[]{activity, 0}); visited.add(activity);
+        Object match = null;
+        String matchedId = "";
+        int nodes = 0;
+        while (!queue.isEmpty() && nodes++ < MAX_NODES) {
+            Object[] item = queue.poll();
+            int level = (Integer) item[1];
+            for (Field field : fields(item[0].getClass())) {
+                Object value;
+                try { value = unwrapLazy(field.get(item[0])); } catch (Throwable ignored) { continue; }
+                if (value == null) continue;
+                if (photo.isInstance(value)) {
+                    String id = ModelReader.text(value, "aid", "aweme_id");
+                    String title = ModelReader.text(value, "desc");
+                    boolean found = false;
+                    for (String text : visible) if (VisibleTitleMatch.matches(title, text)) { found = true; break; }
+                    if (!found || id.isEmpty()) continue;
+                    if (match != null && !matchedId.equals(id)) return null;
+                    match = value; matchedId = id;
+                } else if (level + 1 < 8 && !visited.contains(value) && traversable(value)) {
+                    visited.add(value); queue.add(new Object[]{value, level + 1});
+                }
+            }
+        }
+        if (match != null) Log.i(TAG, "current_post_resolved source=visible_description");
+        return match;
+    }
+
     Object resolveActivity(Activity activity, float rawX, float rawY) {
         Class<?> photo = photoType;
         if (activity == null || photo == null) return null;

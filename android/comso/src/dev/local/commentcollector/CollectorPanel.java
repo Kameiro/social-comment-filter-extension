@@ -285,6 +285,12 @@ public final class CollectorPanel {
     private String lastTaskSnapshot = "";
     /** Structure-only fingerprint of the active task (numbers stripped): progress ticks update views in place instead of rebuilding the page. */
     private String lastTaskShape = "";
+    private LinearLayout activeSection, historySection;
+    private int renderGeneration;
+    private static long activeId(JSONObject task) {
+        String state = task.optString("status");
+        return state.startsWith("running") || "paused".equals(state) || "queued".equals(state) ? task.optLong("taskId") : 0;
+    }
     private java.util.function.Consumer<JSONObject> liveUpdate;
     private long lastAutoSyncTaskId;
     private View openSwipeRow;
@@ -830,6 +836,8 @@ public final class CollectorPanel {
     // ---------------------------------------------------------------- rendering
 
     private void render() {
+        renderGeneration++;
+        activeSection = null; historySection = null;
         for (int i = 0; i < navLabels.size(); i++) {
             boolean on = i == page;
             navLabels.get(i).setTextColor(on ? foreground : secondary);
@@ -841,13 +849,16 @@ public final class CollectorPanel {
         body.removeAllViews();
         try {
             switch (page) {
-                case PAGE_COLLECT -> collectPage();
+                case PAGE_COLLECT -> collectPage(true);
                 case PAGE_DATA -> dataPage();
                 case PAGE_ANALYSIS -> analysisPage();
                 default -> mePage();
             }
         } catch (Exception error) { failure(error); }
-        if (currentScroll != null && scrollY > 0) currentScroll.post(() -> currentScroll.scrollTo(0, scrollY));
+        ScrollView restoredScroll = currentScroll;
+        if (restoredScroll != null && scrollY > 0) restoredScroll.post(() -> {
+            if (currentScroll == restoredScroll) restoredScroll.scrollTo(0, scrollY);
+        });
     }
 
     private void failure(Exception error) {
@@ -863,7 +874,7 @@ public final class CollectorPanel {
 
     // ---- 采集
 
-    private void collectPage() throws Exception {
+    private void collectPage(boolean animate) throws Exception {
         LinearLayout list = scrolling();
         String suppliedCurrent = photo.get();
         final String current = suppliedCurrent == null ? "" : suppliedCurrent;
@@ -886,7 +897,15 @@ public final class CollectorPanel {
         }
         TextView conditionsLabel = muted("采集条件", 12); conditionsLabel.setPadding(0, dp(12), 0, dp(4)); postCard.addView(conditionsLabel);
         postCard.addView(conditionChips(true));
-        Button collect = primary("采集本帖评论", () -> collectNow(current, true));
+        Button collect = primary("采集本帖评论", () -> {
+            String visible = photo.get();
+            if (!CurrentTargetPolicy.sameTarget(current, visible)) {
+                Toast.makeText(activity, "当前作品已变化或无法识别，请重新选择", Toast.LENGTH_SHORT).show();
+                render();
+                return;
+            }
+            collectNow(visible, true);
+        });
         collect.setEnabled(!current.isEmpty()); collect.setAlpha(current.isEmpty() ? .45f : 1f); collect.setTextSize(15);
         LinearLayout.LayoutParams big = new LinearLayout.LayoutParams(-1, dp(48)); big.topMargin = dp(12);
         postCard.addView(collect, big);
@@ -896,13 +915,27 @@ public final class CollectorPanel {
         postCard.addView(more);
 
         JSONObject active = api("status", new JSONObject());
-        String state = active.optString("status");
-        if (active.optLong("taskId") > 0 && (state.startsWith("running") || "paused".equals(state) || "queued".equals(state))) {
-            sectionTitle(list, "进行中");
-            taskCard(list, active, true);
-        }
-
+        activeSection = vertical(); list.addView(activeSection);
+        historySection = vertical(); list.addView(historySection);
+        updateActive(active);
         JSONArray items = api("tasks", new JSONObject()).getJSONArray("items");
+        updateHistory(active, items);
+        lastTaskSnapshot = active.toString(); lastTaskShape = shape(active);
+        if (animate) Motion.stagger(list, 0);
+    }
+
+    private void updateActive(JSONObject active) throws Exception {
+        activeSection.removeAllViews(); liveUpdate = null;
+        if (activeId(active) > 0) {
+            sectionTitle(activeSection, "进行中");
+            taskCard(activeSection, active, true);
+        }
+    }
+
+    private void updateHistory(JSONObject active, JSONArray items) throws Exception {
+        LinearLayout list = historySection;
+        list.removeAllViews();
+        String state = active.optString("status");
         List<Long> visibleTaskIds = new ArrayList<>();
         for (int i = 0; i < items.length(); i++) {
             JSONObject task = items.getJSONObject(i);
@@ -979,7 +1012,6 @@ public final class CollectorPanel {
             taskRow(list, task); shown++;
         }
         if (shown == 0) list.addView(muted("暂无其他任务", 13));
-        Motion.stagger(list, 0);
     }
 
     /** Compact one-line task row; swipe left for refresh & delete actions, tap to expand into the full card. */
@@ -1090,7 +1122,7 @@ public final class CollectorPanel {
         String kind = task.optString("kind"), state = task.optString("status");
         TextView title = text("#" + tid + " " + kindName(kind), 14, true);
         line.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView badge = text(state(state), 12, true); badge.setPadding(dp(8), dp(2), dp(8), dp(2));
+        TextView badge = text(taskState(task), 12, true); badge.setPadding(dp(8), dp(2), dp(8), dp(2));
         badge.setTextColor("paused".equals(state) || "stopped".equals(state) ? errorColor : "complete".equals(state) ? primary : secondary);
         badge.setBackground(round(surfaceVariant, 10)); line.addView(badge);
         row.addView(line);
@@ -1205,7 +1237,7 @@ public final class CollectorPanel {
         String profSummary = "";
         int profTotal = task.optInt("profilesTotal");
         if (profTotal > 0) profSummary = " · 资料 " + task.optInt("profilesDone") + "/" + profTotal;
-        return prefix + "已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（帖子显示共 " + task.optLong("total") + " 条）") + profSummary + (issue.isEmpty() ? "" : " · " + issue(issue));
+        return prefix + "已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（" + totalSource(task) + task.optLong("total") + " 条）") + profSummary + (issue.isEmpty() ? "" : " · " + issue(issue));
     }
 
     static final class PlatformStyle {
@@ -1307,7 +1339,7 @@ public final class CollectorPanel {
         boolean needsTargetUi = !isTargetPost && !nativeDriver;
         boolean waitingForPage = task.optBoolean("auto") && state.startsWith("running") &&
             (needsTargetUi || (!nativeDriver && (showing() || open.get() != null)));
-        TextView badge = text(needsTargetUi && state.startsWith("running") ? "需打开帖子" : waitingForPage ? "等待返回应用" : state(state), 12, true);
+        TextView badge = text(needsTargetUi && state.startsWith("running") ? "需打开帖子" : waitingForPage ? "等待返回应用" : taskState(task), 12, true);
         boolean bad = "paused".equals(state) || "stopped".equals(state) || "failed".equals(state), good = "complete".equals(state);
         badge.setTextColor(bad ? sc.onErrorContainer : good ? sc.onPrimaryContainer : sc.onSecondaryContainer); badge.setPadding(dp(10), dp(3), dp(10), dp(3));
         badge.setBackground(round(bad ? sc.errorContainer : good ? sc.primaryContainer : sc.secondaryContainer, 8)); line.addView(badge);
@@ -1315,18 +1347,26 @@ public final class CollectorPanel {
         taskDetails(card, task, live);
     }
 
+    private boolean countGapAtEof(JSONObject task) {
+        return "douyin".equals(task.optString("platform")) && "comment".equals(task.optString("kind"))
+            && "complete".equals(task.optString("status")) && task.optBoolean("rootComplete")
+            && task.optLong("platformCountGap") > 0;
+    }
+    private String taskState(JSONObject task) { return "native-waiting".equals(task.optString("pagingDriver")) && task.optString("status").startsWith("running") ? "等待评论加载" : countGapAtEof(task) ? "已读到末页" : state(task.optString("status")); }
     private String readLine(JSONObject task) {
         String title = task.optString("postTitle").replace('\n', ' ').trim();
         if (title.length() > 22) title = title.substring(0, 22) + "…";
         String head = title.isEmpty() ? "帖子 ID " + task.optString("photoId") : title;
-        return head + "\n已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（帖子显示共 " + number(task, "total") + " 条）");
+        return head + "\n已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（" + totalSource(task) + number(task, "total") + " 条）");
     }
+
+    private String totalSource(JSONObject task) { return "douyin".equals(task.optString("platform")) ? "接口报告共 " : "帖子显示共 "; }
     private String repliesLine(JSONObject task) {
         return "含一级评论 " + task.optInt("rootComments") + " 条、回复 " + task.optInt("replyComments") + " 条 · "
             + (task.optBoolean("rootComplete") ? "已滑到底部" : "尚未滑到底部");
     }
     private String driverLine(JSONObject task) {
-        return "采集方式：" + (task.optString("pagingDriver").startsWith("native") ? "接口直连加载" : "自动滑动页面");
+        return "采集方式：" + ("native-waiting".equals(task.optString("pagingDriver")) ? "后台分页尚未就绪" : task.optString("pagingDriver").startsWith("native") ? "接口直连加载" : "自动滑动页面");
     }
     private static void setIfChanged(TextView view, String value) { if (!value.contentEquals(view.getText())) view.setText(value); }
     /** Task JSON with every number removed except ids, so only real state changes (status, buttons, issues) count as structural. */
@@ -1336,6 +1376,7 @@ public final class CollectorPanel {
             java.util.TreeSet<String> keys = new java.util.TreeSet<>(); for (java.util.Iterator<String> it = object.keys(); it.hasNext(); ) keys.add(it.next());
             for (String key : keys) {
                 Object child = object.opt(key);
+                if ("postTitle".equals(key) || "total".equals(key)) continue;
                 if (child instanceof Number && !key.toLowerCase(java.util.Locale.ROOT).endsWith("id")) { if (key.equals("platformCountGap")) out.append(key).append('=').append(((Number) child).longValue() > 0); continue; }
                 out.append(key).append('=').append(shape(child)).append(',');
             }
@@ -1366,13 +1407,15 @@ public final class CollectorPanel {
         if (total > 0) progress.setProgress(Math.min("complete".equals(state) ? 100 : 99, (int) (100 * read / total)));
         LinearLayout.LayoutParams barParams = new LinearLayout.LayoutParams(-1, dp(10)); barParams.setMargins(0, dp(8), 0, dp(6));
         card.addView(progress, barParams);
-        TextView repliesView = null, driverView = null;
+        TextView repliesView = null, driverView = null, profilesView = null;
         if ("comment".equals(kind)) {
             repliesView = muted(repliesLine(task), 12); card.addView(repliesView);
             driverView = muted(driverLine(task), 12); card.addView(driverView);
-            if (task.optInt("profilesTotal") > 0) {
-                card.addView(muted("资料采集：已完成 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位" + (task.optInt("profilesFailed") > 0 ? " · 失败 " + task.optInt("profilesFailed") : ""), 12));
-            }
+            if ("douyin".equals(task.optString("platform")) && "native-waiting".equals(task.optString("pagingDriver")) && state.startsWith("running")) card.addView(muted("点击按钮打开目标作品评论区，后台开始后会提醒你可以继续浏览。如未打开，请点右侧评论图标。", 12));
+            if (countGapAtEof(task)) card.addView(muted("平台显示总数与保存数量可能不同", 12));
+            profilesView = muted("", 12); card.addView(profilesView);
+            profilesView.setVisibility(task.optInt("profilesTotal") > 0 ? View.VISIBLE : View.GONE);
+            setIfChanged(profilesView, profilesLine(task));
             JSONObject params = task.optJSONObject("params");
             if (params != null) { String conditions = describe(params, true); if (!conditions.isEmpty()) card.addView(muted("筛选条件：" + conditions, 12)); }
         }
@@ -1382,7 +1425,7 @@ public final class CollectorPanel {
             card.addView(auto);
         }
         if (live) {
-            final TextView fRead = readView, fReplies = repliesView, fDriver = driverView;
+            final TextView fRead = readView, fReplies = repliesView, fDriver = driverView, fProfiles = profilesView;
             liveUpdate = fresh -> {
                 String freshKind = fresh.optString("kind"), freshState = fresh.optString("status");
                 long freshTotal = "profile".equals(freshKind) ? fresh.optLong("profilesTotal") : "discovery".equals(freshKind) ? (fresh.optJSONObject("params") == null ? 20 : fresh.optJSONObject("params").optLong("target", 20)) : fresh.optLong("total");
@@ -1390,15 +1433,28 @@ public final class CollectorPanel {
                 if ("profile".equals(freshKind)) setIfChanged(fRead, "成功 " + fresh.optInt("profilesDone") + " / " + fresh.optInt("profilesTotal") + " 位 · 失败 " + fresh.optInt("profilesFailed") + " 位");
                 else if ("discovery".equals(freshKind)) setIfChanged(fRead, (fresh.optJSONObject("params") == null ? "" : fresh.optJSONObject("params").optString("keyword")) + " · 已发现 " + fresh.optInt("discoveredPosts") + " 条");
                 else setIfChanged(fRead, readLine(fresh));
+                progress.setIndeterminate(freshTotal <= 0 && freshState.startsWith("running") && !waitingForPage);
                 if (freshTotal > 0) progress.setProgress(Math.min("complete".equals(freshState) ? 100 : 99, (int) (100 * freshRead / freshTotal)));
                 if (fReplies != null) setIfChanged(fReplies, repliesLine(fresh));
                 if (fDriver != null) setIfChanged(fDriver, driverLine(fresh));
+                if (fProfiles != null) { fProfiles.setVisibility(fresh.optInt("profilesTotal") > 0 ? View.VISIBLE : View.GONE); setIfChanged(fProfiles, profilesLine(fresh)); }
             };
         }
         String issue = task.optString("issue");
         if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); card.addView(reason); }
         LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
         List<Button> buttons = new ArrayList<>();
+        if (live && "douyin".equals(task.optString("platform")) && "comment".equals(kind) && state.startsWith("running") && "native-waiting".equals(task.optString("pagingDriver"))) {
+            buttons.add(primary("打开评论区并继续", () -> {
+                try {
+                    JSONObject current = api("status", new JSONObject());
+                    if (current.optLong("taskId") != id || current.optLong("generation") != task.optLong("generation") || !current.optString("status").startsWith("running") || !"native-waiting".equals(current.optString("pagingDriver"))) { Toast.makeText(activity, "任务状态已变化，请刷新后查看", Toast.LENGTH_SHORT).show(); return; }
+                    api("settings_save", new JSONObject().put("name", "douyin_guidance").put("value", new JSONObject().put("taskId", id).put("generation", current.optLong("generation")).put("startedAt", android.os.SystemClock.elapsedRealtime())));
+                    Toast.makeText(activity, "正在打开评论区", Toast.LENGTH_SHORT).show();
+                    launch("snssdk1128://aweme/detail/" + Uri.encode(current.optString("photoId")), false);
+                } catch (Exception error) { error(error); }
+            }));
+        }
         if (waitingForPage) {
             if (needsTargetUi) buttons.add(primary("打开目标帖子继续", () -> openPost(task.optString("photoId"), task.optString("platform"))));
             else buttons.add(primary("返回" + hostName() + "继续", closePanel));
@@ -1419,6 +1475,10 @@ public final class CollectorPanel {
         for (int i = 0; i < buttons.size(); i++) actions.addView(buttons.get(i), weighted(i == 0 ? 0 : 6));
         android.widget.HorizontalScrollView scroller = new android.widget.HorizontalScrollView(activity); scroller.setHorizontalScrollBarEnabled(false);
         scroller.addView(actions); card.addView(scroller);
+    }
+
+    private String profilesLine(JSONObject task) {
+        return "资料采集：已完成 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位" + (task.optInt("profilesFailed") > 0 ? " · 失败 " + task.optInt("profilesFailed") : "");
     }
 
     /** Opens the complete comment list captured by one task, including replies. */
@@ -2993,7 +3053,8 @@ public final class CollectorPanel {
             }
         }, 1200);
     }
-    private void launch(String url) {
+    private void launch(String url) { launch(url, true); }
+    private void launch(String url, boolean autoOpenComments) {
         try {
             if (showing()) open.get().dismiss();
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
@@ -3004,7 +3065,7 @@ public final class CollectorPanel {
             if (targetPkg != null) intent.setPackage(targetPkg);
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(intent);
-            if (url.startsWith("snssdk1128://aweme/detail/") || url.startsWith("kwai://work/")) {
+            if (autoOpenComments && (url.startsWith("snssdk1128://aweme/detail/") || url.startsWith("kwai://work/"))) {
                 handler.postDelayed(() -> clickCommentButton(activity, 0), 2000);
             }
         } catch (Exception error) {
@@ -3093,11 +3154,21 @@ public final class CollectorPanel {
                     handler.postDelayed(() -> show(activity, photo), 320);
                     return;
                 }
+                final int generation = renderGeneration;
+                final String previousSnapshot = lastTaskSnapshot;
+                final boolean collectVisible = page == PAGE_COLLECT && activeSection != null;
                 if (polling.compareAndSet(false, true)) new Thread(() -> {
                     JSONObject counts = null, task = null; boolean failed = false;
-                    try { counts = api("summary", new JSONObject().put("platform", hostPlatform())); task = api("status", new JSONObject()); }
+                    JSONArray history = null;
+                    try {
+                        counts = api("summary", new JSONObject().put("platform", hostPlatform())); task = api("status", new JSONObject());
+                        JSONObject previous = previousSnapshot.isEmpty() ? new JSONObject() : new JSONObject(previousSnapshot);
+                        long oldId = activeId(previous), newId = activeId(task);
+                        if (collectVisible && (oldId != newId || (oldId == 0 && previous.optLong("taskId") != task.optLong("taskId"))))
+                            history = api("tasks", new JSONObject()).getJSONArray("items");
+                    }
                     catch (Exception error) { failed = true; }
-                    JSONObject c = counts, t = task; boolean bad = failed;
+                    JSONObject c = counts, t = task; JSONArray h = history; boolean bad = failed;
                     handler.post(() -> {
                         polling.set(false);
                         if (activity.isFinishing() || activity.isDestroyed()) return;
@@ -3108,10 +3179,12 @@ public final class CollectorPanel {
                                 + (cloudStatusHint.isEmpty() ? "" : " · " + cloudStatusHint);
                             if (!summaryText.contentEquals(summary.getText())) summary.setText(summaryText);
                             maybeAutoSync(t);
-                            if (page == PAGE_COLLECT && !lastTaskSnapshot.equals(t.toString())) {
-                                boolean first = lastTaskSnapshot.isEmpty(); lastTaskSnapshot = t.toString();
+                            if (collectVisible && root.isAttachedToWindow() && page == PAGE_COLLECT && generation == renderGeneration && previousSnapshot.equals(lastTaskSnapshot) && !lastTaskSnapshot.equals(t.toString())) {
+                                lastTaskSnapshot = t.toString();
                                 String shaped = shape(t); boolean sameShape = shaped.equals(lastTaskShape); lastTaskShape = shaped;
-                                if (!first) { if (sameShape && liveUpdate != null) liveUpdate.accept(t); else render(); }
+                                if (sameShape) { if (liveUpdate != null) liveUpdate.accept(t); }
+                                else updateActive(t);
+                                if (h != null) updateHistory(t, h);
                             }
                         } catch (Exception error) { summary.setText("采集服务不可用 · 可在“我的”中唤醒"); }
                     });
@@ -3443,6 +3516,7 @@ public final class CollectorPanel {
             case "native_reply_unconfirmed" -> "回复分组尚未准备完成或无法确认末页，请查看诊断后继续";
             case "native_adapter_unavailable" -> "当前页面没有可用的原生分页器，请打开目标作品评论后继续";
             case "native_eof_unconfirmed" -> "页面已停止翻页，但接口尚未确认末页，请查看任务诊断";
+            case "douyin_native_page_unconfirmed" -> "暂未读到可确认的评论页，稍后点继续重试";
             case "manual_login_required" -> "等待手动登录"; case "manual_verification_required" -> "等待手动完成平台验证";
             case "manual_pause" -> "已手动暂停"; case "superseded_by_new_task" -> "已被新任务替换，可续跑";
             default -> code;

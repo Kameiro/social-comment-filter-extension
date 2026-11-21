@@ -199,9 +199,8 @@ final class DouyinHooks {
                     android.view.View decor = host.getWindow() == null ? null : host.getWindow().getDecorView();
                     android.view.View touched = CurrentPostResolver.deepestView(decor, x, y);
                     aweme = resolver.resolve(host, x, y, touched);
-                    if (aweme == null) aweme = resolver.resolveActivity(host, x, y);
                 }
-                if (aweme == null) aweme = currentAweme();
+                if (aweme == null && panel != null && isCurrentPanel(panel)) aweme = currentAweme();
                 Log.i(TAG, "douyin_double_tap aweme=" + (aweme != null));
                 return aweme != null && showPost(aweme);
             }
@@ -227,9 +226,9 @@ final class DouyinHooks {
     private boolean isCurrentPanel(Object panel) {
         if (panel == null) return false;
         Activity act = activity;
-        if (act == null) return true;
+        if (act == null) return false;
         Activity pAct = panelActivity(panel);
-        return pAct == null || pAct == act;
+        return pAct == act;
     }
 
     private static Object currentAweme() {
@@ -259,12 +258,9 @@ final class DouyinHooks {
         } catch (Throwable error) { Log.w(TAG, "douyin_post_map_failed", error); return false; }
     }
 
-    private volatile String lastPostId = "";
-
     private void onCommentPostObserved(String postId) {
         if (postId != null && !postId.isEmpty()) {
             lastCommentPostId = postId;
-            lastPostId = postId;
         }
     }
 
@@ -277,13 +273,6 @@ final class DouyinHooks {
             // authoritative current-post sources.
             Log.i(TAG, "douyin_native_post_captured non_current_cache post=" + postId);
         }
-    }
-
-    /** Updates the post supplier synchronously; persistence remains off the host UI thread. */
-    private void markCurrent(Object aweme) {
-        if (aweme == null) return;
-        String id = ModelReader.text(aweme, "aid", "aweme_id");
-        if (!id.isEmpty()) lastPostId = id;
     }
 
     private void recordOnly(Object aweme) {
@@ -300,7 +289,6 @@ final class DouyinHooks {
     }
 
     private void remember(Object aweme) {
-        markCurrent(aweme);
         recordOnly(aweme);
     }
 
@@ -312,12 +300,13 @@ final class DouyinHooks {
 
     private String resolveCurrentPostId() {
         Activity act = activity;
-        if (act != null) {
+        if (act != null && !act.isFinishing()) {
             String actName = act.getClass().getName();
             if (actName.contains("UserProfile") || actName.contains("Setting")) {
                 return "";
             }
             boolean isSearch = actName.contains("Search");
+            if (!CurrentTargetPolicy.supportsActivity(actName)) return "";
             Object aweme = null;
             // BaseListFragmentPanel#getCurrentAweme is the authoritative live item
             // for both the normal feed and FlowPageActivity. Do this before any
@@ -330,9 +319,8 @@ final class DouyinHooks {
                 android.view.View decor = act.getWindow() == null ? null : act.getWindow().getDecorView();
                 float midX = act.getResources().getDisplayMetrics().widthPixels * 0.5f;
                 float midY = act.getResources().getDisplayMetrics().heightPixels * 0.5f;
-                aweme = resolver.resolve(act, midX, midY, decor);
-                if (aweme == null) aweme = resolver.resolveActivity(act, midX, midY);
-                if (aweme == null) aweme = resolver.resolveActivity(act, -1, -1);
+                aweme = resolver.resolve(act, midX, midY, CurrentPostResolver.deepestView(decor, midX, midY));
+                if (aweme == null && actName.contains("FlowPageActivity")) aweme = resolver.resolveVisibleDescription(act);
             }
             if (aweme != null) {
                 remember(aweme);
@@ -354,7 +342,7 @@ final class DouyinHooks {
                 return "";
             }
         }
-        return lastPostId == null ? "" : lastPostId;
+        return "";
     }
 
     private void refreshCurrentPost(Activity act) {
@@ -368,9 +356,7 @@ final class DouyinHooks {
             android.view.View decor = act.getWindow() == null ? null : act.getWindow().getDecorView();
             float midX = act.getResources().getDisplayMetrics().widthPixels * 0.5f;
             float midY = act.getResources().getDisplayMetrics().heightPixels * 0.5f;
-            aweme = resolver.resolve(act, midX, midY, decor);
-            if (aweme == null) aweme = resolver.resolveActivity(act, midX, midY);
-            if (aweme == null) aweme = resolver.resolveActivity(act, -1, -1);
+            aweme = resolver.resolve(act, midX, midY, CurrentPostResolver.deepestView(decor, midX, midY));
         }
         if (aweme != null) {
             remember(aweme);
