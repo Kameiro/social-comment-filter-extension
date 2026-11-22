@@ -14,6 +14,7 @@ execFileSync(join(java, 'bin/javac'), ['--release', '17', '-cp', json, '-d', joi
   join(project, 'src/dev/local/commentcollector/KuaishouDetachedPolicy.java'), join(project, 'tests/KuaishouDetachedPolicyTest.java'),
   join(project, 'src/dev/local/commentcollector/DouyinGuidance.java'), join(project, 'tests/DouyinGuidanceTest.java'),
   join(project, 'src/dev/local/commentcollector/Platforms.java'), join(project, 'src/dev/local/commentcollector/UserLinkTarget.java'), join(project, 'tests/UserLinkTargetTest.java'),
+  join(project, 'src/dev/local/commentcollector/PostLinkTarget.java'), join(project, 'tests/PostLinkTargetTest.java'),
   join(project, 'src/dev/local/commentcollector/CurrentTargetPolicy.java'), join(project, 'tests/CurrentTargetPolicyTest.java'),
   join(project, 'src/dev/local/commentcollector/VisibleTitleMatch.java'), join(project, 'tests/VisibleTitleMatchTest.java'),
   join(project, 'src/dev/local/commentcollector/SnapshotMapper.java'), join(project, 'src/dev/local/commentcollector/PublicMapper.java'),
@@ -30,6 +31,7 @@ execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'te
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.KuaishouDetachedPolicyTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.DouyinGuidanceTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.UserLinkTargetTest'], { stdio: 'inherit' });
+execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.PostLinkTargetTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.CurrentTargetPolicyTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.VisibleTitleMatchTest'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/java'), ['-ea', '-cp', `${json}:${join(runtime, 'test-classes')}`, 'dev.local.commentcollector.RecoveryTest'], { stdio: 'inherit' });

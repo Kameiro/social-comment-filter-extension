@@ -1799,7 +1799,7 @@ public final class CollectorPanel {
             foot.addView(muted("赞 " + number(row, "likes") + " · 回复 " + number(row, "replies"), 12), new LinearLayout.LayoutParams(0, -2, 1));
             foot.addView(linkText("帖子", () -> {
                 lastClickedAnchor = finalCid;
-                openPost(finalRow.optString("photoId"));
+                openPost(finalRow.optString("photoId"), finalRow.optString("platform"));
             }));
             foot.addView(linkText("TA 的评论", () -> { userFilter = finalUid; userFilterName = finalName; offset = 0; render(); }));
             card.addView(foot);
@@ -1932,14 +1932,14 @@ public final class CollectorPanel {
             foot.addView(linkText("评论", () -> { postFilter = id; dataKind = DATA_COMMENTS; offset = 0; render(); }));
             foot.addView(linkText("打开", () -> {
                 lastClickedAnchor = id;
-                openPost(id);
+                openPost(id, row.optString("platform"));
             }));
             foot.addView(linkText("采集", () -> collectNow(id, true)));
             card.addView(foot);
             Motion.press(card);
             card.setOnClickListener(v -> {
                 lastClickedAnchor = id;
-                openPost(id);
+                openPost(id, row.optString("platform"));
             });
         }
         pageControls(data);
@@ -2137,7 +2137,7 @@ public final class CollectorPanel {
                         LinearLayout.LayoutParams blockParams = new LinearLayout.LayoutParams(-1, -2); blockParams.topMargin = dp(8);
                         TextView postTitle = text(title.isEmpty() || "null".equals(title) ? "作品 " + entry.getKey() : title, 13, true);
                         postTitle.setMaxLines(2); postTitle.setEllipsize(TextUtils.TruncateAt.END); postTitle.setTextColor(primary);
-                        postTitle.setOnClickListener(view -> { dialog.dismiss(); openPost(entry.getKey()); });
+                        postTitle.setOnClickListener(view -> { dialog.dismiss(); openPost(entry.getKey(), platform); });
                         block.addView(postTitle);
                         for (JSONObject row : entry.getValue()) {
                             TextView said = text(row.optString("text"), 14, false); said.setTextIsSelectable(true); said.setPadding(0, dp(6), 0, 0); block.addView(said);
@@ -2880,7 +2880,7 @@ public final class CollectorPanel {
                     String currentPhoto = photo.get();
                     if (currentPhoto == null) currentPhoto = "";
                     if ("comment".equals(updated.optString("kind")) && !targetPhoto.isEmpty() && !targetPhoto.equals(currentPhoto)) {
-                        openPost(targetPhoto);
+                        openPost(targetPhoto, updated.optString("platform"));
                     } else {
                         open.get().dismiss();
                     }
@@ -3055,10 +3055,8 @@ public final class CollectorPanel {
     private void openPost(String id, String platform) {
         if (id.isEmpty()) return;
         if (page == PAGE_DATA || page == PAGE_ANALYSIS) saveReturnState(lastClickedAnchor);
-        String plat = platform;
-        if (plat == null || plat.isEmpty()) {
-            plat = id.matches("[0-9a-fA-F]{24}") ? "xhs" : id.matches("\\d{19}") ? "douyin" : hostPlatform();
-        }
+        String plat = PostLinkTarget.platform(id, platform, hostPlatform());
+        if (plat.isEmpty()) plat = hostPlatform();
         String scheme = "douyin".equals(plat) ? "snssdk1128://aweme/detail/" : "xhs".equals(plat) ? "xhsdiscover://item/" : "kwai://work/";
         launch(scheme + Uri.encode(id));
     }
