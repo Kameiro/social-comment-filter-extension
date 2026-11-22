@@ -723,11 +723,11 @@ public final class KuaishouModule extends XposedModule {
                 if (sub != null && parent != null) replyContext.put(sub, new JSONObject().put("photoId", page.getString("photoId")).put("rootId", String.valueOf(parent)).put("appVersion", version)
                     .put("expectedReplies", counts.getOrDefault(String.valueOf(parent), -1)));
             }
-            lastPhoto = page.getString("photoId");
             JSONObject task = CollectorClient.call(context, "status", new JSONObject());
             long taskId = task.optLong("taskId"), generation = task.optLong("generation");
             if (!"comment".equals(task.optString("kind")) || !task.optString("status").startsWith("running") ||
-                (!task.optString("photoId").isEmpty() && !lastPhoto.equals(task.optString("photoId")))) return;
+                (!task.optString("photoId").isEmpty() && !page.getString("photoId").equals(task.optString("photoId")))) return;
+            lastPhoto = page.getString("photoId");
             org.json.JSONArray ids = new org.json.JSONArray();
             for (int i = 0; i < page.getJSONArray("rows").length(); i++) {
                 JSONObject row = new JSONObject(page.getJSONArray("rows").getJSONObject(i).toString()); row.remove("capturedAt"); ids.put(row);

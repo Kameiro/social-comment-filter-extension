@@ -28,6 +28,9 @@ public final class NativePagerTest {
         assert gate.check(107000, 2, 1, "reply", 20) == NativePageGate.Decision.READY;
         gate.requested(107000, 20);
         assert gate.check(110000, 2, 1, "reply", 21) == NativePageGate.Decision.READY;
+        gate.localCompleted();
+        assert gate.check(108000, 2, 1, "reply", 22) == NativePageGate.Decision.WAIT;
+        assert gate.check(108500, 2, 1, "reply", 22) == NativePageGate.Decision.READY;
         System.out.println("PASS: 16 native paging gate assertions");
         NativeEofGuard guard = new NativeEofGuard();
         assert !guard.persistent(1000, 7, 1, 5);

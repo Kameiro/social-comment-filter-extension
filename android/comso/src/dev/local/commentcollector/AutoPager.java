@@ -62,6 +62,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
     private final List<WeakReference<View>> windows = new ArrayList<>();
     private WeakReference<AlertDialog> reminder = new WeakReference<>(null);
     private boolean startReminderPending, awayReminderShown;
+    private long tickDelayMs = 3000L;
 
     AutoPager(Context context, Supplier<String> lastPhoto, Consumer<JSONObject> bootstrap, NativeCommentPager nativePager) {
         this.context = context; this.lastPhoto = lastPhoto; this.bootstrap = bootstrap; this.nativePager = nativePager;
@@ -99,6 +100,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             if (result == null || result.containsKey("error")) return;
             String json = result.getString("data", result.getString("json", "{}"));
             JSONObject state = new JSONObject(json);
+            tickDelayMs = "running-replies".equals(state.optString("status")) ? 1600L : 3000L;
             if (!state.optString("status").startsWith("running")) {
                 running = false; stage = state.optString("status"); nativePager.idle(); target.reset();
                 startReminderPending = false; awayReminderShown = false; dismissReminder(); return;
@@ -161,6 +163,15 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 boolean onTarget = TargetPostGate.onTarget(postForeground(foreground), state.optString("photoId"), lastPhoto.get());
                 decisionOnTarget = onTarget; decisionListShown = false;
                 if (!onTarget) {
+                    if (nativePager.canPumpDetached(state)) {
+                        decisionOnTarget = false;
+                        decisionListShown = false;
+                        stage = "native_detached_paging";
+                        if (nativePager.pump(state, false)) {
+                            lastProgress = SystemClock.elapsedRealtime();
+                            return;
+                        }
+                    }
                     if (!awayReminderShown) {
                         showCaptureReminder(foreground, true, state.optString("photoId"));
                         awayReminderShown = true;
@@ -281,7 +292,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             errorType = cause.getClass().getSimpleName(); stage = "adapter_error";
             Log.w("CommentCollector", "adapter_error:" + errorType);
             pause("adapter_error:" + errorType.toLowerCase(java.util.Locale.ROOT));
-        } finally { heartbeat(); handler.postDelayed(this::tick, 3000); }
+        } finally { heartbeat(); handler.postDelayed(this::tick, tickDelayMs); }
     }
     /** True when the resumed activity can be showing the post's comment list (not a pendant/webview page on top). */
     static boolean postForeground(Activity foreground) {

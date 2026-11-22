@@ -66,18 +66,13 @@ final class NativeCommentPager {
         while (roots.size() > 2000) roots.remove(roots.keySet().iterator().next());
     }
 
-    /** The user is not on the task's post: forget its pagers (they go stale) and all timing so nothing pauses meanwhile. */
+    /** The user is not on the task's post. Keep a bound native pager so detached paging can continue. */
     synchronized void leftTarget(String photo) {
-        pagers.removeIf(ref -> {
-            Object candidate = ref.get();
-            if (candidate == null) return true;
-            try {
-                Object id = SnapshotMapper.invoke(SnapshotMapper.field(candidate, "b"), "getKId", new Class<?>[0]);
-                return id != null && photo.equals(String.valueOf(id));
-            } catch (Throwable ignored) { return false; }
-        });
+        // The pager is the session-bound object captured from the target post. Dropping it
+        // here makes a later foreground switch require reopening the target drawer. Keep it
+        // alive and reset only request timing, while pump() verifies the task/photo pair.
         gate.reset(); eofGuard.reset(); busySince = 0; idleReply = null;
-        state = uiFallbackActiveForCurrentTask() ? "native_fallback_ui" : "native_waiting_target_post";
+        state = uiFallbackActiveForCurrentTask() ? "native_fallback_ui" : "native_detached_ready";
     }
     /** On the post but the comment list is not shown yet: stop the timers without discarding the pager. */
     synchronized void suspend() {
@@ -113,7 +108,6 @@ final class NativeCommentPager {
             || !task.optBoolean("auto") || !task.optString("status").startsWith("running")
             || task.optBoolean("platformBlocked") || uiFallbackActive(task)) return false;
         JSONObject params = task.optJSONObject("params");
-        if (params != null && "ui".equals(params.optString("pagingMode"))) return false;
         String photo = task.optString("photoId");
         if (photo.isEmpty()) return false;
         for (int i = pagers.size() - 1; i >= 0; i--) {
@@ -122,7 +116,7 @@ final class NativeCommentPager {
             try {
                 Object item = SnapshotMapper.field(candidate, "b");
                 Object id = SnapshotMapper.invoke(item, "getKId", new Class<?>[0]);
-                if (id != null && photo.equals(String.valueOf(id))) return true;
+                if (id != null && KuaishouDetachedPolicy.canDetach(task, String.valueOf(id))) return true;
             } catch (Throwable ignored) {
                 // A stale/obfuscated pager is ignored; pump() will select UI fallback.
             }
@@ -162,9 +156,11 @@ final class NativeCommentPager {
         }
         if (uiFallbackActive(task)) { state = "native_fallback_ui"; return false; }
         if ("ui".equals(task.getJSONObject("params").optString("pagingMode"))) { state = "ui_requested"; return false; }
-        if (!postForeground) {
-            // The post is covered: its pager reports "no more" and loads would go nowhere. Wait, do not pause.
-            state = "native_waiting_post_foreground"; gate.reset(); eofGuard.reset(); busySince = 0; return true;
+        boolean detached = !postForeground;
+        if (detached) {
+            // A bound pager can issue the next request without the drawer being visible.
+            // Do not use the UI fallback or navigate the user while this path is active.
+            state = "native_detached_paging";
         }
         Object pager = null;
         for (int i = pagers.size() - 1; i >= 0; i--) {
@@ -252,7 +248,7 @@ final class NativeCommentPager {
         if (decision == NativePageGate.Decision.TIMEOUT) { pause(task, "native_page_timeout"); return true; }
         if (decision == NativePageGate.Decision.WAIT) return true;
         gate.requested(now, progress);
-        JSONObject driver = bound(task).put("driver", reply ? "native-replies" : "native-root").put("nativeLoad", true);
+        JSONObject driver = bound(task).put("driver", reply ? "native-replies" : detached ? "native-detached" : "native-root").put("nativeLoad", true);
         io.execute(() -> { try { CollectorClient.call(context, "paging_driver", driver); } catch (Exception ignored) {} });
         Log.i("CommentCollector", reply ? "native_reply_load" : "native_root_load");
         if (reply && root != null) {

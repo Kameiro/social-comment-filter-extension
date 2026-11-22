@@ -285,6 +285,14 @@ public final class CollectorPanel {
     private String lastTaskSnapshot = "";
     /** Structure-only fingerprint of the active task (numbers stripped): progress ticks update views in place instead of rebuilding the page. */
     private String lastTaskShape = "";
+    // The first collector frame must never wait on a provider wake. The provider can be
+    // cold or blocked by the host's user profile, so load the initial collect snapshot off
+    // the host main thread and draw a small placeholder until it arrives.
+    private boolean initialCollectLoaded;
+    private boolean initialCollectConsumed;
+    private JSONObject initialCollectPost;
+    private JSONObject initialCollectTask;
+    private JSONArray initialCollectHistory;
     private LinearLayout activeSection, historySection;
     private int renderGeneration;
     private static long activeId(JSONObject task) {
@@ -796,8 +804,36 @@ public final class CollectorPanel {
 
         body = vertical(); root.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
         root.addView(bottomNav());
-        try { filters = api("settings_get", new JSONObject().put("name", "filters")); } catch (Exception ignored) {}
+        startInitialCollectLoad();
         render();
+    }
+
+    private void startInitialCollectLoad() {
+        if (initialCollectLoaded || page != PAGE_COLLECT) return;
+        new Thread(() -> {
+            JSONObject loadedFilters = null, post = null, task = null;
+            JSONArray history = null;
+            try { loadedFilters = api("settings_get", new JSONObject().put("name", "filters")); } catch (Exception ignored) {}
+            try {
+                String current = photo.get();
+                if (current != null && !current.isEmpty()) {
+                    JSONArray found = api("posts", new JSONObject().put("search", current).put("limit", 1)).optJSONArray("items");
+                    if (found != null && found.length() > 0) post = found.getJSONObject(0);
+                }
+            } catch (Exception ignored) {}
+            try { task = api("status", new JSONObject()); } catch (Exception ignored) {}
+            try { history = api("tasks", new JSONObject()).optJSONArray("items"); } catch (Exception ignored) {}
+            JSONObject f = loadedFilters, p = post, t = task; JSONArray h = history;
+            handler.post(() -> {
+                if (activity.isFinishing() || activity.isDestroyed()) return;
+                if (f != null) filters = f;
+                initialCollectPost = p;
+                initialCollectTask = t == null ? new JSONObject() : t;
+                initialCollectHistory = h == null ? new JSONArray() : h;
+                initialCollectLoaded = true;
+                render();
+            });
+        }, "collector-panel-initial-load").start();
     }
 
     /** M3 navigation bar: tonal surface, 64x32 pill indicator behind the active icon, medium-weight labels. */
@@ -825,6 +861,7 @@ public final class CollectorPanel {
     private void go(int target) {
         int previous = page;
         page = target; offset = 0; currentScroll = null; allTasks = false;
+        if (target == PAGE_COLLECT) startInitialCollectLoad();
         render();
         if (previous != target) {
             Motion.tabContent(body, target - previous);
@@ -847,6 +884,12 @@ public final class CollectorPanel {
         }
         int scrollY = currentScroll == null ? 0 : currentScroll.getScrollY(); currentScroll = null; liveUpdate = null;
         body.removeAllViews();
+        if (page == PAGE_COLLECT && !initialCollectLoaded) {
+            LinearLayout loading = scrolling();
+            loading.addView(muted("正在读取采集状态…", 14));
+            loading.addView(new ProgressBar(activity), new LinearLayout.LayoutParams(-1, dp(32)));
+            return;
+        }
         try {
             switch (page) {
                 case PAGE_COLLECT -> collectPage(true);
@@ -886,8 +929,11 @@ public final class CollectorPanel {
             postCard.addView(muted("在" + hostName() + "打开一个帖子的评论区，再回到这里即可一键采集；也可以批量添加帖子链接。", 12));
         } else {
             JSONObject post = null;
-            try { JSONArray found = api("posts", new JSONObject().put("search", current).put("limit", 1)).optJSONArray("items"); if (found != null && found.length() > 0) post = found.getJSONObject(0); }
-            catch (Exception ignored) {}
+            if (!initialCollectConsumed && initialCollectLoaded) post = initialCollectPost;
+            if (initialCollectConsumed || post == null) {
+                try { JSONArray found = api("posts", new JSONObject().put("search", current).put("limit", 1)).optJSONArray("items"); if (found != null && found.length() > 0) post = found.getJSONObject(0); }
+                catch (Exception ignored) {}
+            }
             String title = post == null ? "" : post.optString("title");
             TextView name = text(title.isEmpty() || "null".equals(title) ? "作品 " + current : title, 16, true);
             name.setMaxLines(2); name.setEllipsize(TextUtils.TruncateAt.END); postCard.addView(name);
@@ -914,11 +960,12 @@ public final class CollectorPanel {
         more.addView(button("发现帖子", this::discoveryDialog), weighted(8));
         postCard.addView(more);
 
-        JSONObject active = api("status", new JSONObject());
+        JSONObject active = !initialCollectConsumed && initialCollectTask != null ? initialCollectTask : api("status", new JSONObject());
         activeSection = vertical(); list.addView(activeSection);
         historySection = vertical(); list.addView(historySection);
         updateActive(active);
-        JSONArray items = api("tasks", new JSONObject()).getJSONArray("items");
+        JSONArray items = !initialCollectConsumed && initialCollectHistory != null ? initialCollectHistory : api("tasks", new JSONObject()).getJSONArray("items");
+        initialCollectConsumed = true;
         updateHistory(active, items);
         lastTaskSnapshot = active.toString(); lastTaskShape = shape(active);
         if (animate) Motion.stagger(list, 0);
@@ -1352,23 +1399,25 @@ public final class CollectorPanel {
             && "complete".equals(task.optString("status")) && task.optBoolean("rootComplete")
             && task.optLong("platformCountGap") > 0;
     }
-    private String taskState(JSONObject task) { return "native-waiting".equals(task.optString("pagingDriver")) && task.optString("status").startsWith("running") ? "等待评论加载" : countGapAtEof(task) ? "已读到末页" : state(task.optString("status")); }
+    private String taskState(JSONObject task) { return TaskProgress.state(task); }
     private String readLine(JSONObject task) {
         String title = task.optString("postTitle").replace('\n', ' ').trim();
         if (title.length() > 22) title = title.substring(0, 22) + "…";
         String head = title.isEmpty() ? "帖子 ID " + task.optString("photoId") : title;
+        if ("comment".equals(task.optString("kind"))) return head + "\n" + TaskProgress.commentCountLine(task);
         return head + "\n已采集 " + task.optInt("comments") + " 条" + (task.isNull("total") ? "" : "（" + totalSource(task) + number(task, "total") + " 条）");
     }
 
     private String totalSource(JSONObject task) { return "douyin".equals(task.optString("platform")) ? "接口报告共 " : "帖子显示共 "; }
-    private String repliesLine(JSONObject task) {
-        String progress = task.optBoolean("rootComplete") ? "主评论已到末页" : "主评论尚未到末页";
-        int pending = task.optInt("pendingReplies");
-        if (pending > 0) progress += " · 剩余 " + pending + " 组回复";
-        return "含一级评论 " + task.optInt("rootComments") + " 条、回复 " + task.optInt("replyComments") + " 条 · " + progress;
-    }
+    private String repliesLine(JSONObject task) { return TaskProgress.replyLine(task); }
     private String driverLine(JSONObject task) {
-        return "采集方式：" + ("native-waiting".equals(task.optString("pagingDriver")) ? "后台分页尚未就绪" : task.optString("pagingDriver").startsWith("native") ? "接口直连加载" : "自动滑动页面");
+        String driver = task.optString("pagingDriver");
+        String label = "native-detached".equals(driver) ? "后台独立分页（可以浏览其他内容）"
+            : "native-waiting".equals(driver) ? "等待首次打开评论区激活"
+            : driver.startsWith("native") ? "接口直连加载"
+            : "ui".equals(driver) ? "当前页面自动滑动"
+            : "自动滑动页面";
+        return "采集方式：" + label;
     }
     private static void setIfChanged(TextView view, String value) { if (!value.contentEquals(view.getText())) view.setText(value); }
     /** Task JSON with every number removed except ids, so only real state changes (status, buttons, issues) count as structural. */
@@ -1398,6 +1447,10 @@ public final class CollectorPanel {
             (needsTargetUi || (!nativeDriver && (showing() || open.get() != null)));
         long total = "profile".equals(kind) ? task.optLong("profilesTotal") : "discovery".equals(kind) ? task.getJSONObject("params").optLong("target", 20) : task.optLong("total");
         long read = "profile".equals(kind) ? task.optLong("profilesDone") : "discovery".equals(kind) ? task.optLong("discoveredPosts") : task.optLong("comments");
+        if ("comment".equals(kind) && task.optBoolean("rootComplete") && task.optInt("replyGroups") > 0) {
+            total = task.optInt("replyGroups");
+            read = task.optInt("replyGroupsComplete");
+        }
         if ("profile".equals(kind)) card.addView(text("成功 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位 · 失败 " + task.optInt("profilesFailed") + " 位", 13, false));
         else if ("discovery".equals(kind)) card.addView(text(task.getJSONObject("params").optString("keyword") + " · 已发现 " + task.optInt("discoveredPosts") + " 条", 13, false));
         else card.addView(text(readLine(task), 13, false));
@@ -1411,7 +1464,7 @@ public final class CollectorPanel {
         card.addView(progress, barParams);
         TextView repliesView = null, driverView = null, profilesView = null;
         if ("comment".equals(kind)) {
-            repliesView = muted(repliesLine(task), 12); card.addView(repliesView);
+            repliesView = muted(TaskProgress.rootLine(task) + "\n" + repliesLine(task), 12); card.addView(repliesView);
             driverView = muted(driverLine(task), 12); card.addView(driverView);
             if ("douyin".equals(task.optString("platform")) && "native-waiting".equals(task.optString("pagingDriver")) && state.startsWith("running")) card.addView(muted("评论区已打开时，请在当前评论列表向上滑一次，系统会继续读取；未打开时先点按钮进入目标作品评论区。", 12));
             if (countGapAtEof(task)) card.addView(muted("平台显示总数与保存数量可能不同", 12));
@@ -1432,12 +1485,16 @@ public final class CollectorPanel {
                 String freshKind = fresh.optString("kind"), freshState = fresh.optString("status");
                 long freshTotal = "profile".equals(freshKind) ? fresh.optLong("profilesTotal") : "discovery".equals(freshKind) ? (fresh.optJSONObject("params") == null ? 20 : fresh.optJSONObject("params").optLong("target", 20)) : fresh.optLong("total");
                 long freshRead = "profile".equals(freshKind) ? fresh.optLong("profilesDone") : "discovery".equals(freshKind) ? fresh.optLong("discoveredPosts") : fresh.optLong("comments");
+                if ("comment".equals(freshKind) && fresh.optBoolean("rootComplete") && fresh.optInt("replyGroups") > 0) {
+                    freshTotal = fresh.optInt("replyGroups");
+                    freshRead = fresh.optInt("replyGroupsComplete");
+                }
                 if ("profile".equals(freshKind)) setIfChanged(fRead, "成功 " + fresh.optInt("profilesDone") + " / " + fresh.optInt("profilesTotal") + " 位 · 失败 " + fresh.optInt("profilesFailed") + " 位");
                 else if ("discovery".equals(freshKind)) setIfChanged(fRead, (fresh.optJSONObject("params") == null ? "" : fresh.optJSONObject("params").optString("keyword")) + " · 已发现 " + fresh.optInt("discoveredPosts") + " 条");
                 else setIfChanged(fRead, readLine(fresh));
                 progress.setIndeterminate(freshTotal <= 0 && freshState.startsWith("running") && !waitingForPage);
                 if (freshTotal > 0) progress.setProgress(Math.min("complete".equals(freshState) ? 100 : 99, (int) (100 * freshRead / freshTotal)));
-                if (fReplies != null) setIfChanged(fReplies, repliesLine(fresh));
+                if (fReplies != null) setIfChanged(fReplies, TaskProgress.rootLine(fresh) + "\n" + repliesLine(fresh));
                 if (fDriver != null) setIfChanged(fDriver, driverLine(fresh));
                 if (fProfiles != null) { fProfiles.setVisibility(fresh.optInt("profilesTotal") > 0 ? View.VISIBLE : View.GONE); setIfChanged(fProfiles, profilesLine(fresh)); }
             };
@@ -1475,9 +1532,7 @@ public final class CollectorPanel {
         scroller.addView(actions); card.addView(scroller);
     }
 
-    private String profilesLine(JSONObject task) {
-        return "资料采集：已完成 " + task.optInt("profilesDone") + " / " + task.optInt("profilesTotal") + " 位" + (task.optInt("profilesFailed") > 0 ? " · 失败 " + task.optInt("profilesFailed") : "");
-    }
+    private String profilesLine(JSONObject task) { return TaskProgress.profileLine(task); }
 
     /** Opens the complete comment list captured by one task, including replies. */
     private void showTaskComments(long taskId) {
@@ -3139,6 +3194,10 @@ public final class CollectorPanel {
     }
     /** Starts the collector from an explicit user action, then reloads the panel when ready. */
     private void wakeCollector() {
+        if (!collectorInstalledForCurrentUser()) {
+            Toast.makeText(activity, "当前应用分身用户没有安装 comso，请在这个用户中安装一次", Toast.LENGTH_LONG).show();
+            return;
+        }
         Toast.makeText(activity, "正在打开采集服务…", Toast.LENGTH_SHORT).show();
         // Keep the trampoline launch on the main thread. Some ColorOS builds only
         // treat an Activity launch from the visible host/UI thread as a user-initiated
@@ -3184,6 +3243,17 @@ public final class CollectorPanel {
                 }
             }, "collector-manual-wake").start();
         });
+    }
+
+    private boolean collectorInstalledForCurrentUser() {
+        try {
+            activity.getPackageManager().getApplicationInfo("dev.local.commentcollector", 0);
+            return true;
+        } catch (android.content.pm.PackageManager.NameNotFoundException missing) {
+            return false;
+        } catch (Throwable ignored) {
+            return true;
+        }
     }
 
     // ---------------------------------------------------------------- polling

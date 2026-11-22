@@ -16,7 +16,8 @@ final class NativePageGate {
         }
         if (pending && this.progress != progress) pending = false;
         if (pending) return now - lastRequest >= RESPONSE_TIMEOUT_MS ? Decision.TIMEOUT : Decision.WAIT;
-        return now - lastRequest >= 3000 ? Decision.READY : Decision.WAIT;
+        long interval = stream.startsWith("reply") ? 1500L : 3000L;
+        return now - lastRequest >= interval ? Decision.READY : Decision.WAIT;
     }
 
     void requested(long now, int progress) { this.progress = progress; lastRequest = now; pending = true; }
