@@ -122,6 +122,31 @@ public final class PublicMapper {
         if (!host.startsWith("http")) host = "https://" + host;
         return host.replaceAll("/+$", "") + (path.startsWith("/") ? path : "/" + path);
     }
+    private static String cleanIpLocation(Object raw) {
+        if (raw == null) return "";
+        String value;
+        if (raw instanceof CharSequence || raw instanceof Number) {
+            value = nonEmpty(raw);
+        } else {
+            value = nonEmpty(first(raw, "ipLocationName", "mIpLocationName", "locationName", "mLocationName", "mLocation", "location"));
+        }
+        return value.replaceFirst("^\\s*IP\\s*属地\\s*[:：]?\\s*", "").trim();
+    }
+    private static String extractIpLocation(Object profile, Object user) {
+        Object meta = SnapshotMapper.invoke(profile, "getKUserProfileMeta", new Class<?>[0]);
+        if (meta == null) meta = first(profile, "mUserProfileMeta", "mProfileMeta", "mMeta");
+        String value = cleanIpLocation(first(meta, "mIpLocation", "ipLocation"));
+        if (!value.isEmpty()) return value;
+        String[] keys = new String[]{"mIpLocationName", "ipLocationName", "mIpLocation", "ipLocation", "mAuthorArea", "authorArea"};
+        for (Object holder : new Object[]{profile, user}) {
+            if (holder == null) continue;
+            for (String key : keys) {
+                value = cleanIpLocation(first(holder, key));
+                if (!value.isEmpty()) return value;
+            }
+        }
+        return "";
+    }
     public static String gender(Object value) {
         return "F".equals(value) ? "female" : "M".equals(value) ? "male" : "unknown";
     }
@@ -144,9 +169,7 @@ public final class PublicMapper {
         // Unknown privacy codes are not interpreted as permission to reveal an age.
         out.put("age", privacy.isEmpty() && age.matches("[1-9][0-9]{0,2}") && Integer.parseInt(age) <= 120 ? Integer.parseInt(age) : JSONObject.NULL);
         out.put("ageVisibility", privacy.isEmpty() ? "public_or_unset" : "privacy_unspecified");
-        Object meta = SnapshotMapper.invoke(profile, "getKUserProfileMeta", new Class<?>[0]);
-        Object ip = SnapshotMapper.field(meta, "mIpLocation");
-        String ipLocation = text(SnapshotMapper.field(ip, "ipLocationName"));
+        String ipLocation = extractIpLocation(profile, user);
         put(out, "profileIpRegion", ipLocation);
         if (!cityName.isEmpty()) {
             if (!ipLocation.isEmpty() && !cityName.contains(ipLocation)) put(out, "latestPostLocation", ipLocation + " " + cityName);

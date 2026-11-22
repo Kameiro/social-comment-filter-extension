@@ -119,6 +119,25 @@ public final class MapperTest {
         profile.mUserProfile.mAgePrivacy = "hidden"; check(PublicMapper.profile(profile).isNull("age"), "Private age withheld");
         profile.mUserProfile.mProfile.mSex = "unknown"; check(PublicMapper.profile(profile).getString("gender").equals("unknown"), "Do not infer gender");
         profile.mUserProfile.mIsBlockedByOwner = true; check(PublicMapper.profile(profile) == null, "Blocked profile not bypassed");
+        UserProfileResponse fallbackMetaProfile = new UserProfileResponse();
+        fallbackMetaProfile.mUserProfile = new Profile() {
+            public Meta mUserProfileMeta = new Meta();
+            { mUserProfileMeta.mIpLocation.ipLocationName = "IP属地：浙江"; }
+            @Override public Meta getKUserProfileMeta() { return null; }
+        };
+        check("浙江".equals(PublicMapper.profile(fallbackMetaProfile).getString("profileIpRegion")), "Fallback to mUserProfileMeta and strip IP prefix");
+        UserProfileResponse fallbackAreaProfile = new UserProfileResponse();
+        fallbackAreaProfile.mUserProfile = new Profile() {
+            @Override public Meta getKUserProfileMeta() { return null; }
+            public String mIpLocationName = "IP属地： 广东 ";
+        };
+        check("广东".equals(PublicMapper.profile(fallbackAreaProfile).getString("profileIpRegion")), "Fallback to profile mIpLocationName and strip prefix");
+        UserProfileResponse fallbackUserAreaProfile = new UserProfileResponse();
+        fallbackUserAreaProfile.mUserProfile = new Profile() {
+            @Override public Meta getKUserProfileMeta() { return null; }
+            { mProfile = new UserInfo() { public String mAuthorArea = "IP属地：江苏"; }; }
+        };
+        check("江苏".equals(PublicMapper.profile(fallbackUserAreaProfile).getString("profileIpRegion")), "Fallback to user mAuthorArea");
         QPhoto photo = new QPhoto();
         JSONObject mappedPost = PublicMapper.post(photo);
         check("https://cdn.example.com/avatar.jpg".equals(mappedPost.getString("authorAvatarUrl")), "Kuaishou post avatar");

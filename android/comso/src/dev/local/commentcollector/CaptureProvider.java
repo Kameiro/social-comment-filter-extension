@@ -31,8 +31,7 @@ public final class CaptureProvider extends ContentProvider {
     // immutable avoids allocating an Arrays.asList wrapper for every incoming key.
     private static final java.util.Set<String> PROFILE_OVERWRITE_FIELDS =
         java.util.Collections.unmodifiableSet(new java.util.HashSet<>(Arrays.asList(
-            "gender", "age", "bio", "location", "profileIpRegion",
-            "latestPostLocation", "latestPostCity", "latestPostAt")));
+            "gender", "age", "bio", "latestPostAt")));
 
     @Override public boolean onCreate() {
         instance = this;
