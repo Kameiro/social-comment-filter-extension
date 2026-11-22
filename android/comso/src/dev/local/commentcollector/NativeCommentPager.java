@@ -28,6 +28,7 @@ final class NativeCommentPager {
     private Object idleReply;
     private long idleSince;
     private long replyTask, replyGeneration;
+    private final java.util.Set<String> skippedReplies = new java.util.HashSet<>();
     private long uiFallbackTask, uiFallbackGeneration;
     private long activeTask, activeGeneration;
     /** pump() runs on the host main thread, so collector IPC (which can block for seconds) goes here. */
@@ -37,6 +38,9 @@ final class NativeCommentPager {
     private volatile JSONArray pendingIds;
     private volatile String pendingKey = "";
     private volatile boolean pendingLoading;
+    private long rootProgressAt;
+    private int rootProgressPages = -1, rootProgressComments = -1;
+    private long lastRebindAt;
 
     void attach(Context context, String version, java.util.function.Consumer<JSONObject> completeRoot,
                 java.util.function.BiConsumer<Object, JSONObject> captureReply) {
@@ -85,6 +89,25 @@ final class NativeCommentPager {
         gate.reset(); eofGuard.reset(); busySince = 0; idleReply = null;
     }
 
+    synchronized boolean needsRebind(JSONObject task) {
+        if (task == null || task.optBoolean("rootComplete") || !"running".equals(task.optString("status"))) return false;
+        int pages = task.optInt("pages"), comments = task.optInt("rootComments");
+        if (pages != rootProgressPages || comments != rootProgressComments) {
+            rootProgressPages = pages; rootProgressComments = comments; rootProgressAt = SystemClock.elapsedRealtime();
+            return false;
+        }
+        return KuaishouActivationPolicy.shouldRebind(SystemClock.elapsedRealtime(), rootProgressAt, pages, comments)
+            && SystemClock.elapsedRealtime() - lastRebindAt >= 12000L;
+    }
+
+    synchronized void rebind(JSONObject task) {
+        lastRebindAt = SystemClock.elapsedRealtime();
+        gate.reset(); eofGuard.reset(); busySince = 0;
+        state = "native_rebinding";
+        Log.i("CommentCollector", "native_rebind_requested task=" + task.optLong("taskId")
+            + " generation=" + task.optLong("generation"));
+    }
+
     /** True after native paging stalled for this task and UI paging was selected as the recovery path. */
     synchronized boolean uiFallbackActive(JSONObject task) {
         if (task == null) return false;
@@ -128,6 +151,10 @@ final class NativeCommentPager {
         return uiFallbackTask != 0 && uiFallbackTask == activeTask && uiFallbackGeneration == activeGeneration;
     }
 
+    synchronized void forceUiFallback(JSONObject task) {
+        fallbackToUi(task);
+    }
+
     private synchronized void fallbackToUi(JSONObject task) {
         uiFallbackTask = task.optLong("taskId");
         uiFallbackGeneration = task.optLong("generation");
@@ -152,7 +179,7 @@ final class NativeCommentPager {
         activeTask = task.optLong("taskId");
         activeGeneration = task.optLong("generation");
         if (replyTask != activeTask || replyGeneration != activeGeneration) {
-            replyTask = activeTask; replyGeneration = activeGeneration; idleReply = null;
+            replyTask = activeTask; replyGeneration = activeGeneration; idleReply = null; skippedReplies.clear();
         }
         if (uiFallbackActive(task)) { state = "native_fallback_ui"; return false; }
         if ("ui".equals(task.getJSONObject("params").optString("pagingMode"))) { state = "ui_requested"; return false; }
@@ -209,18 +236,26 @@ final class NativeCommentPager {
             if (ids == null) { state = "native_pending_ids_loading"; return true; }
             observeRoots(task.optString("photoId"), call(pager, "r0"));
             for (int i = 0; i < ids.length(); i++) {
-                WeakReference<Object> ref = roots.get(ids.getString(i));
+                String candidateId = ids.getString(i);
+                if (skippedReplies.contains(candidateId)) continue;
+                WeakReference<Object> ref = roots.get(candidateId);
                 if (ref != null && ref.get() != null) { root = ref.get(); break; }
             }
             if (root == null) {
                 Object core = SnapshotMapper.field(pager, "c1");
-                if (core == null) { fallbackToUi(task); return false; }
+                if (core == null) {
+                    if (detached) { state = "native_reply_core_unavailable"; return false; }
+                    fallbackToUi(task); return false;
+                }
                 if (busy(task, core)) return true;
                 if (call(core, "j0") == null) {
                     receiver = core; load = core.getClass().getMethod("refresh");
                 } else if (Boolean.TRUE.equals(call(pager, "k0"))) load = pager.getClass().getMethod("k");
                 else if (expandFolded(pager)) return true;
-                else { fallbackToUi(task); return false; }
+                else {
+                    if (detached) { state = "native_reply_roots_unavailable"; return false; }
+                    fallbackToUi(task); return false;
+                }
                 stream = "restore-replies"; state = "native_restore_reply_roots";
             } else {
                 load = null;
@@ -273,7 +308,13 @@ final class NativeCommentPager {
                 Object cached = sub == null ? null : SnapshotMapper.field(sub, "mComments");
                 Log.i("CommentCollector", "native_reply_idle sub=" + (sub != null) + " cached=" +
                     (cached instanceof List<?> ? ((List<?>) cached).size() : 0) + " expected=" + call(root, "getKSubCommentCount"));
-                if (now - idleSince >= 45000) pause(task, "native_reply_unconfirmed");
+                if (now - idleSince >= 6000) {
+                    String skipId = String.valueOf(call(root, "getKId"));
+                    skippedReplies.add(skipId);
+                    idleReply = null;
+                    idleSince = 0;
+                    Log.w("CommentCollector", "native_reply_skipped_idle rootId=" + skipId);
+                }
             } else {
                 idleReply = null;
             }

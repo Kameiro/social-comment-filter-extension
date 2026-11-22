@@ -141,11 +141,31 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                     if (!onTarget) { stage = "waiting_target_post"; nativePager.leftTarget(state.optString("photoId")); }
                     else if (commentListShown(foreground) || nativePager.canPumpDetached(state))
                         nativePager.pump(state, postForeground(foreground));
-                    else nativePager.suspend();
+                    else {
+                        stage = "opening_comments_activation";
+                        lastProgress = SystemClock.elapsedRealtime();
+                        if (target.tryOpenComments(SystemClock.uptimeMillis(), lastTouchAt)) {
+                            String how = clickCommentButton(foreground);
+                            Log.i("CommentCollector", "opening_comments_activation result=" + how);
+                        }
+                    }
                 }
                 return;
             }
             if (SystemClock.elapsedRealtime() - lastProgress > 60000) {
+                if ("comment".equals(state.optString("kind"))) {
+                    boolean onTarget = TargetPostGate.onTarget(postForeground(foreground), state.optString("photoId"), lastPhoto.get());
+                    boolean listShown = commentListShown(foreground);
+                    JSONObject params = state.optJSONObject("params");
+                    String mode = params == null ? "auto" : params.optString("pagingMode", "auto");
+                    if (KuaishouActivationPolicy.shouldUiFallback(state.optString("platform"), state.optString("kind"), mode,
+                        state.optBoolean("auto"), onTarget, listShown, state.optInt("rootPages"))) {
+                        stage = "native_unresponsive_ui_fallback";
+                        nativePager.forceUiFallback(state);
+                        lastProgress = SystemClock.elapsedRealtime();
+                        return;
+                    }
+                }
                 pause("discovery".equals(state.optString("kind")) ? "no_new_search_page" :
                     "comment".equals(state.optString("kind")) && state.optInt("rootPages") == 0 ? "root_page_not_observed" : "no_new_comment_page"); return;
             }
@@ -196,6 +216,11 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 decisionListShown = shown || detachedNative;
                 if (shown || detachedNative) {
                     target.newVisit();
+                    if (shown && nativePager.needsRebind(state)) {
+                        stage = "native_unresponsive_ui_fallback";
+                        nativePager.forceUiFallback(state);
+                        nudgeCommentList(foreground);
+                    }
                     if (nativePager.pump(state, postForeground(foreground))) {
                         stage = detachedNative ? "native_background_paging" : "comment_loading";
                         lastProgress = SystemClock.elapsedRealtime(); return;
@@ -207,7 +232,7 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 } else {
                     nativePager.suspend();
                     // Drawer closed: open it ourselves, but only when the user has been idle, a few times per visit.
-                    stage = "opening_comments";
+                    stage = "opening_comments_activation";
                     if (!target.openExhausted()) lastProgress = SystemClock.elapsedRealtime();
                     if (target.tryOpenComments(SystemClock.uptimeMillis(), lastTouchAt)) {
                         String how = clickCommentButton(foreground);
@@ -252,7 +277,18 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
                 && !nativePager.uiFallbackActive(state)) {
                 pause("native_adapter_unavailable"); return;
             }
-            if (SystemClock.elapsedRealtime() - lastProgress > 60000) { pause("no_new_comment_page"); return; }
+            if (SystemClock.elapsedRealtime() - lastProgress > 60000) {
+                JSONObject params = state.optJSONObject("params");
+                String mode = params == null ? "auto" : params.optString("pagingMode", "auto");
+                if (KuaishouActivationPolicy.shouldUiFallback(state.optString("platform"), state.optString("kind"), mode,
+                    state.optBoolean("auto"), decisionOnTarget, hasComments, state.optInt("rootPages"))) {
+                    stage = "native_unresponsive_ui_fallback";
+                    nativePager.forceUiFallback(state);
+                    lastProgress = SystemClock.elapsedRealtime();
+                    return;
+                }
+                pause("no_new_comment_page"); return;
+            }
             if (actions >= 300) { pause("auto_action_limit"); return; }
             View list = null;
             for (View node : nodes) {
@@ -337,6 +373,17 @@ final class AutoPager implements Application.ActivityLifecycleCallbacks {
             for (View node : nodes) if (isShownCommentList(node)) return true;
         }
         return false;
+    }
+
+    private void nudgeCommentList(Activity foreground) {
+        if (foreground == null || foreground.getWindow() == null) return;
+        List<View> nodes = new ArrayList<>();
+        flatten(foreground.getWindow().getDecorView(), nodes);
+        View best = null;
+        for (View node : nodes) {
+            if (isShownCommentList(node) && (best == null || node.getHeight() > best.getHeight())) best = node;
+        }
+        if (best != null) best.scrollBy(0, Math.max(80, (int) (best.getHeight() * .55f)));
     }
     private void heartbeat() {
         long now = SystemClock.elapsedRealtime();

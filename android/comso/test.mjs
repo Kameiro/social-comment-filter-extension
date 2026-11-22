@@ -10,6 +10,7 @@ mkdirSync(join(runtime, 'test-classes'), { recursive: true });
 if (!existsSync(json)) execFileSync('curl', ['-fL', '-o', json, 'https://repo.maven.apache.org/maven2/org/json/json/20250517/json-20250517.jar'], { stdio: 'inherit' });
 execFileSync(join(java, 'bin/javac'), ['--release', '17', '-cp', json, '-d', join(runtime, 'test-classes'),
   join(project, 'src/dev/local/commentcollector/DouyinRootPolicy.java'), join(project, 'tests/DouyinRootPolicyTest.java'),
+  join(project, 'src/dev/local/commentcollector/KuaishouActivationPolicy.java'), join(project, 'tests/KuaishouActivationPolicyTest.java'),
   join(project, 'src/dev/local/commentcollector/TaskProgress.java'), join(project, 'tests/TaskProgressTest.java'),
   join(project, 'src/dev/local/commentcollector/KuaishouDetachedPolicy.java'), join(project, 'tests/KuaishouDetachedPolicyTest.java'),
   join(project, 'src/dev/local/commentcollector/DouyinGuidance.java'), join(project, 'tests/DouyinGuidanceTest.java'),

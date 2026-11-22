@@ -1414,6 +1414,10 @@ public final class CollectorPanel {
         String driver = task.optString("pagingDriver");
         String label = "native-detached".equals(driver) ? "后台独立分页（可以浏览其他内容）"
             : "native-waiting".equals(driver) ? "等待首次打开评论区激活"
+            : "kuaishou".equals(task.optString("platform")) && "native-root".equals(driver) && task.optInt("rootPages") > 0
+                ? "评论区已激活，正在读取"
+            : "ui".equals(driver) && "kuaishou".equals(task.optString("platform"))
+                ? "原生分页无响应，已切换页面翻页"
             : driver.startsWith("native") ? "接口直连加载"
             : "ui".equals(driver) ? "当前页面自动滑动"
             : "自动滑动页面";
@@ -1466,6 +1470,15 @@ public final class CollectorPanel {
         if ("comment".equals(kind)) {
             repliesView = muted(TaskProgress.rootLine(task) + "\n" + repliesLine(task), 12); card.addView(repliesView);
             driverView = muted(driverLine(task), 12); card.addView(driverView);
+            if ("kuaishou".equals(task.optString("platform")) && task.optBoolean("auto")
+                && state.startsWith("running") && task.optInt("rootPages") == 0
+                && !"native-detached".equals(task.optString("pagingDriver"))) {
+                card.addView(muted("首次需要打开评论区激活，系统会自动尝试；如果未打开，请点击“打开评论区激活”。", 12));
+            }
+            if ("kuaishou".equals(task.optString("platform")) && state.startsWith("running")
+                && task.optBoolean("rootComplete") == false && task.optInt("comments") > 0) {
+                card.addView(muted("评论区已打开但长时间没有新页时，系统会自动重新连接并轻滑一次评论列表。", 12));
+            }
             if ("douyin".equals(task.optString("platform")) && "native-waiting".equals(task.optString("pagingDriver")) && state.startsWith("running")) card.addView(muted("评论区已打开时，请在当前评论列表向上滑一次，系统会继续读取；未打开时先点按钮进入目标作品评论区。", 12));
             if (countGapAtEof(task)) card.addView(muted("平台显示总数与保存数量可能不同", 12));
             profilesView = muted("", 12); card.addView(profilesView);
@@ -1503,6 +1516,11 @@ public final class CollectorPanel {
         if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); card.addView(reason); }
         LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
         List<Button> buttons = new ArrayList<>();
+        boolean kuaishouActivation = live && "kuaishou".equals(task.optString("platform"))
+            && "comment".equals(kind) && task.optBoolean("auto") && state.startsWith("running")
+            && task.optInt("rootPages") == 0
+            && !"native-detached".equals(task.optString("pagingDriver"));
+        if (kuaishouActivation) buttons.add(primary("打开评论区激活", closePanel));
         boolean retryGuidance = "paused".equals(state) && DouyinGuidance.TIMEOUT_ISSUE.equals(issue);
         boolean guideComments = live && "douyin".equals(task.optString("platform")) && "comment".equals(kind)
             && ((DouyinGuidance.paging(state) && "native-waiting".equals(task.optString("pagingDriver"))) || retryGuidance);
