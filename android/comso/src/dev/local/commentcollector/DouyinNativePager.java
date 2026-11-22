@@ -46,9 +46,22 @@ final class DouyinNativePager {
     static String post() { Object[] a = args; return a != null && a.length > 0 && a[0] != null ? String.valueOf(a[0]) : ""; }
     static String lastCapturedPost() { return lastCapturedPost == null ? "" : lastCapturedPost; }
 
+    /**
+     * A request captured before Douyin was backgrounded can keep an expired task/session.
+     * Keep the installed hook and Retrofit method, but discard only the captured arguments
+     * so the next real comment request can bind a fresh template.
+     */
+    static synchronized void invalidateCapture() {
+        args = null;
+        capturedAt = 0;
+        lastCapturedPost = "";
+        Log.i(TAG, "douyin_native_capture_invalidated");
+    }
+
     /** Finds the Retrofit invocation handler class through a throwaway proxy and hooks its invoke(). */
     static synchronized void install(XposedInterface xposed, ClassLoader loader) {
-        if (hooked) return;
+        if (hooked) { Log.i(TAG, "douyin_native_install_already_hooked"); return; }
+        if (loader == null) { Log.w(TAG, "douyin_native_install_failed reason=no_loader"); return; }
         Log.i(TAG, "douyin_native_install_start");
         try {
             Class<?> api = loader.loadClass("com.ss.android.ugc.aweme.comment.api.CommentRealApi");

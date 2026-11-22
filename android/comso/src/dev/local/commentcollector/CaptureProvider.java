@@ -335,6 +335,19 @@ public final class CaptureProvider extends ContentProvider {
                 return out;
             }
             if ("posts".equals(method)) { out.putString("data", records("posts", input).toString()); return out; }
+            if ("douyin_root_checkpoint".equals(method)) {
+                long taskId = input.getLong("taskId");
+                JSONObject task = status(taskId);
+                if (task.optLong("generation") != input.getLong("generation") || !"comment".equals(task.optString("kind"))
+                    || !"douyin".equals(task.optString("platform"))) throw new IllegalStateException("评论任务已变化");
+                long nextCursor = 0;
+                try (Cursor pages = db.rawQuery("SELECT fingerprint FROM pages WHERE task=? AND fingerprint LIKE ':%:true:%'",
+                    new String[]{String.valueOf(taskId)})) {
+                    while (pages.moveToNext()) nextCursor = Math.max(nextCursor, DouyinRootPolicy.savedNextCursor(pages.getString(0)));
+                }
+                out.putString("data", new JSONObject().put("cursor", nextCursor).toString());
+                return out;
+            }
             if ("cloud_snapshot".equals(method)) { out.putString("data", cloudSnapshot().toString()); return out; }
             if ("record_profile".equals(method)) {
                 JSONObject user = input.getJSONObject("user"); String uid = user.getString("userId");
@@ -796,6 +809,14 @@ public final class CaptureProvider extends ContentProvider {
                 }
                 String code = input.has("code") ? input.optString("code") : extras.getString("code", "capture_error");
                 if (!code.matches("[a-z0-9_:.-]{1,120}")) code = "capture_error";
+                if (DouyinGuidance.TIMEOUT_ISSUE.equals(code)) {
+                    JSONObject current = status(id);
+                    String saved = scalar("SELECT data FROM settings WHERE name=?", DouyinGuidance.SETTING);
+                    if (saved.isEmpty() || !DouyinGuidance.shouldPause(current, new JSONObject(saved),
+                        input.optLong("guidanceStartedAt"), android.os.SystemClock.elapsedRealtime())) {
+                        out.putString("json", current.toString()); return out;
+                    }
+                }
                 db.execSQL("UPDATE tasks SET status='paused',issue=?,updated=? WHERE id=?", new Object[]{code, System.currentTimeMillis(), id});
                 if (code.matches("manual_(?:login|verification)_required|http_(?:401|403|406|429)"))
                     db.execSQL("INSERT OR REPLACE INTO settings VALUES ('platform_block',?)", new Object[]{code});
@@ -1221,6 +1242,7 @@ public final class CaptureProvider extends ContentProvider {
     private JSONObject users(JSONObject query) throws Exception {
         List<String> args = new ArrayList<>(); StringBuilder where = new StringBuilder("1=1");
         platformClause(where, args, query, "data");
+        match(where, args, query, "userId", "id", false);
         match(where, args, query, "keyword", "json_extract(data,'$.nickname')", true);
 
         // commentIpRegion (初筛)

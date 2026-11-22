@@ -18,4 +18,16 @@ final class DouyinRootPolicy {
     static boolean advance(boolean appended, Object more, boolean root) {
         return appended && root && more instanceof Boolean;
     }
+
+    /** Stored page fingerprints have the form root:cursor:hasMore:commentId[:commentId...]. */
+    static long savedNextCursor(String fingerprint) {
+        if (!fingerprint.startsWith(":")) return 0;
+        int cursorEnd = fingerprint.indexOf(':', 1);
+        if (cursorEnd < 0 || !fingerprint.startsWith(":true:", cursorEnd) || fingerprint.length() <= cursorEnd + 6) return 0;
+        try {
+            return Math.max(0L, Long.parseLong(fingerprint.substring(1, cursorEnd)));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
+    }
 }

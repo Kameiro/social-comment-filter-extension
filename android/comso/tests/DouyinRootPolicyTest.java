@@ -20,6 +20,14 @@ public class DouyinRootPolicyTest {
         assert !DouyinRootPolicy.advance(true, false, false); // reply page
         assert DouyinRootPolicy.advance(true, false, true); // committed final page
         assert DouyinRootPolicy.advance(true, true, true);
+        assert DouyinRootPolicy.savedNextCursor(":20:true:comment1:comment2") == 20;
+        assert DouyinRootPolicy.savedNextCursor(":33:true:comment3") == 33;
+        assert DouyinRootPolicy.savedNextCursor("parent:200:true:reply") == 0;
+        assert DouyinRootPolicy.savedNextCursor(":99:false:last") == 0;
+        assert DouyinRootPolicy.savedNextCursor(":99:null:unconfirmed") == 0;
+        assert DouyinRootPolicy.savedNextCursor(":99:true:") == 0;
+        assert DouyinRootPolicy.savedNextCursor(":-2:true:invalid") == 0;
+        assert DouyinRootPolicy.savedNextCursor(":bad:true:invalid") == 0;
         System.out.println("Douyin root policy passed");
     }
 }

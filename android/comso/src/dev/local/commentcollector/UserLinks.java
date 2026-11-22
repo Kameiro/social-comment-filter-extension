@@ -13,26 +13,43 @@ final class UserLinks {
     private static final String TAG = "CommentCollector";
     private UserLinks() {}
 
-    static boolean canOpen(JSONObject post) { return !post.optString("authorId").isEmpty(); }
-
-    static void profile(Activity activity, JSONObject post) {
-        String id = post.optString("authorId"), sec = post.optString("authorSecUid");
-        String uri;
-        switch (post.optString("platform")) {
-            case "douyin": uri = "snssdk1128://user/profile/" + id + (sec.isEmpty() ? "" : "?sec_user_id=" + Uri.encode(sec)); break;
-            case "xiaohongshu": case "xhs": uri = "xhsdiscover://user/" + id; break;
-            default: uri = "kwai://profile/" + id;
-        }
-        if (!view(activity, uri)) toast(activity, "无法打开主页");
+    static boolean canOpen(JSONObject post) {
+        String id = post.optString("authorId");
+        return !id.isBlank() && !"null".equals(id);
     }
 
-    static void message(Activity activity, JSONObject post) {
+    static boolean profile(Activity activity, JSONObject post) {
+        if (!canOpen(post)) {
+            toast(activity, "该记录缺少用户 ID，无法打开主页");
+            return false;
+        }
+        String id = Uri.encode(post.optString("authorId")), sec = post.optString("authorSecUid");
+        String platform = platform(activity, post);
+        String uri = switch (platform) {
+            case "douyin" -> "snssdk1128://user/profile/" + id + (sec.isEmpty() ? "" : "?sec_user_id=" + Uri.encode(sec));
+            case "xhs" -> "xhsdiscover://user/" + id;
+            default -> "kwai://profile/" + id;
+        };
+        boolean opened = view(activity, uri, Platforms.packageFor(platform));
+        if (!opened) toast(activity, "无法打开" + Platforms.label(platform) + "主页，请检查对应 App 是否可用");
+        return opened;
+    }
+
+    static boolean message(Activity activity, JSONObject post) {
         String id = post.optString("authorId"), sec = post.optString("authorSecUid");
-        if ("douyin".equals(post.optString("platform")) && startDouyinChat(activity, id, sec)) return;
-        if (("xhs".equals(post.optString("platform")) || "xiaohongshu".equals(post.optString("platform")))
-            && startXhsChat(activity, id, post.optString("authorName"))) return;
-        profile(activity, post);
-        toast(activity, "已打开主页，请点右上角私信");
+        String platform = platform(activity, post);
+        if (canOpen(post) && activity.getPackageName().equals(Platforms.packageFor(platform))) {
+            if ("douyin".equals(platform) && startDouyinChat(activity, id, sec)) return true;
+            if ("xhs".equals(platform) && startXhsChat(activity, id, post.optString("authorName"))) return true;
+        }
+        if (!profile(activity, post)) return false;
+        toast(activity, "请在" + Platforms.label(platform) + "主页点「私信」");
+        return true;
+    }
+
+    private static String platform(Activity activity, JSONObject post) {
+        String platform = Platforms.normalize(post.optString("platform"));
+        return platform.isEmpty() ? Platforms.name(activity.getPackageName()) : platform;
     }
 
     /** Opens XHS's native one-to-one chat route. It only navigates; it never sends a message. */
@@ -78,12 +95,13 @@ final class UserLinks {
         return false;
     }
 
-    private static boolean view(Activity activity, String uri) {
+    private static boolean view(Activity activity, String uri, String targetPackage) {
         try {
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(uri)).setPackage(activity.getPackageName());
+            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(uri)).setPackage(targetPackage);
+            if (!activity.getPackageName().equals(targetPackage)) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(intent);
             return true;
-        } catch (Throwable error) { Log.w(TAG, "open_link_failed " + uri, error); return false; }
+        } catch (Exception error) { Log.w(TAG, "open_user_link_failed platformPackage=" + targetPackage, error); return false; }
     }
 
     private static void toast(Activity activity, String text) { Toast.makeText(activity, text, Toast.LENGTH_SHORT).show(); }

@@ -87,7 +87,7 @@ HTTP 401 表示缺少密钥，403 表示不允许的网页 Origin，409 表示�
 - 评论：字符串 `commentId/photoId/userId/rootId`、一级/二级 `level`、`text/created/likes/replies/ipRegion/capturedAt`。
 - 评论 IP 的来源为 Android 评论模型 `authorArea`，与主页 IP 分开。
 - 用户：`gender/age/location/profileIpRegion/lastCommentIpRegion`；公开资料带采集时间及 `fieldSources`。未知字段不当作 0。
-- 用户查询的 `ipRegion` 匹配最后评论 IP；`profileIpRegion` 单独匹配主页 IP。用户查询不支持 `taskId`；按任务筛选用户时应查询该任务评论后按 `userId` 去重。
+- 用户查询支持通过 `userId` 精确匹配用户，并可叠加 `platform`。用户查询的 `ipRegion` 匹配最后评论 IP，`profileIpRegion` 单独匹配主页 IP。按任务筛选用户时，查询该任务评论后按 `userId` 去重。
 - 帖子查询可用 `taskId` 限定某个发现任务，`keyword` 匹配标题，`searchKeyword` 匹配最近发现关键词。相同作品在不同任务中去重，任务归属分别保存。
 - 评论查询：`taskId,photoId,userId,keyword,ipRegion,ipRegions,gender,minAge,maxAge,sort,limit,offset`。
 - `ipRegions` 为 OR 条件。GET 可用逗号分隔字符串（Node 客户端数组会自动编码），分析 POST 可传数组；原生表单支持顿号、逗号及空白分隔，最多 20 项。两个地区参数同时提供时优先使用 `ipRegions`。
@@ -122,3 +122,4 @@ HTTP/模型测试与实际完整翻页、搜索及真机验收分开记录。
 # 采集面板显示
 
 自动状态刷新保留滚动位置，结构变化时不重播采集页入场动画。抖音评论任务完成且已确认一级评论末页时，如果平台显示总数高于保存数量，任务显示“已读到末页”，并提示两种数量可能不同。
+抖音评论区引导开始后，后台分页等待超过 25 秒时返回 `paused` 和 `douyin_guidance_timeout`。原任务的评论、已确认末页和回复组进度继续保留。

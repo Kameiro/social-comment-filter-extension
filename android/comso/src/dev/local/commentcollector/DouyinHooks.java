@@ -169,7 +169,17 @@ final class DouyinHooks {
     /** Hooks the Retrofit layer once the feed is loading, i.e. once Douyin's network stack is certainly up. */
     private void ensurePager() {
         if (hostLoader == null || !pagerStarted.compareAndSet(false, true)) return;
-        new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start();
+        scheduleNativeInstall(hostLoader, "post");
+    }
+
+    private void scheduleNativeInstall(ClassLoader loader, String source) {
+        if (loader == null) { Log.w(TAG, "douyin_native_install_skipped source=" + source + " reason=no_loader"); return; }
+        hostLoader = loader;
+        Log.i(TAG, "douyin_native_install_schedule source=" + source);
+        new Thread(() -> {
+            try { DouyinNativePager.install(xposed, loader); }
+            catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed source=" + source, t); }
+        }, "douyin-native-install").start();
     }
 
     private volatile DouyinComments comments;
@@ -383,8 +393,9 @@ final class DouyinHooks {
             @Override public void onActivityResumed(Activity value) {
                 activity = value;
                 DirectMessageRunner.onActivityResumed(value);
-                Log.i(TAG, "douyin_resumed " + value.getClass().getSimpleName() + " loader=" + (hostLoader != null));
-                if (hostLoader != null) new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start();
+                ClassLoader activeLoader = value.getClass().getClassLoader();
+                Log.i(TAG, "douyin_resumed " + value.getClass().getSimpleName() + " loader=" + (activeLoader != null));
+                scheduleNativeInstall(activeLoader != null ? activeLoader : hostLoader, "activity_resume");
                 if (comments != null) comments.ensurePaging();
                 CollectorPanel.attach(value, DouyinHooks.this::resolveCurrentPostId);
                 CollectorPanel.attachDouyinSettingsEntry(value, DouyinHooks.this::resolveCurrentPostId);
@@ -402,6 +413,6 @@ final class DouyinHooks {
             @Override public void onActivityDestroyed(Activity value) {}
         });
         Log.i(TAG, "douyin_application_attached");
-        main.postDelayed(() -> new Thread(() -> { try { DouyinNativePager.install(xposed, hostLoader); } catch (Throwable t) { Log.w(TAG, "douyin_native_thread_failed", t); } }, "douyin-native-install").start(), 2500);
+        main.postDelayed(() -> scheduleNativeInstall(hostLoader, "attach_delayed"), 2500);
     }
 }

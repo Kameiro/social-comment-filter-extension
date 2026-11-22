@@ -19,6 +19,24 @@ final class Platforms {
         return "kuaishou";
     }
 
+    static String normalize(String platform) {
+        return switch (platform == null ? "" : platform.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "xiaohongshu", "xhs" -> "xhs";
+            case "douyin" -> "douyin";
+            case "kuaishou" -> "kuaishou";
+            default -> "";
+        };
+    }
+
+    static String packageFor(String platform) {
+        return switch (normalize(platform)) {
+            case "douyin" -> DOUYIN;
+            case "xhs" -> XHS;
+            case "kuaishou" -> KUAISHOU;
+            default -> "";
+        };
+    }
+
     static String label(String platform) {
         switch (platform == null ? "" : platform) {
             case "douyin": return "抖音";

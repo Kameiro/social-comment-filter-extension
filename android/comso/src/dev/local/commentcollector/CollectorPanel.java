@@ -1362,8 +1362,10 @@ public final class CollectorPanel {
 
     private String totalSource(JSONObject task) { return "douyin".equals(task.optString("platform")) ? "接口报告共 " : "帖子显示共 "; }
     private String repliesLine(JSONObject task) {
-        return "含一级评论 " + task.optInt("rootComments") + " 条、回复 " + task.optInt("replyComments") + " 条 · "
-            + (task.optBoolean("rootComplete") ? "已滑到底部" : "尚未滑到底部");
+        String progress = task.optBoolean("rootComplete") ? "主评论已到末页" : "主评论尚未到末页";
+        int pending = task.optInt("pendingReplies");
+        if (pending > 0) progress += " · 剩余 " + pending + " 组回复";
+        return "含一级评论 " + task.optInt("rootComments") + " 条、回复 " + task.optInt("replyComments") + " 条 · " + progress;
     }
     private String driverLine(JSONObject task) {
         return "采集方式：" + ("native-waiting".equals(task.optString("pagingDriver")) ? "后台分页尚未就绪" : task.optString("pagingDriver").startsWith("native") ? "接口直连加载" : "自动滑动页面");
@@ -1411,7 +1413,7 @@ public final class CollectorPanel {
         if ("comment".equals(kind)) {
             repliesView = muted(repliesLine(task), 12); card.addView(repliesView);
             driverView = muted(driverLine(task), 12); card.addView(driverView);
-            if ("douyin".equals(task.optString("platform")) && "native-waiting".equals(task.optString("pagingDriver")) && state.startsWith("running")) card.addView(muted("点击按钮打开目标作品评论区，后台开始后会提醒你可以继续浏览。如未打开，请点右侧评论图标。", 12));
+            if ("douyin".equals(task.optString("platform")) && "native-waiting".equals(task.optString("pagingDriver")) && state.startsWith("running")) card.addView(muted("评论区已打开时，请在当前评论列表向上滑一次，系统会继续读取；未打开时先点按钮进入目标作品评论区。", 12));
             if (countGapAtEof(task)) card.addView(muted("平台显示总数与保存数量可能不同", 12));
             profilesView = muted("", 12); card.addView(profilesView);
             profilesView.setVisibility(task.optInt("profilesTotal") > 0 ? View.VISIBLE : View.GONE);
@@ -1444,22 +1446,18 @@ public final class CollectorPanel {
         if (!issue.isEmpty()) { TextView reason = text(issue(issue), 12, false); reason.setTextColor("complete".equals(state) ? primary : errorColor); card.addView(reason); }
         LinearLayout actions = horizontal(); actions.setPadding(0, dp(10), 0, 0);
         List<Button> buttons = new ArrayList<>();
-        if (live && "douyin".equals(task.optString("platform")) && "comment".equals(kind) && state.startsWith("running") && "native-waiting".equals(task.optString("pagingDriver"))) {
-            buttons.add(primary("打开评论区并继续", () -> {
-                try {
-                    JSONObject current = api("status", new JSONObject());
-                    if (current.optLong("taskId") != id || current.optLong("generation") != task.optLong("generation") || !current.optString("status").startsWith("running") || !"native-waiting".equals(current.optString("pagingDriver"))) { Toast.makeText(activity, "任务状态已变化，请刷新后查看", Toast.LENGTH_SHORT).show(); return; }
-                    api("settings_save", new JSONObject().put("name", "douyin_guidance").put("value", new JSONObject().put("taskId", id).put("generation", current.optLong("generation")).put("startedAt", android.os.SystemClock.elapsedRealtime())));
-                    Toast.makeText(activity, "正在打开评论区", Toast.LENGTH_SHORT).show();
-                    launch("snssdk1128://aweme/detail/" + Uri.encode(current.optString("photoId")), false);
-                } catch (Exception error) { error(error); }
-            }));
+        boolean retryGuidance = "paused".equals(state) && DouyinGuidance.TIMEOUT_ISSUE.equals(issue);
+        boolean guideComments = live && "douyin".equals(task.optString("platform")) && "comment".equals(kind)
+            && ((DouyinGuidance.paging(state) && "native-waiting".equals(task.optString("pagingDriver"))) || retryGuidance);
+        if (guideComments) {
+            buttons.add(primary(retryGuidance ? "打开评论区重试" : "打开评论区并继续",
+                () -> openGuidedComments(task, retryGuidance)));
         }
         if (waitingForPage) {
             if (needsTargetUi) buttons.add(primary("打开目标帖子继续", () -> openPost(task.optString("photoId"), task.optString("platform"))));
             else buttons.add(primary("返回" + hostName() + "继续", closePanel));
         }
-        if ("paused".equals(state)) buttons.add(primary("继续", () -> taskAction("resume", id)));
+        if ("paused".equals(state) && !guideComments) buttons.add(primary("继续", () -> taskAction("resume", id)));
         if (state.startsWith("running") || "paused".equals(state) || "queued".equals(state)) buttons.add(button("停止", () -> taskAction("stop", id)));
         if ("stopped".equals(state)) buttons.add(button("续跑", () -> taskAction("retry", id)));
         if (!state.startsWith("running") && !"queued".equals(state)) {
@@ -1666,7 +1664,7 @@ public final class CollectorPanel {
                     Toast.makeText(activity, "该评论未记录用户信息，请更新抓取", Toast.LENGTH_SHORT).show();
                 } else {
                     lastClickedAnchor = finalCid;
-                    userDetail(finalUid, finalName);
+                    userDetail(finalUid, finalName, finalRow);
                 }
             };
             Motion.press(avatarBox);
@@ -1941,7 +1939,7 @@ public final class CollectorPanel {
 
             TextView name = text(user.optString("nickname", id), 15, true); name.setOnClickListener(view -> {
                 lastClickedAnchor = id;
-                userDetail(id, user.optString("nickname", id));
+                userDetail(id, user.optString("nickname", id), user);
             });
             name.setPadding(0, 0, 0, 0);
             heading.addView(name, new LinearLayout.LayoutParams(0, -2, 1)); card.addView(heading);
@@ -1951,14 +1949,14 @@ public final class CollectorPanel {
             foot.addView(muted("评论 " + user.optInt("commentCount") + " 条 · " + user.optInt("postCount") + " 个帖子", 12), new LinearLayout.LayoutParams(0, -2, 1));
             foot.addView(linkText("详情", () -> {
                 lastClickedAnchor = id;
-                userDetail(id, user.optString("nickname", id));
+                userDetail(id, user.optString("nickname", id), user);
             }));
             foot.addView(linkText("补充资料", () -> profileTask(new JSONArray().put(id))));
             card.addView(foot);
             Motion.press(card);
             card.setOnClickListener(v -> {
                 lastClickedAnchor = id;
-                userDetail(id, user.optString("nickname", id));
+                userDetail(id, user.optString("nickname", id), user);
             });
         }
         pageControls(data);
@@ -1967,10 +1965,14 @@ public final class CollectorPanel {
 
     /**
      * One user's public profile fields and every collected comment, grouped by the post it was left on,
-     * so the operator can judge context before contacting them manually in Kuaishou.
+     * so the operator can judge context before opening the user's own platform.
      */
-    private void userDetail(String id, String name) {
+    private void userDetail(String id, String name, JSONObject record) {
         if (id == null || id.isEmpty() || "null".equals(id)) return;
+        JSONObject target;
+        try { target = UserLinkTarget.fromUser(id, name, record, hostPlatform()); }
+        catch (Exception error) { error(error); return; }
+        String platform = target.optString("platform");
         LinearLayout content = vertical(); content.setPadding(dp(20), dp(4), dp(20), dp(8));
         TextView loading = muted("正在读取…", 13); content.addView(loading);
         ScrollView scroll = new ScrollView(activity); scroll.addView(content);
@@ -1981,7 +1983,7 @@ public final class CollectorPanel {
                 Toast.makeText(activity, "已复制昵称", Toast.LENGTH_SHORT).show();
             })
             .setNegativeButton("关闭", null)
-            .setPositiveButton("打开主页", (d, w) -> openProfile(id)));
+            .setPositiveButton("打开主页", (d, w) -> openUserLink(target, false)));
         // Grow with the content, but never past ~60% of the screen.
         content.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
             int wanted = Math.min(b - t, Math.min(maxHeight, dp(560)));
@@ -1990,10 +1992,11 @@ public final class CollectorPanel {
         });
         new Thread(() -> {
             try {
-                JSONObject userData = api("users", new JSONObject().put("search", id).put("limit", 1));
+                JSONObject userData = api("users", new JSONObject().put("userId", id).put("platform", platform).put("limit", 1));
                 JSONArray users = userData.optJSONArray("items");
                 JSONObject user = users != null && users.length() > 0 ? users.getJSONObject(0) : new JSONObject();
-                JSONArray comments = api("comments", new JSONObject().put("userId", id).put("sort", "created_desc").put("limit", 200)).optJSONArray("items");
+                JSONArray comments = api("comments", new JSONObject().put("userId", id).put("platform", platform)
+                    .put("sort", "created_desc").put("limit", 200)).optJSONArray("items");
                 java.util.LinkedHashMap<String, List<JSONObject>> byPost = new java.util.LinkedHashMap<>();
                 for (int i = 0; comments != null && i < comments.length(); i++) {
                     JSONObject row = comments.getJSONObject(i);
@@ -2016,7 +2019,7 @@ public final class CollectorPanel {
                     userText.setPadding(dp(10), 0, 0, 0);
                     LinearLayout nameLine = horizontal();
                     nameLine.setGravity(Gravity.CENTER_VERTICAL);
-                    PlatformStyle style = platformStyle(user);
+                    PlatformStyle style = platformStyle(target);
                     TextView channelBadge = platformBadge(style);
                     LinearLayout.LayoutParams cbP = new LinearLayout.LayoutParams(-2, -2);
                     cbP.rightMargin = dp(6);
@@ -2048,6 +2051,10 @@ public final class CollectorPanel {
                     userText.addView(muted("ID: " + id, 11));
                     userHeader.addView(userText, new LinearLayout.LayoutParams(0, -2, 1));
                     content.addView(userHeader);
+                    content.addView(button("私信", () -> {
+                        dialog.dismiss();
+                        openUserLink(target, true);
+                    }));
 
                     String pIp = user.optString("profileIpRegion", "未知");
                     String cIp = user.optString("lastCommentIpRegion", "未知");
@@ -2149,7 +2156,7 @@ public final class CollectorPanel {
                     avatarBox.addView(avatar, avParams);
                     avatarBox.setOnClickListener(view -> {
                         lastClickedAnchor = finalUid;
-                        userDetail(finalUid, finalNick);
+                        userDetail(finalUid, finalNick, user);
                     });
                     Motion.press(avatarBox);
                     line.addView(avatarBox, new LinearLayout.LayoutParams(dp(44), dp(44)));
@@ -2173,7 +2180,7 @@ public final class CollectorPanel {
                     TextView author = text(nickname, 15, true);
                     author.setOnClickListener(view -> {
                         lastClickedAnchor = finalUid;
-                        userDetail(finalUid, finalNick);
+                        userDetail(finalUid, finalNick, user);
                     });
                     Motion.press(author);
                     authorLine.addView(author);
@@ -2241,7 +2248,7 @@ public final class CollectorPanel {
                     Motion.press(card);
                     card.setOnClickListener(v -> {
                         lastClickedAnchor = finalUid;
-                        userDetail(finalUid, finalNick);
+                        userDetail(finalUid, finalNick, user);
                     });
                 }
                 Motion.stagger(list, 0);
@@ -2318,6 +2325,19 @@ public final class CollectorPanel {
     private void directMessageDialog(JSONArray ids) {
         if (ids == null || ids.length() == 0) { Toast.makeText(activity, "请先选择用户", Toast.LENGTH_SHORT).show(); return; }
         try {
+            if (ids.length() == 1) {
+                String id = ids.optString(0);
+                JSONArray users = api("users", new JSONObject().put("userId", id).put("limit", 1)).optJSONArray("items");
+                JSONObject user = users == null ? null : users.optJSONObject(0);
+                if (user != null) {
+                    JSONObject target = UserLinkTarget.fromUser(id, user.optString("nickname", id), user, hostPlatform());
+                    if (!hostPlatform().equals(target.optString("platform"))) {
+                        lastClickedAnchor = id;
+                        openUserLink(target, true);
+                        return;
+                    }
+                }
+            }
             JSONArray items = MessageTemplateStore.items(api("settings_get", new JSONObject().put("name", "messages")));
             if (items.length() == 0) {
                 Toast.makeText(activity, "请先在“我的 → 私信设置”里添加模板", Toast.LENGTH_LONG).show(); return;
@@ -2814,6 +2834,34 @@ public final class CollectorPanel {
         } catch (Exception error) { error(error); }
     }
 
+    private void openGuidedComments(JSONObject task, boolean retry) {
+        try {
+            long id = task.getLong("taskId");
+            JSONObject current = api("status", new JSONObject());
+            String status = current.optString("status");
+            boolean canStart = retry
+                ? "paused".equals(status) && DouyinGuidance.TIMEOUT_ISSUE.equals(current.optString("issue"))
+                : DouyinGuidance.paging(status) && "native-waiting".equals(current.optString("pagingDriver"));
+            if (current.optLong("taskId") != id || current.optLong("generation") != task.optLong("generation")
+                || !canStart || current.optBoolean("platformBlocked")) {
+                Toast.makeText(activity, "任务状态已变化，请刷新后查看", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (retry) {
+                current = api("resume", new JSONObject().put("taskId", id));
+                if (!DouyinGuidance.paging(current.optString("status"))) {
+                    render();
+                    return;
+                }
+            }
+            JSONObject guide = new JSONObject().put("taskId", id).put("generation", current.optLong("generation"))
+                .put("startedAt", android.os.SystemClock.elapsedRealtime());
+            api("settings_save", new JSONObject().put("name", DouyinGuidance.SETTING).put("value", guide));
+            Toast.makeText(activity, "正在打开评论区并检查分页", Toast.LENGTH_SHORT).show();
+            launch("snssdk1128://aweme/detail/" + Uri.encode(current.optString("photoId")), false);
+        } catch (Exception error) { error(error); }
+    }
+
     // ---------------------------------------------------------------- settings dialogs (unchanged behaviour)
 
     private void accountSettings() {
@@ -2959,14 +3007,11 @@ public final class CollectorPanel {
         String scheme = "douyin".equals(plat) ? "snssdk1128://aweme/detail/" : "xhs".equals(plat) ? "xhsdiscover://item/" : "kwai://work/";
         launch(scheme + Uri.encode(id));
     }
-    private void openProfile(String id) { openProfile(id, ""); }
-    private void openProfile(String id, String platform) {
-        if (id.isEmpty() || "null".equals(id)) return;
+    private void openUserLink(JSONObject target, boolean message) {
         saveReturnState(lastClickedAnchor);
-        String plat = platform;
-        if (plat == null || plat.isEmpty()) plat = hostPlatform();
-        String scheme = "douyin".equals(plat) ? "snssdk1128://user/profile/" : "xhs".equals(plat) ? "xhsdiscover://user/" : "kwai://profile/";
-        launch(scheme + Uri.encode(id));
+        boolean opened = message ? UserLinks.message(activity, target) : UserLinks.profile(activity, target);
+        if (!opened) pendingReturn = null;
+        else if (showing()) open.get().dismiss();
     }
     private void saveReturnState(String anchorId) {
         if (page != PAGE_DATA && page != PAGE_ANALYSIS) return;
@@ -3517,6 +3562,7 @@ public final class CollectorPanel {
             case "native_adapter_unavailable" -> "当前页面没有可用的原生分页器，请打开目标作品评论后继续";
             case "native_eof_unconfirmed" -> "页面已停止翻页，但接口尚未确认末页，请查看任务诊断";
             case "douyin_native_page_unconfirmed" -> "暂未读到可确认的评论页，稍后点继续重试";
+            case DouyinGuidance.TIMEOUT_ISSUE -> "等待后台分页超时，已保留采集结果，可打开评论区重试";
             case "manual_login_required" -> "等待手动登录"; case "manual_verification_required" -> "等待手动完成平台验证";
             case "manual_pause" -> "已手动暂停"; case "superseded_by_new_task" -> "已被新任务替换，可续跑";
             default -> code;

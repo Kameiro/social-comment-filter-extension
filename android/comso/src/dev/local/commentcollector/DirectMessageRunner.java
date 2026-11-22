@@ -58,11 +58,13 @@ final class DirectMessageRunner {
                     String id = ids.optString(i);
                     if (id.isEmpty()) continue;
                     JSONObject listing = CollectorClient.call(origin, "users", new JSONObject()
-                        .put("search", id).put("limit", 1).put("platform", platform));
+                        .put("userId", id).put("limit", 1));
                     JSONArray items = listing.optJSONArray("items");
                     JSONObject found = items == null || items.length() == 0 ? null : items.optJSONObject(0);
-                    if (found == null) found = new JSONObject().put("userId", id).put("nickname", id).put("platform", platform);
-                    if (!found.has("userId")) found.put("userId", id);
+                    if (found == null || !id.equals(found.optString("userId")) || !platform.equals(Platforms.normalize(found.optString("platform")))) {
+                        MAIN.post(() -> runner.finish("批量私信仅支持当前 App 的用户。跨平台请从用户详情打开「私信」。"));
+                        return;
+                    }
                     runner.queue.add(found);
                 }
                 MAIN.post(runner::next);
@@ -114,7 +116,8 @@ final class DirectMessageRunner {
                 .put("authorName", current.optString("nickname", current.optString("userId")))
                 .put("authorSecUid", current.optString("secUid"))
                 .put("platform", current.optString("platform", platform));
-            if ("block".equals(action)) UserLinks.profile(host, target); else UserLinks.message(host, target);
+            boolean opened = "block".equals(action) ? UserLinks.profile(host, target) : UserLinks.message(host, target);
+            if (!opened) { finish("无法打开用户页面"); return; }
             MAIN.postDelayed(() -> trySend(host), 1600);
         } catch (Throwable error) { finish("无法打开聊天页面"); }
     }
